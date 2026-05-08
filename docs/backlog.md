@@ -23,10 +23,11 @@ Items here block MVP shipping. All must reach 🟢 before MVP acceptance (L3, [d
 
 - 🟢 Stage 0 connectivity verification (`verify_blender_mcp.py` 5/5 passing)
 - 🟢 Design phase A/B/C/D (15 items decided in design.md)
-- 🟡 Repo restructure: README.md / CLAUDE.md / AGENTS.md / backlog.md
-- ⚪ `git init` and initial commit (after structure stabilizes)
-- ⚪ `.gitignore` (Python / uv / .env / IDE / Blender backups)
-- ⚪ `LICENSE` (TBD — MIT / GPL? confirm with user)
+- 🟢 Repo restructure: README.md / CLAUDE.md / AGENTS.md / docs/backlog.md
+- 🟢 `.gitignore` (Python / uv / .env / IDE / Blender backups / vendored addons / `.claude/`)
+- 🟢 `LICENSE` — MIT (`Copyright (c) 2026 Dimcirui`)
+- 🟢 `git init` + initial commit on `main` (commit `7c2dab1`, 11 files, 2887 lines)
+- ⚪ Push to GitHub (user-driven: create `REE-ModPilot` repo on github.com → `git remote add origin <url>` → `git push -u origin main`)
 
 ### Stage 1 — communication backbone
 
