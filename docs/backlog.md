@@ -11,7 +11,7 @@ Priority-ranked task list. Status badges follow the [project convention](../AGEN
 
 Tasks are grouped by priority band (P0 → P3). Within a band, ordering is suggested execution sequence; tasks are independently deliverable unless an explicit dependency is noted.
 
-**Last updated**: 2026-05-09 — Stage 2 complete; Phase 1 redesigned as deterministic 3-step pipeline (66 unit tests passing).
+**Last updated**: 2026-05-09 — Stage 2 complete; Phase 1 & 3 redesigned (76 unit tests passing).
 
 ---
 
@@ -49,7 +49,7 @@ Items here block MVP shipping. All must reach 🟢 before MVP acceptance (L3, [d
 - 🟢 `app/phases/base.py` — `PhaseTool` ABC, `PhaseResult`, `PhaseError` (E16); `require_finished` helper
 - 🟢 `app/phases/pose_correction.py` (video 1; 3-step pipeline: pose_reset → mesh_bbox_scale_align → deterministic_pose_convert by x_preset)
 - 🟢 `app/phases/skeleton_align.py` (video 2; X+Y preset routing, selection order enforced)
-- 🟢 `app/phases/vertex_groups.py` (video 3; direct_convert + rename_bones_to_target, two-step)
+- 🟢 `app/phases/vertex_groups.py` (video 3; 3-step: material_fix+merge+normalise → direct_convert → reparent to MHWilds armature)
 - 🟢 Classification in agent loop, not in phase (E17); phases are pure executors
 - 🟢 Unit tests: 33 tests covering all phases (param validation, operator dispatch, error paths)
 

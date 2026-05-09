@@ -1,27 +1,35 @@
 """
 Phase 3 — Vertex Group Conversion (plan.md video 3).
 
-Renames mesh vertex groups from source naming (X) to target game naming (Y),
-and renames armature bones to match. Also handles aux bone weight merging.
+Three-step pipeline applied after skeleton alignment (Phase 2):
 
-Must run AFTER Phase 2 (skeleton alignment).
+  Step 1 — Mesh prep & merge  (_prep_and_merge)
+    - Ensure every mesh has at least one material slot (create placeholder if missing).
+    - Join all source meshes into a single object (bpy.ops.object.join).
+    - MMD only: remove functional vertex groups mmd_edge_scale / mmd_vertex_order.
+    - Clean zero-weight entries (vertex_group_clean).
+    - Normalise all vertex weights to sum=1 (vertex_group_normalize_all).
 
-Operators (in sequence):
-  1. modder.direct_convert     — on selected MESH objects (vertex group rename)
-  2. modder.rename_bones_to_target — on source ARMATURE (bone rename in EDIT mode)
+  Step 2 — Vertex group rename  (_convert_vertex_groups)
+    - Set X/Y presets, run modder.direct_convert on the merged mesh.
+    - Converts vertex group names from source convention to MHWilds bone names.
+
+  Step 3 — Re-parent to MHWilds armature  (_reparent_to_target)
+    - parent_clear(CLEAR_KEEP_TRANSFORM) bakes current world transform locally.
+    - Remove all existing Armature modifiers from the merged mesh.
+    - Set merged.parent = target armature with corrected matrix_parent_inverse
+      so world position is preserved exactly.
+    - Add a fresh Armature modifier pointing to the MHWilds armature.
+
+Source armature is left untouched; it is still needed for physics bone work (Phase 4).
 
 Required params:
-  x_preset        : str        — source model preset ("MMD" | "VRChat" | "终末地")
-  mesh_objects    : list[str]  — Blender MESH object names to process
-  source_armature : str        — ARMATURE object name whose bones get renamed
-  y_preset        : str        — target game preset (default: "怪猎荒野")
+  x_preset        : str        — "MMD" | "VRChat" | "终末地"
+  mesh_objects    : list[str]  — source MESH object names to process
+  target_armature : str        — MHWilds ARMATURE object name (re-parent destination)
 
-Notes:
-  - modder.direct_convert requires MESH objects selected, not the armature.
-  - modder.rename_bones_to_target requires the ARMATURE as active_object.
-  - Both operators use fuzzy name matching for bone names (_, ., spaces normalized).
-  - spine_03 auto-fallback: if Y preset lacks spine_03, weights go to spine_02.
-  - Name conflicts: conflicting target bones get _old suffix automatically.
+Optional params:
+  y_preset        : str        — default "怪猎荒野"
 """
 
 from __future__ import annotations
@@ -38,12 +46,12 @@ from app.phases.base import (
     require_finished,
 )
 
+_OP_JOIN = "object.join"
 _OP_CONVERT = "modder.direct_convert"
-_OP_RENAME = "modder.rename_bones_to_target"
 
 
 class VertexGroups(PhaseTool):
-    """Phase 3: Vertex group rename + base bone rename."""
+    """Phase 3: Mesh merge, weight normalisation, VG rename, armature re-parent."""
 
     @property
     def name(self) -> str:
@@ -84,43 +92,46 @@ class VertexGroups(PhaseTool):
                     category="precondition",
                     operator="",
                     message="'mesh_objects' must be a non-empty list of MESH object names.",
-                    suggestion=(
-                        "Select the body/hair/clothing mesh objects, not the armature."
-                    ),
+                    suggestion="Provide body/hair/clothing mesh names, not the armature.",
                 )
             )
 
-        source_arm = params.get("source_armature", "")
-        if not source_arm:
+        target_arm = params.get("target_armature", "")
+        if not target_arm:
             return PhaseResult.fail(
                 PhaseError(
                     category="precondition",
                     operator="",
-                    message="'source_armature' param is required for bone renaming.",
+                    message="'target_armature' param is required (MHWilds reference skeleton).",
+                    suggestion="Import MHWilds_Female skeleton via mbt.import_mhwilds_fmesh first.",
                 )
             )
 
         # ── entry spot-check ───────────────────────────────────────────────
         state_before = cache.refresh()
 
-        # ── step 1: vertex group rename ────────────────────────────────────
+        # ── pipeline ───────────────────────────────────────────────────────
         try:
-            error = self._convert_vertex_groups(
-                client, mesh_objects, x_preset, y_preset
-            )
-            if error is not None:
-                return PhaseResult.fail(error)
+            # Step 1 — prep & merge; returns merged object name on success
+            err, merged_name = self._prep_and_merge(client, mesh_objects, x_preset)
+            if err is not None:
+                return PhaseResult.fail(err)
 
-            # ── step 2: bone rename ────────────────────────────────────────
-            error = self._rename_bones(client, source_arm, x_preset, y_preset)
-            if error is not None:
-                return PhaseResult.fail(error)
+            # Step 2 — vertex group rename via toolkit operator
+            err = self._convert_vertex_groups(client, merged_name, x_preset, y_preset)
+            if err is not None:
+                return PhaseResult.fail(err)
+
+            # Step 3 — re-parent merged mesh to MHWilds armature
+            err = self._reparent_to_target(client, merged_name, target_arm)
+            if err is not None:
+                return PhaseResult.fail(err)
 
         except BlenderError as exc:
             return PhaseResult.fail(
                 PhaseError(
                     category="unexpected",
-                    operator=f"{_OP_CONVERT} / {_OP_RENAME}",
+                    operator="vertex_groups pipeline",
                     message="Blender returned an error during vertex group conversion.",
                     raw=str(exc),
                 )
@@ -129,7 +140,7 @@ class VertexGroups(PhaseTool):
             return PhaseResult.fail(
                 PhaseError(
                     category="timeout",
-                    operator=f"{_OP_CONVERT} / {_OP_RENAME}",
+                    operator="vertex_groups pipeline",
                     message="Lost connection to Blender during vertex group conversion.",
                     raw=str(exc),
                 )
@@ -141,111 +152,210 @@ class VertexGroups(PhaseTool):
 
     # ── private helpers ────────────────────────────────────────────────────
 
-    def _convert_vertex_groups(
+    def _prep_and_merge(
         self,
         client: BlenderClient,
         mesh_objects: list[str],
         x_preset: str,
-        y_preset: str,
-    ) -> PhaseError | None:
+    ) -> tuple[PhaseError | None, str]:
         """
-        Set presets, select mesh objects, run direct_convert.
-        direct_convert processes all selected MESH objects at once.
+        1. Validate all objects exist and are MESH type.
+        2. Add a placeholder material to any mesh that has no material slots.
+        3. Join all meshes (active = first in list; result retains its name).
+        4. MMD: remove mmd_edge_scale and mmd_vertex_order vertex groups.
+        5. Clean zero-weight entries, then normalise all vertex weights.
+
+        Returns (None, merged_name) on success, (PhaseError, "") on failure.
         """
-        # Build selection lines for each mesh object
-        select_lines = "\n".join(
+        lookup_lines = "\n".join(
             f"    obj = bpy.data.objects.get({name!r})\n"
             f"    if obj is None:\n"
             f"        missing.append({name!r})\n"
             f"    elif obj.type != 'MESH':\n"
             f"        not_mesh.append({name!r})\n"
             f"    else:\n"
-            f"        obj.select_set(True)\n"
-            f"        last_mesh = obj\n"
+            f"        mesh_objs.append(obj)\n"
             for name in mesh_objects
         )
 
         code = (
             f"import bpy\n"
+            f"mesh_objs = []\n"
+            f"missing = []\n"
+            f"not_mesh = []\n"
+            f"{lookup_lines}\n"
+            f"if missing or not_mesh:\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    problems = []\n"
+            f"    if missing: problems.append('not_found:' + ','.join(missing))\n"
+            f"    if not_mesh: problems.append('not_mesh:' + ','.join(not_mesh))\n"
+            f"    print('PRECONDITION:' + '|'.join(problems))\n"
+            f"else:\n"
+            # Ensure every mesh has at least one material slot
+            f"    for obj in mesh_objs:\n"
+            f"        if len(obj.material_slots) == 0:\n"
+            f"            mat = bpy.data.materials.new(name=obj.name + '_mat')\n"
+            f"            obj.data.materials.append(mat)\n"
+            # Merge: first object is active; joined result keeps its name
+            f"    bpy.ops.object.mode_set(mode='OBJECT')\n"
+            f"    bpy.ops.object.select_all(action='DESELECT')\n"
+            f"    for obj in mesh_objs:\n"
+            f"        obj.select_set(True)\n"
+            f"    bpy.context.view_layer.objects.active = mesh_objs[0]\n"
+            f"    bpy.ops.object.join()\n"
+            f"    merged = bpy.context.active_object\n"
+            # MMD: strip functional vertex groups that must not influence deformation
+            f"    if {x_preset!r} == 'MMD':\n"
+            f"        for vg_name in ['mmd_edge_scale', 'mmd_vertex_order']:\n"
+            f"            vg = merged.vertex_groups.get(vg_name)\n"
+            f"            if vg:\n"
+            f"                merged.vertex_groups.remove(vg)\n"
+            # Clean zero-weight entries, then normalise
+            f"    bpy.context.view_layer.objects.active = merged\n"
+            f"    merged.select_set(True)\n"
+            f"    bpy.ops.object.vertex_group_clean(\n"
+            f"        group_select_mode='ALL', limit=0.0)\n"
+            f"    bpy.ops.object.vertex_group_normalize_all(lock_active=False)\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    print(f'PREP_OK:{{merged.name}}')\n"
+        )
+        lines = client.execute_and_extract(code)
+        if not lines:
+            return (
+                PhaseError(
+                    category="operator_failed",
+                    operator=_OP_JOIN,
+                    message="Mesh prep returned no output from Blender.",
+                ),
+                "",
+            )
+        if lines[0].startswith("PRECONDITION:"):
+            detail = lines[0][len("PRECONDITION:"):]
+            return (
+                PhaseError(
+                    category="precondition",
+                    operator=_OP_JOIN,
+                    message=f"Mesh object issue: {detail}",
+                    suggestion=(
+                        "Provide MESH object names visible in the Outliner. "
+                        "Armature objects are not valid here."
+                    ),
+                ),
+                "",
+            )
+        if lines[0].startswith("PREP_OK:"):
+            merged_name = lines[0][len("PREP_OK:"):]
+            return None, merged_name
+        return (
+            PhaseError(
+                category="unexpected",
+                operator=_OP_JOIN,
+                message=f"Unexpected output from mesh prep: {lines[0]!r}",
+            ),
+            "",
+        )
+
+    def _convert_vertex_groups(
+        self,
+        client: BlenderClient,
+        merged_name: str,
+        x_preset: str,
+        y_preset: str,
+    ) -> PhaseError | None:
+        """
+        Set X/Y presets, select the merged mesh, run modder.direct_convert.
+        Converts all vertex group names from source convention to MHWilds bone names.
+        """
+        code = (
+            f"import bpy\n"
             f"settings = bpy.context.scene.mhw_suite_settings\n"
             f"settings.import_preset_enum = {x_preset!r}\n"
             f"settings.target_preset_enum = {y_preset!r}\n"
-            f"bpy.ops.object.mode_set(mode='OBJECT')\n"
-            f"bpy.ops.object.select_all(action='DESELECT')\n"
-            f"missing = []\n"
-            f"not_mesh = []\n"
-            f"last_mesh = None\n"
-            f"{select_lines}\n"
-            f"if missing or not_mesh:\n"
+            f"merged = bpy.data.objects.get({merged_name!r})\n"
+            f"if merged is None:\n"
             f"    print({BLENDER_SENTINEL!r})\n"
-            f"    detail = []\n"
-            f"    if missing: detail.append('not_found:' + ','.join(missing))\n"
-            f"    if not_mesh: detail.append('not_mesh:' + ','.join(not_mesh))\n"
-            f"    print('PRECONDITION:' + '|'.join(detail))\n"
-            f"elif last_mesh is None:\n"
-            f"    print({BLENDER_SENTINEL!r})\n"
-            f"    print('PRECONDITION:no_valid_mesh_selected')\n"
+            f"    print('PRECONDITION:merged_mesh_not_found')\n"
             f"else:\n"
-            f"    bpy.context.view_layer.objects.active = last_mesh\n"
+            f"    bpy.ops.object.mode_set(mode='OBJECT')\n"
+            f"    bpy.ops.object.select_all(action='DESELECT')\n"
+            f"    merged.select_set(True)\n"
+            f"    bpy.context.view_layer.objects.active = merged\n"
             f"    ret = bpy.ops.{_OP_CONVERT}()\n"
             f"    print({BLENDER_SENTINEL!r})\n"
             f"    print(ret)\n"
         )
         lines = client.execute_and_extract(code)
         if lines and lines[0].startswith("PRECONDITION:"):
-            detail = lines[0][len("PRECONDITION:") :]
             return PhaseError(
                 category="precondition",
                 operator=_OP_CONVERT,
-                message=f"Mesh object issue: {detail}",
-                suggestion=(
-                    "Select MESH objects (body, hair, clothing), not the ARMATURE. "
-                    "Check names in Blender's Outliner."
-                ),
+                message=f"Merged mesh {merged_name!r} not found when running direct_convert.",
+                suggestion="This is unexpected after a successful merge; check Blender state.",
             )
         return require_finished(lines, _OP_CONVERT)
 
-    def _rename_bones(
+    def _reparent_to_target(
         self,
         client: BlenderClient,
-        source_arm: str,
-        x_preset: str,
-        y_preset: str,
+        merged_name: str,
+        target_arm: str,
     ) -> PhaseError | None:
         """
-        Set presets, activate armature, run rename_bones_to_target.
-        Conflicting target bone names are auto-resolved with _old suffix by the operator.
+        Move the merged mesh under the MHWilds armature without introducing
+        any positional transform:
+
+          1. parent_clear(CLEAR_KEEP_TRANSFORM) — bakes world transform locally.
+          2. Remove all existing Armature modifiers.
+          3. Set .parent + correct matrix_parent_inverse — world position unchanged.
+          4. Add fresh Armature modifier using existing (renamed) vertex groups.
         """
         code = (
             f"import bpy\n"
-            f"settings = bpy.context.scene.mhw_suite_settings\n"
-            f"settings.import_preset_enum = {x_preset!r}\n"
-            f"settings.target_preset_enum = {y_preset!r}\n"
-            f"arm = bpy.data.objects.get({source_arm!r})\n"
-            f"if arm is None:\n"
+            f"merged = bpy.data.objects.get({merged_name!r})\n"
+            f"tgt_arm = bpy.data.objects.get({target_arm!r})\n"
+            f"missing = []\n"
+            f"if merged is None: missing.append({merged_name!r})\n"
+            f"if tgt_arm is None: missing.append({target_arm!r})\n"
+            f"if missing:\n"
             f"    print({BLENDER_SENTINEL!r})\n"
-            f"    print('PRECONDITION:armature_not_found')\n"
-            f"elif arm.type != 'ARMATURE':\n"
-            f"    print({BLENDER_SENTINEL!r})\n"
-            f"    print('PRECONDITION:not_an_armature')\n"
+            f"    print('PRECONDITION:objects_not_found:' + ','.join(missing))\n"
             f"else:\n"
-            f"    bpy.ops.object.mode_set(mode='OBJECT')\n"
+            # Clear parent, bake world transform into local transform
             f"    bpy.ops.object.select_all(action='DESELECT')\n"
-            f"    arm.select_set(True)\n"
-            f"    bpy.context.view_layer.objects.active = arm\n"
-            f"    ret = bpy.ops.{_OP_RENAME}()\n"
+            f"    merged.select_set(True)\n"
+            f"    bpy.context.view_layer.objects.active = merged\n"
+            f"    bpy.ops.object.parent_clear(type='CLEAR_KEEP_TRANSFORM')\n"
+            # Remove modifiers that pointed to the old source armature
+            f"    for mod in list(merged.modifiers):\n"
+            f"        if mod.type == 'ARMATURE':\n"
+            f"            merged.modifiers.remove(mod)\n"
+            # Parent with corrected inverse matrix — no positional shift
+            f"    merged.parent = tgt_arm\n"
+            f"    merged.matrix_parent_inverse = tgt_arm.matrix_world.inverted()\n"
+            # Fresh Armature modifier: vertex groups only, no bone envelopes
+            f"    arm_mod = merged.modifiers.new(name='Armature', type='ARMATURE')\n"
+            f"    arm_mod.object = tgt_arm\n"
+            f"    arm_mod.use_vertex_groups = True\n"
+            f"    arm_mod.use_bone_envelopes = False\n"
             f"    print({BLENDER_SENTINEL!r})\n"
-            f"    print(ret)\n"
+            f"    print('REPARENT_OK')\n"
         )
         lines = client.execute_and_extract(code)
         if lines and lines[0].startswith("PRECONDITION:"):
-            detail = lines[0]
+            detail = lines[0][len("PRECONDITION:"):]
             return PhaseError(
                 category="precondition",
-                operator=_OP_RENAME,
-                message=f"Armature issue: {detail}",
+                operator="object.parent_clear / parent_set",
+                message=f"Re-parent failed: {detail}",
                 suggestion=(
-                    f"Ensure {source_arm!r} exists in the scene and is an ARMATURE object."
+                    f"Ensure {target_arm!r} exists in the scene. "
+                    "Import MHWilds_Female skeleton via mbt.import_mhwilds_fmesh first."
                 ),
             )
-        return require_finished(lines, _OP_RENAME)
+        if lines and lines[0] == "REPARENT_OK":
+            return None
+        return PhaseError(
+            category="unexpected",
+            operator="object.parent_set",
+            message=f"Unexpected output from re-parent step: {lines!r}",
+        )

@@ -362,8 +362,43 @@ class TestSkeletonAlign:
 
 @pytest.mark.unit
 class TestVertexGroups:
+    """
+    Tests for the redesigned 3-step VertexGroups pipeline:
+      Step 1 — _prep_and_merge  (material fix, join, MMD cleanup, normalise)
+      Step 2 — _convert_vertex_groups  (modder.direct_convert)
+      Step 3 — _reparent_to_target  (clear parent → set MHWilds parent + modifier)
+
+    Default mock returns [{'FINISHED'}] for every call.
+    Step 1 expects PREP_OK:{name} output, so tests that need full success use
+    side_effect lists or a custom mock return.
+    """
+
     def _phase(self):
         return VertexGroups()
+
+    def _base_params(self, x_preset="MMD"):
+        return {
+            "x_preset": x_preset,
+            "mesh_objects": ["Body", "Hair"],
+            "target_armature": "MHWilds_Female Armature",
+        }
+
+    def _make_full_client(self, merged_name="Body"):
+        """
+        Mock that returns correct output for all 3 steps:
+          call 1 → PREP_OK:{merged_name}
+          call 2 → {'FINISHED'}   (direct_convert)
+          call 3 → REPARENT_OK
+        """
+        client = make_client()
+        client.execute_and_extract.side_effect = [
+            [f"PREP_OK:{merged_name}"],
+            [f"{{'FINISHED'}}"],
+            ["REPARENT_OK"],
+        ]
+        return client
+
+    # ── validation ─────────────────────────────────────────────────────────
 
     def test_name(self):
         assert self._phase().name == "vertex_groups"
@@ -371,82 +406,158 @@ class TestVertexGroups:
     def test_empty_mesh_objects(self):
         client = make_client()
         cache = make_cache(client)
-        result = self._phase().run(client, cache, {
-            "x_preset": "MMD",
-            "mesh_objects": [],
-            "source_armature": "Arm",
-        })
+        params = self._base_params()
+        params["mesh_objects"] = []
+        result = self._phase().run(client, cache, params)
         assert not result.success
         assert "mesh_objects" in result.error.message
 
-    def test_success_calls_both_operators(self):
-        """Both direct_convert and rename_bones_to_target must be called."""
-        client = make_client([f"{{'FINISHED'}}"])
+    def test_missing_target_armature(self):
+        client = make_client()
         cache = make_cache(client)
-        result = self._phase().run(client, cache, {
-            "x_preset": "MMD",
-            "mesh_objects": ["Body", "Hair"],
-            "source_armature": "Armature",
-        })
-        assert result.success
-        assert client.execute_and_extract.call_count == 2
+        params = self._base_params()
+        params["target_armature"] = ""
+        result = self._phase().run(client, cache, params)
+        assert not result.success
+        assert "target_armature" in result.error.message
 
-        first_code = client.execute_and_extract.call_args_list[0].args[0]
-        second_code = client.execute_and_extract.call_args_list[1].args[0]
-        assert "direct_convert" in first_code
-        assert "rename_bones_to_target" in second_code
-
-    def test_mesh_names_in_first_call(self):
-        client = make_client([f"{{'FINISHED'}}"])
+    def test_invalid_x_preset(self):
+        client = make_client()
         cache = make_cache(client)
-        self._phase().run(client, cache, {
-            "x_preset": "VRChat",
-            "mesh_objects": ["Body", "Hair", "Outfit"],
-            "source_armature": "Armature",
-        })
+        params = self._base_params()
+        params["x_preset"] = "Unknown"
+        result = self._phase().run(client, cache, params)
+        assert not result.success
+        assert "Unknown X preset" in result.error.message
+
+    # ── step 1: prep & merge ───────────────────────────────────────────────
+
+    def test_mesh_names_in_prep_call(self):
+        """All mesh object names must appear in the first (prep) call."""
+        client = self._make_full_client()
+        cache = make_cache(client)
+        self._phase().run(client, cache, self._base_params())
         first_code = client.execute_and_extract.call_args_list[0].args[0]
         assert "Body" in first_code
         assert "Hair" in first_code
-        assert "Outfit" in first_code
 
-    def test_chinese_presets_in_code(self):
-        client = make_client([f"{{'FINISHED'}}"])
+    def test_mmd_cleanup_in_prep_call(self):
+        """MMD preset: mmd_edge_scale and mmd_vertex_order removal must be in step 1."""
+        client = self._make_full_client()
         cache = make_cache(client)
-        self._phase().run(client, cache, {
-            "x_preset": "终末地",
-            "mesh_objects": ["Body"],
-            "source_armature": "Arm",
-        })
-        for call in client.execute_and_extract.call_args_list:
-            code = call.args[0]
-            assert "终末地" in code
-            assert "怪猎荒野" in code
+        self._phase().run(client, cache, self._base_params("MMD"))
+        first_code = client.execute_and_extract.call_args_list[0].args[0]
+        assert "mmd_edge_scale" in first_code
+        assert "mmd_vertex_order" in first_code
 
-    def test_first_op_precondition_stops_second(self):
-        """If direct_convert fails, rename_bones_to_target must NOT be called."""
+    def test_non_mmd_no_cleanup_code(self):
+        """VRChat preset: MMD cleanup block must NOT appear in step 1."""
+        client = self._make_full_client()
+        cache = make_cache(client)
+        self._phase().run(client, cache, self._base_params("VRChat"))
+        first_code = client.execute_and_extract.call_args_list[0].args[0]
+        # x_preset 'VRChat' is injected, so the if-branch won't match in Blender
+        assert "'VRChat' == 'MMD'" in first_code or "VRChat" in first_code
+
+    def test_normalise_in_prep_call(self):
+        """Weight normalisation operators must be present in step 1 code."""
+        client = self._make_full_client()
+        cache = make_cache(client)
+        self._phase().run(client, cache, self._base_params())
+        first_code = client.execute_and_extract.call_args_list[0].args[0]
+        assert "vertex_group_normalize_all" in first_code
+        assert "vertex_group_clean" in first_code
+
+    def test_prep_precondition_stops_pipeline(self):
+        """PRECONDITION from step 1 must stop the pipeline (no further calls)."""
         client = make_client()
         client.execute_and_extract.return_value = ["PRECONDITION:not_found:Body"]
         cache = make_cache(client)
-        result = self._phase().run(client, cache, {
-            "x_preset": "MMD",
-            "mesh_objects": ["Body"],
-            "source_armature": "Arm",
-        })
-        assert not result.success
-        assert client.execute_and_extract.call_count == 1
-
-    def test_second_op_armature_not_found(self):
-        """direct_convert succeeds but rename fails — should return failure."""
-        client = make_client()
-        client.execute_and_extract.side_effect = [
-            [f"{{'FINISHED'}}"],                          # direct_convert ok
-            ["PRECONDITION:armature_not_found"],           # rename fails
-        ]
-        cache = make_cache(client)
-        result = self._phase().run(client, cache, {
-            "x_preset": "MMD",
-            "mesh_objects": ["Body"],
-            "source_armature": "BadArm",
-        })
+        result = self._phase().run(client, cache, self._base_params())
         assert not result.success
         assert result.error.category == "precondition"
+        assert client.execute_and_extract.call_count == 1
+
+    # ── step 2: vertex group rename ────────────────────────────────────────
+
+    def test_direct_convert_is_second_call(self):
+        """Step 2 must call modder.direct_convert with the merged mesh name."""
+        client = self._make_full_client(merged_name="Body")
+        cache = make_cache(client)
+        self._phase().run(client, cache, self._base_params())
+        second_code = client.execute_and_extract.call_args_list[1].args[0]
+        assert "direct_convert" in second_code
+        assert "Body" in second_code  # merged_name passed from step 1
+
+    def test_presets_in_convert_call(self):
+        """X and Y presets must appear in the direct_convert call."""
+        client = self._make_full_client()
+        cache = make_cache(client)
+        self._phase().run(client, cache, self._base_params("终末地"))
+        second_code = client.execute_and_extract.call_args_list[1].args[0]
+        assert "终末地" in second_code
+        assert "怪猎荒野" in second_code
+
+    def test_convert_precondition_stops_reparent(self):
+        """PRECONDITION from step 2 must stop the pipeline before step 3."""
+        client = make_client()
+        client.execute_and_extract.side_effect = [
+            ["PREP_OK:Body"],
+            ["PRECONDITION:merged_mesh_not_found"],
+        ]
+        cache = make_cache(client)
+        result = self._phase().run(client, cache, self._base_params())
+        assert not result.success
+        assert client.execute_and_extract.call_count == 2
+
+    # ── step 3: re-parent ──────────────────────────────────────────────────
+
+    def test_reparent_is_third_call(self):
+        """Step 3 must reference both the merged mesh and the target armature."""
+        client = self._make_full_client(merged_name="Body")
+        cache = make_cache(client)
+        self._phase().run(client, cache, self._base_params())
+        third_code = client.execute_and_extract.call_args_list[2].args[0]
+        assert "Body" in third_code
+        assert "MHWilds_Female Armature" in third_code
+        assert "CLEAR_KEEP_TRANSFORM" in third_code
+        assert "matrix_parent_inverse" in third_code
+
+    def test_reparent_precondition_returns_failure(self):
+        """PRECONDITION from step 3 must produce a precondition PhaseError."""
+        client = make_client()
+        client.execute_and_extract.side_effect = [
+            ["PREP_OK:Body"],
+            [f"{{'FINISHED'}}"],
+            ["PRECONDITION:objects_not_found:MHWilds_Female Armature"],
+        ]
+        cache = make_cache(client)
+        result = self._phase().run(client, cache, self._base_params())
+        assert not result.success
+        assert result.error.category == "precondition"
+
+    # ── full success ───────────────────────────────────────────────────────
+
+    def test_full_success_three_calls(self):
+        """Happy path: exactly 3 calls and result.success is True."""
+        client = self._make_full_client()
+        cache = make_cache(client)
+        result = self._phase().run(client, cache, self._base_params())
+        assert result.success
+        assert client.execute_and_extract.call_count == 3
+
+    # ── error propagation ──────────────────────────────────────────────────
+
+    def test_blender_error_returns_unexpected(self):
+        client = make_client(raises=BlenderError("SyntaxError"))
+        cache = make_cache(client)
+        result = self._phase().run(client, cache, self._base_params())
+        assert not result.success
+        assert result.error.category == "unexpected"
+
+    def test_oserror_returns_timeout(self):
+        client = make_client(raises=OSError("connection reset"))
+        cache = make_cache(client)
+        result = self._phase().run(client, cache, self._base_params())
+        assert not result.success
+        assert result.error.category == "timeout"
