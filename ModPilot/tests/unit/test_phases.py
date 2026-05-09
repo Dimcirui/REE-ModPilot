@@ -95,143 +95,173 @@ class TestBaseHelpers:
 
 @pytest.mark.unit
 class TestPoseCorrection:
+    """
+    Tests for the redesigned 3-step PoseCorrection pipeline:
+      Step 1 — pose_reset  (pose.transforms_clear)
+      Step 2 — scale_align (mesh-bbox uniform scale)
+      Step 3 — pose_convert (deterministic by x_preset)
+
+    Default mock returns [{'FINISHED'}] for every execute_and_extract call.
+    For scale_align, non-PRECONDITION output is treated as success, so the
+    default mock value passes through cleanly.
+    """
+
     def _phase(self):
         return PoseCorrection()
+
+    def _base_params(self, x_preset="MMD"):
+        return {
+            "x_preset": x_preset,
+            "source_armature": "SourceArm",
+            "target_armature": "GameArm",
+        }
+
+    # ── validation ─────────────────────────────────────────────────────────
 
     def test_name(self):
         assert self._phase().name == "pose_correction"
 
-    def test_invalid_tool(self):
-        client = make_client()
-        cache = make_cache(client)
-        result = self._phase().run(client, cache, {"tool": "unknown", "x_preset": "MMD", "source_armature": "Arm"})
-        assert not result.success
-        assert result.error.category == "precondition"
-        assert "Unknown pose tool" in result.error.message
-
     def test_invalid_x_preset(self):
         client = make_client()
         cache = make_cache(client)
-        result = self._phase().run(client, cache, {"tool": "direction", "x_preset": "Unknown", "source_armature": "Arm"})
+        params = self._base_params()
+        params["x_preset"] = "Unknown"
+        result = self._phase().run(client, cache, params)
         assert not result.success
+        assert result.error.category == "precondition"
         assert "Unknown X preset" in result.error.message
 
     def test_missing_source_armature(self):
         client = make_client()
         cache = make_cache(client)
-        result = self._phase().run(client, cache, {"tool": "direction", "x_preset": "MMD", "source_armature": ""})
+        params = self._base_params()
+        params["source_armature"] = ""
+        result = self._phase().run(client, cache, params)
         assert not result.success
         assert "source_armature" in result.error.message
 
-    def test_direction_success(self):
-        client = make_client([f"{{'FINISHED'}}"])
+    def test_missing_target_armature(self):
+        client = make_client()
         cache = make_cache(client)
-        result = self._phase().run(client, cache, {
-            "tool": "direction",
-            "x_preset": "MMD",
-            "source_armature": "Armature",
-        })
-        assert result.success
-        client.execute_and_extract.assert_called_once()
-        code = client.execute_and_extract.call_args.args[0]
-        assert "tpose_direction" in code
-        assert "MMD" in code
-        assert "Armature" in code
+        params = self._base_params()
+        params["target_armature"] = ""
+        result = self._phase().run(client, cache, params)
+        assert not result.success
+        assert "target_armature" in result.error.message
 
-    def test_matrix_zero_uses_correct_op(self):
-        client = make_client([f"{{'FINISHED'}}"])
-        cache = make_cache(client)
-        self._phase().run(client, cache, {
-            "tool": "matrix_zero",
-            "x_preset": "VRChat",
-            "source_armature": "Armature",
-        })
-        code = client.execute_and_extract.call_args.args[0]
-        assert "tpose_matrix_zero" in code
+    # ── step 1: pose reset ─────────────────────────────────────────────────
 
-    def test_chinese_preset_in_code(self):
-        """Chinese preset names must appear in the generated Blender code."""
-        client = make_client([f"{{'FINISHED'}}"])
+    def test_pose_reset_is_first_call(self):
+        """First execute_and_extract call must contain pose.transforms_clear."""
+        client = make_client()
         cache = make_cache(client)
-        self._phase().run(client, cache, {
-            "tool": "direction",
-            "x_preset": "终末地",
-            "source_armature": "Armature",
-        })
-        code = client.execute_and_extract.call_args.args[0]
-        assert "终末地" in code
+        self._phase().run(client, cache, self._base_params())
+        first_code = client.execute_and_extract.call_args_list[0].args[0]
+        assert "transforms_clear" in first_code
+        assert "SourceArm" in first_code
 
-    def test_object_not_found_returns_precondition_error(self):
-        client = make_client(["PRECONDITION:object_not_found"])
+    def test_pose_reset_precondition_stops_pipeline(self):
+        """If pose reset returns PRECONDITION, scale_align must NOT be called."""
+        client = make_client(["PRECONDITION:armature_not_found"])
         cache = make_cache(client)
-        result = self._phase().run(client, cache, {
-            "tool": "direction",
-            "x_preset": "MMD",
-            "source_armature": "NonExistent",
-        })
+        result = self._phase().run(client, cache, self._base_params())
         assert not result.success
         assert result.error.category == "precondition"
+        assert client.execute_and_extract.call_count == 1
+
+    # ── step 2: scale align ────────────────────────────────────────────────
+
+    def test_scale_align_is_second_call(self):
+        """Second execute_and_extract call must reference both armature names."""
+        client = make_client()
+        cache = make_cache(client)
+        self._phase().run(client, cache, self._base_params())
+        second_code = client.execute_and_extract.call_args_list[1].args[0]
+        assert "SourceArm" in second_code
+        assert "GameArm" in second_code
+        assert "bound_box" in second_code
+
+    def test_scale_align_precondition_stops_pipeline(self):
+        """If scale_align returns PRECONDITION, pose_convert must NOT be called."""
+        client = make_client()
+        client.execute_and_extract.side_effect = [
+            [f"{{'FINISHED'}}"],          # pose_reset ok
+            ["PRECONDITION:no_source_meshes"],  # scale_align fails
+        ]
+        cache = make_cache(client)
+        result = self._phase().run(client, cache, self._base_params())
+        assert not result.success
+        assert result.error.category == "precondition"
+        assert client.execute_and_extract.call_count == 2
+
+    def test_skip_scale_align_skips_step2(self):
+        """With skip_scale_align=True, only 2 calls: reset + pose_convert (MMD)."""
+        client = make_client()
+        cache = make_cache(client)
+        params = self._base_params("MMD")
+        params["skip_scale_align"] = True
+        result = self._phase().run(client, cache, params)
+        assert result.success
+        assert client.execute_and_extract.call_count == 2
+        # Second call should be pose_convert, not scale_align
+        second_code = client.execute_and_extract.call_args_list[1].args[0]
+        assert "tpose_direction" in second_code
+
+    # ── step 3: pose convert ───────────────────────────────────────────────
+
+    def test_mmd_calls_tpose_direction(self):
+        """MMD x_preset: third call must invoke modder.tpose_direction."""
+        client = make_client()
+        cache = make_cache(client)
+        result = self._phase().run(client, cache, self._base_params("MMD"))
+        assert result.success
+        assert client.execute_and_extract.call_count == 3
+        third_code = client.execute_and_extract.call_args_list[2].args[0]
+        assert "tpose_direction" in third_code
+        assert "MMD" in third_code
+
+    def test_vrchat_skips_pose_convert(self):
+        """VRChat x_preset: only 2 calls (reset + scale_align); no pose op."""
+        client = make_client()
+        cache = make_cache(client)
+        result = self._phase().run(client, cache, self._base_params("VRChat"))
+        assert result.success
+        assert client.execute_and_extract.call_count == 2
+
+    def test_endfield_calls_apply_transform_forward(self):
+        """终末地 x_preset: third call must invoke modder.apply_transform_forward."""
+        client = make_client()
+        cache = make_cache(client)
+        result = self._phase().run(client, cache, self._base_params("终末地"))
+        assert result.success
+        assert client.execute_and_extract.call_count == 3
+        third_code = client.execute_and_extract.call_args_list[2].args[0]
+        assert "apply_transform_forward" in third_code
+        assert "终末地" in third_code  # both preset and transform_name
+
+    def test_endfield_sets_pose_preset_enum(self):
+        """终末地 conversion must set pose_preset_enum to '终末地' (the transform file)."""
+        client = make_client()
+        cache = make_cache(client)
+        self._phase().run(client, cache, self._base_params("终末地"))
+        third_code = client.execute_and_extract.call_args_list[2].args[0]
+        assert "pose_preset_enum" in third_code
+
+    # ── error propagation ──────────────────────────────────────────────────
 
     def test_blender_error_returns_unexpected(self):
         client = make_client(raises=BlenderError("SyntaxError"))
         cache = make_cache(client)
-        result = self._phase().run(client, cache, {
-            "tool": "direction",
-            "x_preset": "MMD",
-            "source_armature": "Armature",
-        })
+        result = self._phase().run(client, cache, self._base_params())
         assert not result.success
         assert result.error.category == "unexpected"
 
-    def test_record_requires_target_and_name(self):
-        client = make_client()
+    def test_oserror_returns_timeout(self):
+        client = make_client(raises=OSError("connection reset"))
         cache = make_cache(client)
-        result = self._phase().run(client, cache, {
-            "tool": "record",
-            "x_preset": "MMD",
-            "source_armature": "ArmA",
-            # missing target_armature and transform_name
-        })
+        result = self._phase().run(client, cache, self._base_params())
         assert not result.success
-
-    def test_record_success(self):
-        client = make_client([f"{{'FINISHED'}}"])
-        cache = make_cache(client)
-        result = self._phase().run(client, cache, {
-            "tool": "record",
-            "x_preset": "MMD",
-            "source_armature": "ArmA",
-            "target_armature": "ArmB",
-            "transform_name": "mmd_to_tpose",
-        })
-        assert result.success
-        code = client.execute_and_extract.call_args.args[0]
-        assert "record_transform" in code
-        assert "mmd_to_tpose" in code
-
-    def test_apply_forward_requires_transform_name(self):
-        client = make_client()
-        cache = make_cache(client)
-        result = self._phase().run(client, cache, {
-            "tool": "apply_forward",
-            "x_preset": "MMD",
-            "source_armature": "Arm",
-            # missing transform_name
-        })
-        assert not result.success
-
-    def test_apply_forward_success(self):
-        client = make_client([f"{{'FINISHED'}}"])
-        cache = make_cache(client)
-        result = self._phase().run(client, cache, {
-            "tool": "apply_forward",
-            "x_preset": "MMD",
-            "source_armature": "Arm",
-            "transform_name": "mmd_to_tpose",
-        })
-        assert result.success
-        code = client.execute_and_extract.call_args.args[0]
-        assert "apply_transform_forward" in code
+        assert result.error.category == "timeout"
 
 
 # ── SkeletonAlign ──────────────────────────────────────────────────────────
