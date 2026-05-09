@@ -40,7 +40,7 @@ Items here block MVP shipping. All must reach 🟢 before MVP acceptance (L3, [d
 - 🟢 `app/llm/client.py` — Provider-agnostic `LLMClient` + `LLMResponse` (C10)
 - 🟢 `app/llm/anthropic_provider.py` — Anthropic SDK adapter (prompt caching wired)
 - 🟢 `app/llm/openai_provider.py` — OpenAI-compatible adapter (DeepSeek V4 default)
-- ⚪ `app/main.py` — FastAPI app + low-level endpoints (`/health`, `/scene_info`, `/exec` for debug)
+- 🟢 `app/main.py` — FastAPI app; `/health` (503 on disconnect), `/scene_info`, `/exec` (debug-only)
 - 🟢 `tests/unit/test_blender_client.py` — fake socket server fixture + 13 protocol tests
 - 🟢 `tests/unit/test_llm_client.py` — mock provider responses + 17 tool-call shape tests
 
