@@ -11,7 +11,7 @@ Priority-ranked task list. Status badges follow the [project convention](../AGEN
 
 Tasks are grouped by priority band (P0 → P3). Within a band, ordering is suggested execution sequence; tasks are independently deliverable unless an explicit dependency is noted.
 
-**Last updated**: 2026-05-09 — Stage 1 A+B+C complete (30 unit tests passing).
+**Last updated**: 2026-05-09 — Stage 2 complete (64 unit tests passing).
 
 ---
 
@@ -46,12 +46,12 @@ Items here block MVP shipping. All must reach 🟢 before MVP acceptance (L3, [d
 
 ### Stage 2 — phase tool layer (videos 1-3)
 
-- ⚪ `app/phases/base.py` — `PhaseTool` base contract (Result type, entry spot-check, exit cache update)
-- ⚪ `app/phases/pose_correction.py` (video 1)
-- ⚪ `app/phases/skeleton_align.py` (video 2; includes X/Y preset routing)
-- ⚪ `app/phases/vertex_groups.py` (video 3)
-- ⚪ Hybrid classification helper (B5/B6: high-confidence auto vs low-confidence user pickup)
-- ⚪ Unit tests per phase (mock `BlenderConnection`)
+- 🟢 `app/phases/base.py` — `PhaseTool` ABC, `PhaseResult`, `PhaseError` (E16); `require_finished` helper
+- 🟢 `app/phases/pose_correction.py` (video 1; direction / matrix_zero / record / apply tools)
+- 🟢 `app/phases/skeleton_align.py` (video 2; X+Y preset routing, selection order enforced)
+- 🟢 `app/phases/vertex_groups.py` (video 3; direct_convert + rename_bones_to_target, two-step)
+- 🟢 Classification in agent loop, not in phase (E17); phases are pure executors
+- 🟢 Unit tests: 33 tests covering all phases (param validation, operator dispatch, error paths)
 
 ### Stage 3 — agent loop
 

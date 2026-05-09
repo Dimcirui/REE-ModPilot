@@ -25,6 +25,9 @@
 | C13 | Python 依赖管理 | 技术 | 🟢 已决议 | uv（速度 + 现代 lockfile + 同时管 Python 版本与 venv） |
 | D14 | 目录结构 & 测试策略 | 工程 | 🟢 已决议 | ModPilot/app 模块化（blender / llm / agent / phases / routes / templates）+ unit/integration 双层 pytest |
 | D15 | 测试素材集 | 工程 | 🟢 已决议 | repo 不附带；docs/demo_setup.md 列推荐素材；用户首次跑下载到 ~/.modpilot_assets/ |
+| E16 | PhaseResult 形状 | 实现 | 🟢 已决议 | 轻量三字段：success / state_diff / error；user_message 由 agent loop 生成，不内嵌在 phase |
+| E17 | 分类决策位置 | 实现 | 🟢 已决议 | 分类在 agent loop，phase tool 只管执行；避免每个 phase 重复写分类逻辑 |
+| E18 | 同步 BlenderClient 在异步 FastAPI 中的调用方式 | 实现 | 🟢 已决议 | asyncio.to_thread()；BlenderClient 保持同步；单用户工具无并发压力 |
 
 图例：⚪ 未启动 / 🟡 讨论中 / 🟢 已决议 / 🔴 阻塞
 
@@ -848,6 +851,83 @@ REE-ModPilot/
 - 如果实测发现 MMD 模型质量普遍差 / 风格化太强 → 退路改用 VRC 单一标准
   模型（A4 决议保留的口子）
 - 后期若产品扩散，考虑做"素材市场"页 / 推荐列表，但 MVP 不做
+
+---
+
+# E 层：实现阶段决策
+
+> 记录 Stage 2+ 实现过程中落定的细粒度决策。格式与 A/B/C/D 层一致。
+
+---
+
+## E16. PhaseResult 形状
+
+### 决议 🟢（2026-05-09）
+
+**轻量三字段**：
+
+```python
+@dataclass
+class PhaseResult:
+    success: bool
+    state_diff: dict        # SceneState.diff() 输出；成功时描述变化，失败时为空
+    error: PhaseError | None
+```
+
+**排除**：不在 PhaseResult 里内嵌 `user_message` 或 `next_phase`。
+- `user_message` 由 agent loop 调 LLM 生成，保持 phase tool 无 LLM 依赖。
+- `next_phase` 由 agent loop 根据 phase 序列和当前状态决定，不由 phase 自己宣告。
+
+**PhaseError 结构**（对应 B7）：
+
+```python
+@dataclass
+class PhaseError:
+    category: str      # "operator_failed" | "precondition" | "timeout" | "unexpected"
+    operator: str      # 失败的 bpy.ops.* 调用（可为空）
+    message: str       # 简短技术描述（给 LLM 措辞用）
+    suggestion: str    # 可选：已知修复建议
+    raw: str           # 原始异常文本（不直接给用户看）
+```
+
+---
+
+## E17. 分类决策位置
+
+### 决议 🟢（2026-05-09）
+
+**分类在 agent loop，phase tool 只管执行。**
+
+Phase tool 接收 agent loop 传入的分类参数（如 `preset: str`），自己不调 LLM。
+Agent loop 在调用 phase 之前做分类：
+
+```
+agent loop
+  → LLM 分类（高置信 → 自动；低置信 → 暂停等用户确认）
+  → 拿到分类结果
+  → 调 phase_tool.run(params)
+  → 处理 PhaseResult
+```
+
+**理由**：phase tool 保持纯执行单元，无 LLM 依赖，单元测试不需要 mock LLM。
+分类逻辑集中在 agent loop，不在每个 phase 里重复。
+
+---
+
+## E18. 同步 BlenderClient 在异步 FastAPI 中的调用方式
+
+### 决议 🟢（2026-05-09）
+
+**`asyncio.to_thread(phase.run, ...)`**——phase tool 保持同步，FastAPI route 用 to_thread 卸载到线程池。
+
+```python
+# FastAPI route 调用 phase 的模式
+result = await asyncio.to_thread(phase.run, scene_cache, params)
+```
+
+**排除**：不改写 BlenderClient 为 async（工程量大，对单用户工具无收益）。
+
+**留的口子**：若未来需要高并发或 WebSocket 实时推送，再将 BlenderClient 改写为 asyncio socket。
 
 ---
 
