@@ -11,7 +11,7 @@ Priority-ranked task list. Status badges follow the [project convention](../AGEN
 
 Tasks are grouped by priority band (P0 → P3). Within a band, ordering is suggested execution sequence; tasks are independently deliverable unless an explicit dependency is noted.
 
-**Last updated**: 2026-05-08 — Stage Setup just kicked off; no implementation tasks completed.
+**Last updated**: 2026-05-09 — Stage 1 A+B+C complete (30 unit tests passing).
 
 ---
 
@@ -27,22 +27,22 @@ Items here block MVP shipping. All must reach 🟢 before MVP acceptance (L3, [d
 - 🟢 `.gitignore` (Python / uv / .env / IDE / Blender backups / vendored addons / `.claude/`)
 - 🟢 `LICENSE` — MIT (`Copyright (c) 2026 Dimcirui`)
 - 🟢 `git init` + initial commit on `main` (commit `7c2dab1`, 11 files, 2887 lines)
-- ⚪ Push to GitHub (user-driven: create `REE-ModPilot` repo on github.com → `git remote add origin <url>` → `git push -u origin main`)
+- 🟢 Push to GitHub (user-driven: create `REE-ModPilot` repo on github.com → `git remote add origin <url>` → `git push -u origin main`)
 
 ### Stage 1 — communication backbone
 
-- ⚪ `uv init` ModPilot/ project; pyproject.toml with FastAPI / Anthropic SDK / OpenAI SDK / pytest / ruff / pydantic-settings
-- ⚪ Configure Ruff + pytest in pyproject.toml (markers: `unit` / `integration`)
-- ⚪ Directory skeleton per [design.md D14](design.md#d14)
-- ⚪ `.env.example` (LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, BLENDER_HOST, BLENDER_PORT)
-- ⚪ `app/blender/client.py` — extract `BlenderConnection` from verify_blender_mcp.py
-- ⚪ `app/blender/state.py` — Scene state cache + diff (B5)
-- ⚪ `app/llm/client.py` — Provider-agnostic `LLMClient` (C10)
-- ⚪ `app/llm/anthropic_provider.py` — Anthropic SDK adapter
-- ⚪ `app/llm/openai_provider.py` — OpenAI-compatible adapter (DeepSeek V4 default)
+- 🟢 `uv init` ModPilot/ project; pyproject.toml with FastAPI / Anthropic SDK / OpenAI SDK / pytest / ruff / pydantic-settings
+- 🟢 Configure Ruff + pytest in pyproject.toml (markers: `unit` / `integration`)
+- 🟢 Directory skeleton per [design.md D14](design.md#d14)
+- 🟢 `.env.example` (LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, BLENDER_HOST, BLENDER_PORT)
+- 🟢 `app/blender/client.py` — `BlenderClient` (extracted + hardened from verify_blender_mcp.py)
+- 🟢 `app/blender/state.py` — `SceneState` / `SceneCache` with diff (B5)
+- 🟢 `app/llm/client.py` — Provider-agnostic `LLMClient` + `LLMResponse` (C10)
+- 🟢 `app/llm/anthropic_provider.py` — Anthropic SDK adapter (prompt caching wired)
+- 🟢 `app/llm/openai_provider.py` — OpenAI-compatible adapter (DeepSeek V4 default)
 - ⚪ `app/main.py` — FastAPI app + low-level endpoints (`/health`, `/scene_info`, `/exec` for debug)
-- ⚪ `tests/unit/test_blender_client.py` — fake socket server fixture + protocol tests
-- ⚪ `tests/unit/test_llm_client.py` — mock provider responses + tool-call shape tests
+- 🟢 `tests/unit/test_blender_client.py` — fake socket server fixture + 13 protocol tests
+- 🟢 `tests/unit/test_llm_client.py` — mock provider responses + 17 tool-call shape tests
 
 ### Stage 2 — phase tool layer (videos 1-3)
 

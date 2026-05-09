@@ -31,13 +31,17 @@ All 15 design items in [docs/design.md](docs/design.md) are 🟢. Code implement
 Read directly from [blender-mcp/addon.py](blender-mcp/addon.py); do **not** trust the README in `blender-mcp/` — it describes `server.py`'s MCP wrapper, not the raw socket protocol.
 
 - **Request**: pure JSON object, **no newline / no length prefix**.
+
   ```json
   {"type": "execute_code", "params": {"code": "..."}}
   ```
+
 - **Response**: pure JSON object, also no separator.
+
   ```json
   {"status": "success", "result": {"executed": true, "result": "<stdout>"}}
   ```
+
   Errors: `{"status": "error", "message": "..."}`.
 - **`execute_code` returns stdout only** — `exec(code)`'s last expression is **not** auto-returned. Always `print(...)` to get values back.
 - **Reading the socket**: loop `recv()` accumulating buffer, retry `json.loads` each iteration; success = full response. **Don't read by line. Don't read by fixed length.**
@@ -60,10 +64,16 @@ Persistent context for Claude (in `~/.claude/projects/.../memory/`):
 
 ---
 
-## Project-Specific Quirks
+## Project-Specific Quirks & Rules
 
-- **Not a git repo yet**. Plan: `git init` after Stage Setup completes (after this file, AGENTS.md, README.md, and `docs/backlog.md` are stable).
-- **User platform**: Blender 4.3.2 on Windows 11. PowerShell available; Bash also via tool.
-- **User language**: 中文 (mixed CN/EN OK; user has no English barrier — lean toward English in code/docs).
-- **Default LLM**: DeepSeek V4 (user-provided API key). I (Claude) don't have V4 specifics in training data — implementation will need user to confirm exact `model` string and `base_url`. DeepSeek's API has historically been OpenAI-compatible, V4 likely the same.
-- **Oracle/fallback LLM**: Claude Sonnet 4.6 (when DeepSeek output is suspect or for demo).
+- **User Platform**: Windows 11 and Blender 4.3.2.
+- **Language Policy**:
+  - **Communication**: Use **中文** as the primary language for reply, while keeping **technical terms in English** to maintain precision and technical purity.
+  - **Deliverables**: All code comments, documentation, and technical strings must be in **pure English**.
+- **Interaction Style**:
+  - **Verbosity**: Maintain conciseness. Expand on details only when technically necessary or explicitly requested.
+  - **No Guessing**: If requirements are ambiguous or information is missing, **ask for clarification**. Do not proceed based on assumptions.
+  - **Critical Analysis**: Perform a critical review of any code provided by the user. If errors, inefficiencies, or logic flaws are found, point them out directly.
+- **Workflow Constraints**:
+  - **Plan-then-Code**: Follow a "Plan-then-Code" sequence. Present a conceptual or structural plan first. **Do not** generate implementation code until the plan has been explicitly confirmed by the user.
+  - **Strict Scope**: Implement only the components explicitly requested. Do not proactively add unrequested features, extra utilities, or "helpful" optimizations.

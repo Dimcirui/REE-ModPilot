@@ -11,8 +11,9 @@
 | Phase | State |
 |-------|-------|
 | Stage 0 — connectivity verification | 🟢 done (`verify_blender_mcp.py` 5/5 passing) |
-| Stage Setup — project structure & docs | 🟡 in progress |
-| Stage 1+ — implementation | ⚪ pending; see [docs/backlog.md](docs/backlog.md) |
+| Stage Setup — project structure & docs | 🟢 done (initial commit pushed to GitHub) |
+| Stage 1 — communication backbone | 🟡 in progress |
+| Stage 2+ — implementation | ⚪ pending; see [docs/backlog.md](docs/backlog.md) |
 
 All 15 design items in [docs/design.md](docs/design.md) (A/B/C/D layers) are 🟢 decided as of 2026-05-08.
 
