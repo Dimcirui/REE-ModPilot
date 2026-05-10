@@ -188,8 +188,8 @@ class SkeletonAlign(PhaseTool):
             f"else:\n"
             # Set presets
             f"    settings = bpy.context.scene.mhw_suite_settings\n"
-            f"    settings.import_preset_enum = {x_preset!r}\n"
-            f"    settings.target_preset_enum = {y_preset!r}\n"
+            f"    settings.import_preset_enum = {(x_preset + '.json')!r}\n"
+            f"    settings.target_preset_enum = {(y_preset + '.json')!r}\n"
             # Select: source first, then target (active)
             f"    bpy.ops.object.mode_set(mode='OBJECT')\n"
             f"    bpy.ops.object.select_all(action='DESELECT')\n"

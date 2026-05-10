@@ -335,7 +335,7 @@ class PoseCorrection(PhaseTool):
             op = _OP_TPOSE_DIRECTION
             code = (
                 f"import bpy\n"
-                f"bpy.context.scene.mhw_suite_settings.pose_import_preset_enum = {x_preset!r}\n"
+                f"bpy.context.scene.mhw_suite_settings.pose_import_preset_enum = {(x_preset + '.json')!r}\n"
                 f"obj = bpy.data.objects.get({source_arm!r})\n"
                 f"if obj is None:\n"
                 f"    print({BLENDER_SENTINEL!r})\n"
@@ -352,8 +352,8 @@ class PoseCorrection(PhaseTool):
             code = (
                 f"import bpy\n"
                 f"settings = bpy.context.scene.mhw_suite_settings\n"
-                f"settings.pose_import_preset_enum = {x_preset!r}\n"
-                f"settings.pose_preset_enum = {_ENDFIELD_TRANSFORM!r}\n"
+                f"settings.pose_import_preset_enum = {(x_preset + '.json')!r}\n"
+                f"settings.pose_preset_enum = {(_ENDFIELD_TRANSFORM + '.json')!r}\n"
                 f"obj = bpy.data.objects.get({source_arm!r})\n"
                 f"if obj is None:\n"
                 f"    print({BLENDER_SENTINEL!r})\n"

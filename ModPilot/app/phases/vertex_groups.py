@@ -307,8 +307,8 @@ class VertexGroups(PhaseTool):
         code = (
             f"import bpy\n"
             f"settings = bpy.context.scene.mhw_suite_settings\n"
-            f"settings.import_preset_enum = {x_preset!r}\n"
-            f"settings.target_preset_enum = {y_preset!r}\n"
+            f"settings.import_preset_enum = {(x_preset + '.json')!r}\n"
+            f"settings.target_preset_enum = {(y_preset + '.json')!r}\n"
             f"merged = bpy.data.objects.get({merged_name!r})\n"
             f"if merged is None:\n"
             f"    print({BLENDER_SENTINEL!r})\n"
