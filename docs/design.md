@@ -28,6 +28,12 @@
 | E16 | PhaseResult 形状 | 实现 | 🟢 已决议 | 轻量三字段：success / state_diff / error；user_message 由 agent loop 生成，不内嵌在 phase |
 | E17 | 分类决策位置 | 实现 | 🟢 已决议 | 分类在 agent loop，phase tool 只管执行；避免每个 phase 重复写分类逻辑 |
 | E18 | 同步 BlenderClient 在异步 FastAPI 中的调用方式 | 实现 | 🟢 已决议 | asyncio.to_thread()；BlenderClient 保持同步；单用户工具无并发压力 |
+| E19 | 物理参数预设存储方式 | 实现 | 🟢 已决议 | 独立 JSON + 启动时注入 system prompt；与 plan.md 同一路径 |
+| E20 | 视觉模型角色与路由 | 实现 | 🟢 已决议 | 独立 vision_model 配置；默认 Qwen-VL/DeepSeek-VL2；Claude 仅作升级选项不默认 |
+| E21 | 材质贴图归属交互模式 | 实现 | 🟢 已决议 | 批量提案 + 低置信高亮 + 用户只改例外；propose_and_confirm 通用原语；MMD 直接跳过 |
+| E22 | Stage 4 loop 控制流模式 | 实现 | 🟢 已决议 | 1-3 batch block / 4-7 含 NEGOTIATING 状态的推理小循环；phase 级对话历史 |
+| E23 | Video 4 物理处理内部拆分 | 实现 | 🟢 已决议 | 骨骼操作层（分类+合并辅助骨）→ 物理链 list → 物理文件层（chain2 header/group/setting）；两层对话历史隔离 |
+| E24 | prompts.py 结构 | 实现 | 🟢 已决议 | 构建函数式；system/per-phase 分层；NEGOTIATING 每轮带 phase_prompt；agent_workflow.md 替代 plan.md 作为注入内容 |
 
 图例：⚪ 未启动 / 🟡 讨论中 / 🟢 已决议 / 🔴 阻塞
 
@@ -658,10 +664,12 @@ sanity check：
 
 ### 决议 🟢（2026-05-08）
 
-**MVP 不上 RAG**。plan.md 总长约 12K tokens，**直接塞 system prompt +
+**MVP 不上 RAG**。Agent 工作流文档（见 E24）总长预计在合理范围内，**直接塞 system prompt +
 prompt cache** 即可——成本一次写入、后续命中缓存几乎免费。引入向量库
 是过度设计：多了 embedding 模型、向量 DB、检索调用三个失败点，没有
 对应的收益。
+
+**⚠️ C11 勘误（2026-05-09）**：原决议写"直接塞 plan.md"，但 plan.md 是视频录制草稿，面向观众而非 agent，不适合作为执行指令。实际注入 system prompt 的是专门为 agent 编写的 `docs/agent_workflow.md`（见 E24）。plan.md 保留原用途，不进 system prompt。
 
 **讨论时考察过的备选**（保留作未来知识 / 扩展时参考）：
 
@@ -928,6 +936,147 @@ result = await asyncio.to_thread(phase.run, scene_cache, params)
 **排除**：不改写 BlenderClient 为 async（工程量大，对单用户工具无收益）。
 
 **留的口子**：若未来需要高并发或 WebSocket 实时推送，再将 BlenderClient 改写为 asyncio socket。
+
+---
+
+## E19. 物理参数预设的存储与注入方式
+
+### 决议 🟢（2026-05-09）
+
+**独立 JSON 文件 + 启动时整体注入 system prompt。**
+
+- 文件路径：`app/agent/physics_presets.json`
+- 结构：按骨骼类型键控，每条包含描述字段 + chain2 参数字段
+- 注入方式：与 plan.md 相同（C11 路径），agent 启动时读取并追加到 system prompt，受 prompt cache 覆盖
+
+**排除**：不在 `prompts.py` 里硬编码预设内容（数据与逻辑解耦）；不做运行时工具调用读取（增加 latency，无必要）。
+
+**留的口子**：预设数量大幅增长（如覆盖多游戏物理格式）时，可切换为 RAG 路径（C11 备选），但 MVP 不做。
+
+---
+
+## E20. 视觉模型的角色与路由
+
+### 决议 🟢（2026-05-09）
+
+**视觉能力作为独立的 `vision_model` 配置项，默认指向低成本视觉 API（Qwen-VL / DeepSeek-VL2），不默认使用 Claude。**
+
+背景：贴图 PBR 通道识别（Normal / Roughness / Base Color 等）属于初级视觉判断，主流开源/国产视觉模型完全胜任，无需 Claude oracle。
+
+- `LLMClient` 新增 `vision_chat(image_bytes, prompt)` 方法
+- 内部路由：根据 `vision_model` 配置前缀选 provider（均走 OpenAI 兼容协议）
+- Claude 仅在视觉模型明显力不从心时作为升级选项，**不是默认**
+
+**Claude 视觉能力的定位**：保持 C10 决议的 oracle 角色（debug / demo 保底），而非视觉任务的默认执行者。成本控制优先。
+
+---
+
+## E21. 材质贴图归属的交互模式
+
+### 决议 🟢（2026-05-09）
+
+**"批量提案 + 低置信高亮 + 用户只改例外"模式。**
+
+流程：
+1. Agent 对所有待分配贴图做最大努力分类（名字规则 → 视觉模型 → 启发式）
+2. 生成提案表，含置信度标记（高 / 中 / 低）
+3. 高置信条目默认勾选；低置信条目高亮，要求用户重点确认
+4. 用户只需修正标低置信的条目，其余无需操作
+5. 用户确认后统一执行节点连接
+
+**排除**：不做逐条单独询问（认知负担过高）；不做纯罗列（缺乏引导）。
+
+**复用**：同一模式适用于物理骨分类提案（E22），抽象为 loop 内的通用 `propose_and_confirm` 交互原语。
+
+**MMD 特例**：PMX 导入经 CATS 预处理后节点已连接，跳过整个贴图分类流程，直接进入烘焙步骤。
+
+---
+
+## E22. Stage 4 的 loop 控制流模式
+
+### 决议 🟢（2026-05-09）
+
+**Videos 1-3 与 videos 4-7 采用不同密度的 LLM 参与模式，loop 状态机需同时支持两种。**
+
+**Videos 1-3（预处理块）**：
+- 作为一个整体 batch block 快速推进
+- LLM 几乎不出场；唯一的用户交互点是 bbox 调整确认
+- 对应 loop 状态：`RUNNING_PHASE` → `AWAIT_CONFIRM`（一次）→ `DONE`
+
+**Videos 4-7（主线推理块）**：
+- 每个 phase 内含"提案 → 用户确认/修正 → 精化 → 执行"迭代小循环
+- 需要专门的 `NEGOTIATING` 状态，与 `RUNNING_PHASE` 并列
+- 小循环内维护 phase 级别的对话历史（phase 结束即清除，结果以结构化参数传递）
+
+**状态转移（简化）**：
+
+```
+IDLE → RUNNING_PHASE（1-3 batch）→ AWAIT_CONFIRM → RUNNING_PHASE（4 开始）
+       └→ NEGOTIATING（agent 提案）→ AWAIT_CONFIRM → NEGOTIATING（精化）
+                                    └→ RUNNING_PHASE（用户确认，执行）
+       └→ ERROR_HANDLING → RETRY / SKIP / QA
+```
+
+**留的口子**：`NEGOTIATING` 的轮次上限（防止无限来回）和超时策略，实施阶段再定。
+
+---
+
+## E24. prompts.py 结构
+
+### 决议 🟢（2026-05-09）
+
+**三项子决议**：
+
+**A. 构建函数式**：`prompts.py` 以函数为主，不用字符串常量。
+- `build_system_prompt(workflow_md: str, physics_presets: dict) -> str`：启动时调用，注入 agent_workflow.md + physics_presets.json
+- `get_phase_prompt(phase: str, context: dict) -> list[Message]`：每次 phase 入口调用，注入当前场景上下文
+
+**B. System / per-phase 分层**：
+- System prompt：全局规则（懒加载行为、错误响应规范、输出格式约束）+ agent_workflow.md + physics_presets.json
+- Per-phase prompt：当前 phase 的具体指令、分类启发式、期望输出格式——作为额外消息追加，不混入 system prompt
+- Prompt cache 打在 system prompt 结尾（Claude path），per-phase 内容不进 cache
+
+**C. NEGOTIATING 状态每轮带 phase_prompt**：
+- 每轮对话均包含 phase_prompt（保证 LLM 始终知道输出格式要求）
+- 结构：`[system] + [phase_prompt] + [history...] + [user turn]`
+- Token 开销可接受
+
+**agent_workflow.md（新增文件）**：
+- 路径：`docs/agent_workflow.md`
+- 内容：专为 agent 编写的执行指令（phase 入口/出口条件、分类决策树、预期输入输出）
+- 与 plan.md 的区别：plan.md 是面向观众的视频草稿，agent_workflow.md 是面向 LLM 的机器可读执行指南
+- 此文件是 C11 决议中"直接注入 system prompt"的实际目标（C11 勘误）
+
+---
+
+## E23. Video 4 物理处理的内部拆分
+
+### 决议 🟢（2026-05-09）
+
+Video 4 在 loop 内拆分为**两个串行子阶段**，各自独立的 `NEGOTIATING` 小循环：
+
+**子阶段 A — 骨骼操作层（物理骨分类）**
+
+- 目标：区分物理骨 vs X 预设未列出的辅助骨
+- 操作：对识别出的未列出辅助骨执行"合并到父级"（折入身体骨骼）
+- LLM 推理依据：骨骼名 + 父链层级 + chain_role custom property
+- 输出：结构化**物理链 list**，每条链包含骨骼名序列 + 推断类型（如 `light_hair` / `stiff_cloth`）
+- 交互模式：E21 的 `propose_and_confirm`（agent 提案 → 用户修正例外）
+
+**子阶段 B — 物理文件层（chain2 创建与参数填入）**
+
+- 输入：子阶段 A 输出的物理链 list
+- 操作序列：创建 chain2 集合 → 创建 chain（含 header / group / setting 层级）→ 按预设 + 推断类型填入 group/setting 参数
+- chain 层级职责：
+  - `header`：一般无需改动，固定结构
+  - `group`：物理参数主体（大量参数）；一个 group 可含一或多个 setting
+  - `setting`：一条物理链的链级属性
+- LLM 推理依据：物理链 list 中的推断类型 → 匹配 E19 的 physics_presets.json → 微调参数
+- 交互模式：同上，agent 给参数方案 → 用户"调硬一点"等自然语言修正 → 精化
+
+**两层之间的接口**：物理链 list（纯结构化数据），不携带对话历史。对话历史在子阶段 A 结束时清除。
+
+**暂不处理（MVP 外）**：支链套支链的去支链处理（将嵌套支链合并回主链）。记录在此以备后续实现。
 
 ---
 
