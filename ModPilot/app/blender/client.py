@@ -137,12 +137,15 @@ class BlenderClient:
         result = self.call("execute_code", {"code": code})
         return result.get("result", "")
 
-    def execute_and_extract(self, code: str) -> list[str]:
+    def execute_and_extract(self, code: str, timeout: float | None = None) -> list[str]:
         """
         Run code; return only the lines printed AFTER BLENDER_SENTINEL.
 
         Use this when a Modding-Toolkit operator may emit its own stdout before
         your print() calls, to avoid sentinel-shift bugs.
+
+        timeout: if given, temporarily overrides the socket timeout for this call only.
+        Use for slow operators (e.g. auto_create_chains on large scenes: timeout=300).
 
         Example code pattern:
             import bpy
@@ -150,7 +153,15 @@ class BlenderClient:
             print(BLENDER_SENTINEL)   # sentinel goes AFTER operator call
             print(ret)
         """
-        full = self.execute(code)
+        if timeout is not None and self._sock is not None:
+            prev = self._sock.gettimeout()
+            self._sock.settimeout(timeout)
+            try:
+                full = self.execute(code)
+            finally:
+                self._sock.settimeout(prev)
+        else:
+            full = self.execute(code)
         lines = full.splitlines()
         try:
             idx = lines.index(BLENDER_SENTINEL)
