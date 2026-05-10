@@ -371,6 +371,23 @@ of these unlisted bones are actually unlisted auxiliary bones (twist helpers, ro
 correction bones) that should be folded into the nearest body bone rather than treated as
 physics. The agent's job is to classify these edge cases.
 
+#### Shared Root Bones (`*_root` pattern)
+Some physics setups attach multiple chains to a single intermediate `*_root` bone (e.g.
+`hair_root`, `skirt_root`) rather than directly to a body bone. These root bones are **not**
+chain members — they are connector pivots. Behaviour:
+1. Detect: a bone named `*_root` (or `*Root`) that has 2+ physical-chain children and
+   parents to a body bone.
+2. **Always inform the user**: list each detected root bone, name its children chains, and
+   explain its purpose as a shared pivot.
+3. Ask the user which root bones should be merged into their parent body bone via
+   `modder.merge_into_parent`. Default assumption is merge; the user confirms or exempts.
+   (Some root bones carry weight data and must be kept; only the user can know this.)
+
+### Silent-Ignore Rule: `_HJ_` Bones
+Any bone whose name contains `_HJ_` is a built-in MHWs auxiliary (helper/adjuster) bone
+that was already present in the target armature before transplant. **Do not classify, do not
+merge, do not mention to the user.** Skip silently.
+
 ### Classification Heuristics
 
 #### Physical Bone Indicators (treat as physical)
@@ -382,7 +399,7 @@ physics. The agent's job is to classify these edge cases.
 
 #### Unlisted Auxiliary Bone Indicators (treat as aux_merge)
 - Name contains: `twist`, `roll`, `adj`, `helper`, `correct`, `fix`, `ik`, `pole`,
-  `target`, `ctrl`, `control`, `weapon`, `camera`, `cam`, `root` (if single root connector)
+  `target`, `ctrl`, `control`, `weapon`, `camera`, `cam`
 - Is a single bone with no children that directly parents to a known body bone
 - Does not form a multi-bone chain
 
@@ -409,12 +426,30 @@ physics. The agent's job is to classify these edge cases.
 }
 ```
 Only surface `low` confidence entries for user review. Auto-accept `high` and `mid`.
+`_HJ_` bones are never included in proposals — they are silently skipped.
 
 ### Execution Steps (after user confirms proposal)
-1. For each bone classified as `aux_merge`: run Merge to Parent Bone, targeting the
-   specified `merge_target` body bone.
-2. Verify the remaining unlisted bones are all classified as `physical`.
-3. Build the physics chain list (see output schema below).
+
+**Operator: `modder.clear_chain_role`** — clears `chain_role` property from selected
+pose bones. **Does NOT reset bone colors** — color palette must be reset separately.
+Use for native game bones that must be excluded from physics entirely (they remain in
+the armature; only the physics marking is removed).
+
+**Operator: `modder.merge_into_parent`** — merges selected bones' vertex weights into
+their direct parents, then deletes the selected bones. Children reconnect to grandparent
+automatically. Auto-refreshes bone colors.
+Preconditions: active object = ARMATURE, mode = POSE or EDIT, selected bones must have parents.
+
+Steps:
+1. **Native game bone exclusion** (if any): for bones whose `chain_role` was marked by
+   `refresh_physics_bone_colors` but that are actually native game bones (e.g. `Cage`,
+   `Cage_L`) — they should NOT be physics. Pass them in `bones_to_clear` when calling
+   `physics_chains`. The tool selects them in POSE mode and calls `clear_chain_role`.
+2. Handle shared root bones: for each `*_root` bone the user approved to merge,
+   pass it in `bones_to_merge`. The tool calls `modder.merge_into_parent`.
+3. For each bone classified as `aux_merge`: also pass in `bones_to_merge`.
+4. Verify the remaining unlisted bones are all classified as `physical`.
+5. Build the physics chain list (see output schema below).
 
 ### Output: Physics Chain List
 Passed directly to Phase 4B as structured data. Conversation history is NOT carried over.
@@ -437,8 +472,8 @@ Passed directly to Phase 4B as structured data. Conversation history is NOT carr
 - Physics chain list is built and non-empty.
 
 ### Common Errors
-- **Merge to Parent Bone fails**: Target body bone not found in armature. Ask user to
-  manually identify the correct parent.
+- **`modder.merge_into_parent` fails**: The selected bone has no parent in the armature.
+  Ask user to manually identify the correct parent body bone in Blender's Outliner.
 - **Chain list is empty after classification**: All unlisted bones were classified as
   aux_merge. Warn: "No physical bones were identified. If the model has physics (hair/cloth),
   check that the X preset is correct and that physics bones have not been included in it."
@@ -502,46 +537,46 @@ Present BEFORE any execution. User confirms grouping and preset assignment.
 ```
 Only surface `low` confidence entries (ambiguous `inferred_type`) for user review.
 
-### Execution Steps (after user confirms grouping proposal)
+### Pre-Creation Cleanup (always run before chain creation)
 
-**Step 1 — Create chain2 collection and header:**
-```python
-context.scene.re_chain_toolpanel.chainFileType = "chain2"
-bpy.ops.re_chain.create_chain_header(collectionName="myChain", chainFormat=".chain2")
-```
-`chainFileType` MUST be set before the operator call; otherwise it defaults to chain1.
+Before calling `physics_chains`, stale `chain_role` marks from prior sessions can
+contaminate the scene (e.g. body bones incorrectly marked as `chain_role='head'`
+from a previous aborted run → one CHAINGROUP per body bone = hundreds of spurious groups).
 
-**Step 2 — Create initial Settings with all chain groups (shared mode):**
-Run Modding-Toolkit's one-click Create Chain2 operator in "shared same settings" mode.
-This creates ONE Settings block containing ALL chain groups (one group per physical chain).
+**Run `physics_chains(target_armature=..., prepare_only=True)` first:**
+- Selects all bones, calls `modder.clear_chain_role` on all selected.
+- Resets every bone's color palette to DEFAULT (bone colors are NOT cleared by `clear_chain_role`).
+- Calls `modder.refresh_physics_bone_colors` to re-detect and re-mark physics bones.
+- Returns immediately with a message asking user to verify bone colors.
 
-**Step 3 — Apply angle limit ramp to all groups:**
-For each group object in the collection, select it as active and run:
+After the user confirms bone colors are correct (physics bones highlighted, body bones not),
+proceed to chain creation.
+
+### Execution Steps (after user confirms bone colors)
+
+**Step 0 — Bone exclusions and merges (in same `physics_chains` call):**
+- `bones_to_clear`: native game bones that were accidentally marked and must be excluded
+  (e.g. `Cage`, `Cage_L`). `clear_chain_role` is called on them before chain creation.
+- `bones_to_merge`: bones to merge into parent via `modder.merge_into_parent` (runs after clear).
+
+**Step 1 — `mhws.auto_create_chains(settings_mode='SEPARATE')`:**
+Creates the RE Chain collection (auto-discovered or auto-created), then calls the
+one-click chain creation operator in SEPARATE mode: one Settings block per chain head.
+The agent sets `re_chain_toolpanel.chainCollection` via PointerProperty before calling
+(NOT via dynamic enum kwarg — the kwarg is unreliable in scripted context).
+
+**Step 2 — Apply angle limit ramp to all groups:**
+Selects all `RE_CHAIN_CHAINGROUP` objects in the collection, calls:
 ```python
 bpy.ops.re_chain.apply_angle_limit_ramp(maxAngleLimit=1.047198, maxIteration=4)
 ```
 `maxAngleLimit=1.047198` ≈ 60°, `maxIteration=4`.
-Poll condition: active object type must be `RE_CHAIN_CHAINGROUP` or `RE_CHAIN_SUBGROUP`.
 
-**Step 4 — Create additional Settings blocks:**
-Additional Settings to create = (total distinct types − 1), since Step 2 already made one.
-```python
-bpy.ops.re_chain.create_chain_settings()
-```
-Poll condition: `context.scene.re_chain_toolpanel.chainCollection` must be set.
-
-**Step 5 — Apply RE Chain preset to each Settings block:**
-For each Settings block, select it as active and apply the matched preset:
-```python
-context.scene.re_chain_toolpanel.chainSettingsPresets = "<preset name>"
-bpy.ops.re_chain.apply_chain_settings_preset()
-```
-The `chainSettingsPresets` EnumProperty is populated at runtime by scanning the
-`Presets/ChainSettings/` directory. Set the value before calling apply.
-
-**Step 6 — Reassign groups to their correct Settings:**
-Move each chain group into its designated Settings block per the confirmed proposal.
-(All groups start in the one Settings created by Step 2; reorganize from there.)
+**Step 3 — Apply physics parameters from `physics_presets.json`:**
+For each new `RE_CHAIN_CHAINSETTINGS` object, set the corresponding physics parameters
+directly via PropertyGroup attribute assignment (no preset files required on disk).
+Parameters are stored in `app/data/physics_presets.json` keyed by `inferred_type`.
+Enum fields (windDelayType etc.) require `str(int(val))` conversion before assignment.
 
 ### Key Parameter Reference (for natural language adjustments)
 These are the parameters that actually vary across MHWilds presets.

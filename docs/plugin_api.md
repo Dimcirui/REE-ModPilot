@@ -160,7 +160,8 @@
   - `context.active_object` must be an ARMATURE
   - Must be in POSE mode (auto-switches if needed)
   - At least one pose bone must be selected
-- **Behavior**: Clears `chain_role` custom property from selected bones, resets color to deep blue (body).
+- **Behavior**: Clears `chain_role` custom property from selected bones. **Does NOT reset bone colors** — bone color palettes must be reset manually (set `pb.color.palette = 'DEFAULT'` per pose bone) after calling this operator.
+- **Usage note**: To fully reset a bone's physics marking: (1) select it in POSE mode, (2) call `clear_chain_role`, (3) manually reset `pb.color.palette = 'DEFAULT'`. For a full scene reset before re-detection, use the `prepare_only=True` path of the `physics_chains` tool, which handles all three steps automatically.
 
 ### `modder.merge_into_parent`
 - **Label**: 合并到父骨
@@ -322,18 +323,66 @@
 
 ### `mhws.auto_create_chains`
 - **Label**: 一键创建 RE Chain
+- **Source**: `games/mhws/operators.py:341`
 - **Params**:
-  - `chain_collection` (EnumProperty) — selected Chain Collection (dynamically populated)
-  - `settings_mode` (EnumProperty) — `'SEPARATE'` (各自独立) or `'SHARED'` (共享同一)
+  - `chain_collection` (EnumProperty) — Chain Collection name; enum is dynamically populated
+    from collections whose name contains `.chain` or `.clsp` **and** have the custom property
+    `~TYPE == 'RE_CHAIN_COLLECTION'`. Passing any other string causes `enum "X" not found in ()`.
+  - `settings_mode` (EnumProperty) — `'SEPARATE'` (independent settings per chain) or
+    `'SHARED'` (all chains share one settings object)
 - **Preconditions** (checked via `poll()`):
-  - Must be in **POSE** mode
-  - `context.active_object` must be an ARMATURE
+  - Must be in **POSE** mode with an ARMATURE as `context.active_object`
   - **Requires RE Chain Editor** (`bpy.ops.re_chain.create_chain_settings` must exist)
-- **Pre-requisites for success**:
-  - Chain Collection must exist with a RE_CHAIN_HEADER object
-  - X preset should be loaded for physics bone detection
-  - Physics bones must have `chain_role` set
-- **Behavior**: Decomposes physics bone topology into linear paths via `_decompose_chains`. For SEPARATE mode: creates new Chain Settings per chain. For SHARED mode: creates one shared Chain Settings. Linear chains use default mode; branched chains use experimental mode (selects all bones in path). Calls `bpy.ops.re_chain.chain_from_bone()`.
+  - Physics bones must have `chain_role` custom property set (`head` / `branch_head` / `member`)
+- **Scripting notes**:
+  - `chain_collection` is an enum, not a free string. Setting
+    `bpy.context.scene.re_chain_toolpanel.chainCollection = bpy.data.collections["X.chain"]`
+    before calling the operator is the reliable way to pass the collection reference.
+  - Full scripted call:
+    ```python
+    scene = bpy.context.scene
+    scene.re_chain_toolpanel.chainCollection = bpy.data.collections["MyCollection.chain"]
+    # Do NOT pass chain_collection= as a kwarg — the enum may be empty for newly
+    # created collections; the operator reads chainCollection from the toolpanel.
+    bpy.ops.mhws.auto_create_chains(
+        settings_mode="SEPARATE",
+    )
+    ```
+- **Internal flow**:
+  1. Validates collection / header / chain_head bones
+  2. `_decompose_chains()` recursively decomposes branching chains into linear paths
+  3. For each path: `bpy.ops.re_chain.create_chain_settings()` → select bones →
+     `bpy.ops.re_chain.chain_from_bone()`
+- **Behavior**: For SEPARATE mode creates one Chain Settings object per chain; for SHARED
+  mode creates one shared. Linear chains use default bone selection; branched chains use
+  experimental mode (selects all bones in the path).
+
+### `re_chain.create_chain_header`
+- **Label**: New Chain Header
+- **Source**: `modules/re_chain_operators.py:407` (`WM_OT_NewChainHeader`)
+- **Params**:
+  - `collectionName` (StringProperty) — base name for the new chain collection (e.g. `"MHWilds_Female"`)
+  - `chainFormat` (StringProperty) — file extension suffix, either `".chain"` or `".chain2"` (default `".chain2"`)
+- **Preconditions**: none (available in any context)
+- **Behavior**:
+  1. Creates a new Blender collection named `"<collectionName><chainFormat>"` (e.g. `"MHWilds_Female.chain2"`)
+  2. Sets the `~TYPE` custom property to `RE_CHAIN_COLLECTION` on that collection (required for `mhws.auto_create_chains` enum)
+  3. Creates a CHAIN_HEADER Empty named `"CHAIN_HEADER <collectionName><chainFormat>"` inside the collection
+- **Scripting notes**:
+  - Must call before `mhws.auto_create_chains` when no `.chain`/`.clsp` collection exists in the scene
+  - After creation, look up the collection via `bpy.data.collections.get("<collectionName><chainFormat>")` and assign to `re_chain_toolpanel.chainCollection` before calling `mhws.auto_create_chains`
+  - Full scripted sequence:
+    ```python
+    bpy.ops.re_chain.create_chain_header(
+        collectionName="MHWilds_Female",
+        chainFormat=".chain2",
+    )
+    chain_col = bpy.data.collections.get("MHWilds_Female.chain2")
+    bpy.context.scene.re_chain_toolpanel.chainCollection = chain_col
+    bpy.ops.mhws.auto_create_chains(
+        settings_mode="SEPARATE",
+    )
+    ```
 
 ---
 
