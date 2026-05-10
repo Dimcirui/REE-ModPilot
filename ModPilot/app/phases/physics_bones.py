@@ -10,10 +10,13 @@ Data flow:
              + physics_presets.json    → parameters written to chain settings objects
              (no preset files required; parameters are set directly)
 
-NOTE: Phase 4B writes params to chain settings objects via custom property assignment
-(obj[key] = val). This relies on RE Chain Editor storing CHAINSETTINGS fields as
-accessible Blender custom properties or RNA properties. If a property cannot be set
-it is silently skipped and logged in state_diff["skipped_params"].
+Phase 4B writes params via RE Chain Editor's PropertyGroup:
+  obj.re_chain_chainsettings.{field} = value
+Chain settings objects are identified by obj["TYPE"] == "RE_CHAIN_CHAINSETTINGS"
+and are named CHAIN_SETTINGS_00, CHAIN_SETTINGS_01, etc.
+Enum fields (windDelayType, springCalcType, chainType, muzzleDirection,
+motionForceCalcType) require str() conversion before assignment. Fields that
+cannot be set are silently skipped and logged in state_diff["skipped_params"].
 """
 
 from __future__ import annotations
@@ -680,10 +683,10 @@ class PhysicsChains(PhaseTool):
         """
         code = (
             f"import bpy\n"
-            # Snapshot names of all existing CHAINSETTINGS-type objects
+            # RE Chain Editor marks chain settings objects with TYPE custom property
+            # and names them CHAIN_SETTINGS_00, CHAIN_SETTINGS_01, etc.
             f"def _is_cs(obj):\n"
-            f"    return ('CHAINSETTINGS' in obj.name.upper() or\n"
-            f"            obj.get('re_chain_type') == 'RE_CHAIN_CHAINSETTINGS')\n"
+            f"    return obj.get('TYPE') == 'RE_CHAIN_CHAINSETTINGS'\n"
             f"existing_cs = set(obj.name for obj in bpy.data.objects if _is_cs(obj))\n"
             # Set up scene
             f"arm_obj = bpy.data.objects.get({target_arm!r})\n"
@@ -810,22 +813,32 @@ class PhysicsChains(PhaseTool):
         params_json = json.dumps(params_list, ensure_ascii=False)
         cs_names_json = json.dumps(cs_names, ensure_ascii=False)
 
+        # Enum fields stored as strings in RE Chain Editor PropertyGroup
+        enum_fields_repr = repr({
+            "windDelayType", "springCalcType", "chainType",
+            "muzzleDirection", "motionForceCalcType",
+        })
         code = (
             f"import bpy, json\n"
             f"cs_names = json.loads({cs_names_json!r})\n"
             f"params_list = json.loads({params_json!r})\n"
+            f"ENUM_FIELDS = {enum_fields_repr}\n"
             f"skipped = []\n"
             f"for i, cs_name in enumerate(cs_names):\n"
             f"    cs_obj = bpy.data.objects.get(cs_name)\n"
             f"    if cs_obj is None:\n"
+            f"        skipped.append(cs_name + '.(not found)')\n"
             f"        continue\n"
+            f"    pg = cs_obj.re_chain_chainsettings\n"
             f"    p = params_list[i] if i < len(params_list) else params_list[-1]\n"
             f"    for key, val in p.items():\n"
             f"        if isinstance(val, list):\n"
             f"            val = tuple(val)\n"
+            f"        if key in ENUM_FIELDS:\n"
+            f"            val = str(int(val))\n"
             f"        try:\n"
-            f"            cs_obj[key] = val\n"
-            f"        except Exception:\n"
+            f"            setattr(pg, key, val)\n"
+            f"        except (AttributeError, TypeError):\n"
             f"            skipped.append(cs_name + '.' + key)\n"
             f"print({BLENDER_SENTINEL!r})\n"
             f"print('APPLIED:' + json.dumps(skipped))\n"
