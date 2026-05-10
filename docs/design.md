@@ -1080,6 +1080,46 @@ Video 4 在 loop 内拆分为**两个串行子阶段**，各自独立的 `NEGOTI
 
 ---
 
+## E25. Stage 3 Agent Loop 实现细节
+
+### 决议 🟢（2026-05-10）
+
+**以下决策在 Stage 3 实施时落定，补录于此。**
+
+**A. Phase 1-3 也走 LLM tool call，不硬编码执行顺序。**
+
+备选：硬编码 Python 顺序调用（零 token 开销）。
+
+选择 LLM tool call 的理由：
+- 与 Phase 4+ 接口统一，loop.py 只需一套执行分支
+- LLM 可在每次调用前输出上下文说明，用户感知更自然
+- 实际开销：每 phase 多 1 次 round trip（~0.5-1s），Blender 操作本身数秒，延迟感知不到
+- 未来 MVP 扩展时（新增 Phase 1-3 内的分类点），无需改架构
+
+**B. tool_schema() 作为抽象方法加在 PhaseTool ABC 上。**
+
+每个 PhaseTool 子类通过 `tool_schema()` classmethod 暴露 JSON Schema，
+agent loop 注册时统一调用，不在 loop.py 里硬编码 schema。
+
+**C. 错误路由：format() 调 LLM，parse_user_choice() 不调 LLM。**
+
+- `ErrorHandler.format()`: 调一次 LLM 把 PhaseError 翻译为用户语言（B7）
+- `ErrorHandler.parse_user_choice()`: 纯关键词匹配（retry/skip/ask）；不用 LLM
+  理由：错误响应路径需要高可靠性，LLM 歧义风险不可接受
+
+**D. phase_history 完全由 NEGOTIATING 状态内部管理，step() 只维护 global_history。**
+
+NEGOTIATING 入口时 `_phase_history = []`，由 `_run_negotiating_turn()` 内部维护
+（注入 phase prompt + 追加 user/assistant turn）。step() 只追加 global_history，
+避免状态转换时机问题（状态可能在 step() 内部改变）。
+
+**E. /agent/chat 端点：in-memory session，不持久化（Stage 3 范围）。**
+
+`app.state.agent_sessions: dict[str, AgentLoop]` 在 lifespan 初始化，
+按 session_id 索引。Server 重启会话丢失——Stage 5+ 前不做持久化（B8 留的口子）。
+
+---
+
 # 附：讨论流程约定
 
 1. 一次只讨论一题（或紧耦合的两题，如 B5+B6）。

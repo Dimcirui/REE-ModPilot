@@ -11,7 +11,7 @@ Priority-ranked task list. Status badges follow the [project convention](../AGEN
 
 Tasks are grouped by priority band (P0 → P3). Within a band, ordering is suggested execution sequence; tasks are independently deliverable unless an explicit dependency is noted.
 
-**Last updated**: 2026-05-09 — Stage 2 complete; Phase 1 & 3 redesigned (76 unit tests passing).
+**Last updated**: 2026-05-10 — Stage 3 complete; agent loop + prompts + error handler (117 unit tests passing).
 
 ---
 
@@ -55,10 +55,15 @@ Items here block MVP shipping. All must reach 🟢 before MVP acceptance (L3, [d
 
 ### Stage 3 — agent loop
 
-- ⚪ `app/agent/loop.py` — Hand-rolled ReAct loop (C9)
-- ⚪ `app/agent/prompts.py` — System prompt + per-phase prompts (plan.md slices)
-- ⚪ `app/agent/error_handler.py` — Structured error → user message (B7)
-- ⚪ Lazy-explanation behavior wired (A2: error = teaching trigger)
+- 🟢 `app/agent/loop.py` — Hand-rolled ReAct state machine (C9); 7 states; tool-call loop for phases 1-3; isolated phase_history for NEGOTIATING phases 4+
+- 🟢 `app/agent/prompts.py` — Builder functions extracting sections from `docs/agent_workflow.md` (C11 amendment); system/per-phase/error prompts
+- 🟢 `app/agent/error_handler.py` — `PhaseError` → user message via single LLM call; keyword-match `parse_user_choice()` (B7)
+- 🟢 Lazy-explanation behavior wired (A2: error path → ASK_MODE; no tools in ASK_MODE)
+- 🟢 `app/phases/base.py` — abstract `tool_schema()` classmethod added to `PhaseTool`
+- 🟢 `app/phases/{pose_correction,skeleton_align,vertex_groups}.py` — `tool_schema()` implemented; JSON Schema for LLM tool registration
+- 🟢 `app/main.py` — `POST /agent/chat` endpoint; in-memory session store keyed by `session_id`
+- 🟢 `app/config.py` — `vision_model` / `vision_api_key` / `vision_base_url` settings added (E20)
+- 🟢 41 unit tests covering all state transitions, prompts, and error handler (117 total passing)
 
 ### Stage 4 — phase tools (videos 4-7)
 
