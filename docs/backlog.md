@@ -11,7 +11,7 @@ Priority-ranked task list. Status badges follow the [project convention](../AGEN
 
 Tasks are grouped by priority band (P0 → P3). Within a band, ordering is suggested execution sequence; tasks are independently deliverable unless an explicit dependency is noted.
 
-**Last updated**: 2026-05-11 — E2E testing session 2 underway (phases 4A → 4B). Full fix log: [docs/e2e_fixes.md](e2e_fixes.md). Session 2 highlights: mode_set active-object fix (7 call sites); DSML markup strip plain-string fallback; query-tool throttle (max-rounds 8→15 + consecutive-query cap); ERROR_HANDLING↔ASK_MODE deadloop resolved; prepare_only cleanup flow before chain creation; bones_to_clear for native game bones; SEPARATE mode revert for auto_create_chains.
+**Last updated**: 2026-05-11 — E2E testing session 2 complete. Full fix log: [docs/e2e_fixes.md](e2e_fixes.md). Session 2 highlights: mode_set active-object fix (7 call sites); DSML markup strip plain-string fallback; query-tool throttle (max-rounds 8→15 + consecutive-query cap); ERROR_HANDLING↔ASK_MODE deadloop resolved; prepare_only cleanup flow + auto-verify via _End bone detection (retry-once, marks_clean in diff); bones_to_clear for native game bones; SEPARATE mode revert for auto_create_chains.
 
 ---
 

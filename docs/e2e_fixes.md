@@ -92,6 +92,8 @@ Each session section records: what broke, what was changed, and any workflow kno
 | Native game bones (e.g. `Cage`, `Cage_L`) accidentally marked with `chain_role` by `refresh_physics_bone_colors`: they should not be physics. Added `bones_to_clear` parameter to `physics_chains`: selects specified bones in POSE mode and calls `modder.clear_chain_role`, without deleting or merging them. Runs before `bones_to_merge` and chain creation. | `app/phases/physics_bones.py` |
 | SHARED+consolidation approach for chain settings too complex and fragile (CHAINNODE property names uncertain). Reverted `auto_create_chains` to `settings_mode='SEPARATE'` (one CS per chain head). `run()` now branches: SEPARATE uses `_apply_params_to_chain_settings` directly; SHARED retains consolidation path for future use. `_create_chains` accepts `settings_mode` param. | `app/phases/physics_bones.py` |
 
+| `prepare_only` flow lacked auto-verification: agent had to ask user if colors looked right before proceeding. Added `_verify_chain_marks()` to `PhysicsChains`: after cleanup, checks every `chain_role='head'/'branch_head'` bone for an `_End` descendant (iterative BFS). Body bones marked as chain heads have no `_End` descendants — auto-detected as suspicious. On failure, retries cleanup once more; returns `marks_clean: bool` in state diff. Agent can proceed to chain creation automatically when `marks_clean=True`. | `app/phases/physics_bones.py`, `tests/unit/test_physics_bones.py` |
+
 ### Docs
 
 | Addition | File |

@@ -352,28 +352,97 @@ class TestPhysicsChains:
         assert result.success
         assert result.state_diff["chain_settings_created"] == new_cs
 
-    def test_prepare_only_returns_ok_without_chain_creation(self):
-        """prepare_only=True runs cleanup only and returns early."""
+    def test_prepare_only_marks_clean_first_attempt(self):
+        """prepare_only=True: cleanup + verify clean on first attempt."""
         client = MagicMock()
-        # Responses: validate, clear_and_refresh
+        # Responses: validate, clear_and_refresh, verify(clean)
         client.execute_and_extract.side_effect = [
             ["OK"],
             ["OK"],
+            [f"VERIFY:{json.dumps({'clean': True, 'suspicious': []})}"],
         ]
         result = self.tool.run(
             client,
             _make_cache(),
             {
                 "target_armature": "MHWs",
-                "inferred_types": {},  # not required for prepare_only
+                "inferred_types": {},
                 "prepare_only": True,
             },
         )
         assert result.success
-        assert "message" in result.state_diff
-        assert "verify" in result.state_diff["message"].lower()
-        # Must NOT have called create chains — only 2 calls
-        assert client.execute_and_extract.call_count == 2
+        assert result.state_diff.get("marks_clean") is True
+        assert "verified clean" in result.state_diff["message"].lower()
+        # validate + clear + verify — no chain creation
+        assert client.execute_and_extract.call_count == 3
+
+    def test_prepare_only_marks_dirty_retries_and_succeeds(self):
+        """prepare_only=True: first verify dirty → auto-retry → second verify clean."""
+        client = MagicMock()
+        dirty = f"VERIFY:{json.dumps({'clean': False, 'suspicious': ['Spine']})}"
+        clean = f"VERIFY:{json.dumps({'clean': True, 'suspicious': []})}"
+        # Responses: validate, clear1, verify(dirty), clear2, verify(clean)
+        client.execute_and_extract.side_effect = [
+            ["OK"],
+            ["OK"],
+            [dirty],
+            ["OK"],
+            [clean],
+        ]
+        result = self.tool.run(
+            client,
+            _make_cache(),
+            {
+                "target_armature": "MHWs",
+                "inferred_types": {},
+                "prepare_only": True,
+            },
+        )
+        assert result.success
+        assert result.state_diff.get("marks_clean") is True
+        assert client.execute_and_extract.call_count == 5
+
+    def test_prepare_only_marks_dirty_both_attempts_warns(self):
+        """prepare_only=True: both verify attempts fail → marks_clean=False, success with warning."""
+        client = MagicMock()
+        dirty = f"VERIFY:{json.dumps({'clean': False, 'suspicious': ['Spine']})}"
+        # Responses: validate, clear1, verify(dirty), clear2, verify(dirty)
+        client.execute_and_extract.side_effect = [
+            ["OK"],
+            ["OK"],
+            [dirty],
+            ["OK"],
+            [dirty],
+        ]
+        result = self.tool.run(
+            client,
+            _make_cache(),
+            {
+                "target_armature": "MHWs",
+                "inferred_types": {},
+                "prepare_only": True,
+            },
+        )
+        assert result.success  # warning, not hard failure
+        assert result.state_diff.get("marks_clean") is False
+        assert "warning" in result.state_diff["message"].lower()
+        assert client.execute_and_extract.call_count == 5
+
+    def test_prepare_only_armature_not_found_fails(self):
+        """prepare_only=True propagates precondition error from validate."""
+        client = MagicMock()
+        client.execute_and_extract.return_value = ["PRECONDITION:armature_not_found:MHWs"]
+        result = self.tool.run(
+            client,
+            _make_cache(),
+            {
+                "target_armature": "MHWs",
+                "inferred_types": {},
+                "prepare_only": True,
+            },
+        )
+        assert not result.success
+        assert result.error.category == "precondition"
 
     def test_prepare_only_armature_not_found_fails(self):
         """prepare_only=True propagates precondition error from validate."""
@@ -662,3 +731,59 @@ class TestPhysicsChains:
         )
         call_args = client.execute_and_extract.call_args[0][0]
         assert "Character_Chain.cfil" in call_args
+
+
+# ── _verify_chain_marks ───────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestVerifyChainMarks:
+    tool = PhysicsChains()
+
+    def test_clean_returns_true(self):
+        """All chain heads have _End descendants → clean=True."""
+        payload = json.dumps({"clean": True, "suspicious": []})
+        client = _make_client([f"VERIFY:{payload}"])
+        err, clean = self.tool._verify_chain_marks(client, "ArmObj")
+        assert err is None
+        assert clean is True
+
+    def test_suspicious_bones_returns_false(self):
+        """Chain head without _End descendant → clean=False."""
+        payload = json.dumps({"clean": False, "suspicious": ["Spine", "Hips"]})
+        client = _make_client([f"VERIFY:{payload}"])
+        err, clean = self.tool._verify_chain_marks(client, "ArmObj")
+        assert err is None
+        assert clean is False
+
+    def test_no_output_returns_error_and_false(self):
+        """Empty output from Blender → error returned."""
+        client = _make_client([])
+        err, clean = self.tool._verify_chain_marks(client, "ArmObj")
+        assert err is not None
+        assert err.category == "operator_failed"
+        assert clean is False
+
+    def test_precondition_not_found_returns_error(self):
+        """Armature not found in Blender → precondition error."""
+        client = _make_client(["PRECONDITION:not_found"])
+        err, clean = self.tool._verify_chain_marks(client, "MissingArm")
+        assert err is not None
+        assert err.category == "precondition"
+        assert clean is False
+
+    def test_unexpected_output_returns_error(self):
+        """Unrecognised output format → unexpected error."""
+        client = _make_client(["GARBAGE:data"])
+        err, clean = self.tool._verify_chain_marks(client, "ArmObj")
+        assert err is not None
+        assert err.category == "unexpected"
+        assert clean is False
+
+    def test_verify_code_uses_end_bone_detection(self):
+        """Generated Blender code must reference '_End' suffix and iterative BFS."""
+        client = _make_client([f"VERIFY:{json.dumps({'clean': True, 'suspicious': []})}"])
+        self.tool._verify_chain_marks(client, "ArmObj")
+        code = client.execute_and_extract.call_args[0][0]
+        assert "_End" in code
+        assert "stack" in code  # iterative BFS, not recursion
