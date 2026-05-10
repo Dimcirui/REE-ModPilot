@@ -351,11 +351,28 @@ class AgentLoop:
         """
         Free Q&A mode: LLM answers without calling any tools (A2).
         Exits back to ERROR_HANDLING when user mentions retry/skip/continue.
+
+        Raw error details from _pending_error are injected into the system
+        prompt so the LLM can explain the actual failure, not guess at it.
         """
+        system = self._system_prompt
+        if self._pending_error:
+            err = self._pending_error
+            detail_lines = [
+                "\n\n[PENDING ERROR — use this to answer the user's question]",
+                f"operator: {err.operator}",
+                f"message: {err.message}",
+            ]
+            if err.suggestion:
+                detail_lines.append(f"suggestion: {err.suggestion}")
+            if err.raw:
+                detail_lines.append(f"raw_output: {err.raw}")
+            system = system + "\n".join(detail_lines)
+
         response = await asyncio.to_thread(
             self._llm.chat,
             self._global_history,
-            system=self._system_prompt,
+            system=system,
             # No tools passed — pure explanation mode
         )
         exit_keywords = ("continue", "retry", "skip", "back", "继续", "重试", "跳过", "返回")

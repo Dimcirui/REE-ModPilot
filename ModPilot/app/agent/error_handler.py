@@ -51,12 +51,22 @@ class ErrorHandler:
         """
         Parse the user's response to the [Retry] / [Skip] / [Ask] prompt.
         Uses keyword matching — intentionally no LLM call for reliability.
+
+        Keyword sets are intentionally broad: natural questions about errors
+        (e.g. "可以告诉我具体哪里出错了吗？") should all route to "ask".
+        Retry and skip keywords take priority if present.
         """
         lower = reply.lower()
         if any(kw in lower for kw in ("retry", "重试", "再试", "try again")):
             return "retry"
         if any(kw in lower for kw in ("skip", "跳过", "略过")):
             return "skip"
-        if any(kw in lower for kw in ("ask", "explain", "why", "为什么", "问", "help")):
+        if any(kw in lower for kw in (
+            "ask", "explain", "why", "what",
+            "为什么", "问", "help", "detail",
+            # natural Chinese error-inquiry patterns
+            "具体", "告诉我", "详细", "错误", "出错", "失败",
+            "原因", "哪里", "怎么", "什么情况",
+        )):
             return "ask"
         return "unknown"
