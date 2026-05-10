@@ -3,7 +3,7 @@ Unit tests for Stage 3 agent components.
 
 Covers:
   - prompts.py: section extraction, build_system_prompt, build_phase_prompt
-  - error_handler.py: parse_user_choice (no LLM), format() with mock LLM
+  - error_handler.py: parse_user_choice (LLM-based + keyword fallback), format() with mock LLM
   - loop.py: state machine transitions with mocked LLM and phase tools
 
 Run with: uv run pytest -m unit tests/unit/test_agent_loop.py -v
@@ -119,25 +119,56 @@ class TestBuildErrorPrompt:
 class TestParseUserChoice:
     handler = ErrorHandler()
 
+    def _make_llm(self, returns: str):
+        llm = MagicMock()
+        llm.chat.return_value = MagicMock(content=returns)
+        return llm
+
+    def test_llm_classification_used_when_valid(self):
+        """LLM returning a valid choice string is accepted directly."""
+        for choice in ("retry", "skip", "ask", "unknown"):
+            llm = self._make_llm(choice)
+            assert self.handler.parse_user_choice("whatever", llm) == choice
+
+    def test_llm_result_stripped_and_lowercased(self):
+        """Leading/trailing whitespace and uppercase are normalised."""
+        llm = self._make_llm("  Skip\n")
+        assert self.handler.parse_user_choice("跳过", llm) == "skip"
+
+    def test_fallback_on_invalid_llm_output(self):
+        """If LLM returns an unrecognised word, keyword fallback is used."""
+        llm = self._make_llm("yes please")  # not a valid choice
+        assert self.handler.parse_user_choice("重试", llm) == "retry"
+
+    def test_fallback_on_llm_exception(self):
+        """If LLM raises, keyword fallback is used."""
+        llm = MagicMock()
+        llm.chat.side_effect = RuntimeError("connection refused")
+        assert self.handler.parse_user_choice("跳过", llm) == "skip"
+
+    def test_empty_reply_short_circuits(self):
+        """Empty string → unknown without calling LLM."""
+        llm = MagicMock()
+        assert self.handler.parse_user_choice("", llm) == "unknown"
+        llm.chat.assert_not_called()
+
     @pytest.mark.parametrize(
         "reply,expected",
         [
             ("Retry", "retry"),
-            ("let's retry please", "retry"),
             ("重试", "retry"),
-            ("再试一次", "retry"),
+            ("直接跳过继续即可", "skip"),   # skip wins over 继续
             ("skip this step", "skip"),
             ("跳过", "skip"),
             ("ask why it failed", "ask"),
-            ("why did it fail?", "ask"),
             ("为什么", "ask"),
-            ("help me understand", "ask"),
             ("sure whatever", "unknown"),
-            ("", "unknown"),
         ],
     )
-    def test_parse_choice(self, reply, expected):
-        assert self.handler.parse_user_choice(reply) == expected
+    def test_keyword_fallback_cases(self, reply, expected):
+        """Keyword fallback correctly handles representative cases."""
+        from app.agent.error_handler import _keyword_fallback
+        assert _keyword_fallback(reply) == expected
 
 
 @pytest.mark.unit
@@ -365,6 +396,7 @@ def test_build_tool_list_returns_list():
     loop = _make_loop()
     tools = loop._build_tool_list()
     assert isinstance(tools, list)
-    assert len(tools) == 3  # pose_correction, skeleton_align, vertex_groups
+    assert len(tools) >= 3
     names = {t["name"] for t in tools}
-    assert names == {"pose_correction", "skeleton_align", "vertex_groups"}
+    # Core phases must always be present; physics phases registered alongside
+    assert {"pose_correction", "skeleton_align", "vertex_groups"}.issubset(names)

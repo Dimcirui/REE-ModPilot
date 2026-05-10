@@ -33,7 +33,87 @@ from __future__ import annotations
 import asyncio
 import enum
 import json
+import re
 from typing import Any
+
+# DeepSeek-specific markup patterns.
+# DeepSeek V4 sometimes emits tool calls as inline XML-like markup in the text
+# content instead of using the OpenAI API's function-call fields.  We strip this
+# markup in NEGOTIATING mode (no tools available) and *parse + execute* it in
+# RUNNING_PHASE mode so the tool call is not silently dropped.
+
+_RAW_TOOL_CALL_RE = re.compile(
+    r"<｜｜DSML｜｜tool_calls>.*?</｜｜DSML｜｜tool_calls>",
+    re.DOTALL,
+)
+_DSML_INVOKE_RE = re.compile(
+    r'<｜｜DSML｜｜invoke name="(?P<name>[^"]+)">(?P<body>.*?)</｜｜DSML｜｜invoke>',
+    re.DOTALL,
+)
+_DSML_PARAM_RE = re.compile(
+    r'<｜｜DSML｜｜parameter name="(?P<name>[^"]+)" string="(?P<is_str>true|false)">'
+    r"(?P<value>.*?)</｜｜DSML｜｜parameter>",
+    re.DOTALL,
+)
+
+
+_DSML_OPEN_TAG = "<｜｜DSML｜｜tool_calls>"
+_DSML_CLOSE_TAG = "</｜｜DSML｜｜tool_calls>"
+
+
+def _strip_dsml_block(text: str) -> str:
+    """
+    Remove the DSML tool-call block from text, returning only the prose part.
+
+    Tries regex first; if it leaves any DSML behind (due to invisible Unicode
+    differences), falls back to plain-string truncation at the open tag.
+    """
+    text = _RAW_TOOL_CALL_RE.sub("", text).strip()
+    # Greedy fallback: regex may miss the block if chars look identical but differ
+    start = text.find(_DSML_OPEN_TAG)
+    if start != -1:
+        text = text[:start].rstrip()
+    return text
+
+
+def _parse_dsml_tool_calls(content: str) -> list[dict]:
+    """
+    Extract tool calls from DeepSeek DSML markup embedded in text content.
+
+    Returns a list of canonical tool-call dicts ({id, name, input}) that can
+    be passed directly to AgentLoop._execute_tool_call().  Returns [] when
+    no DSML markup block is found.
+
+    Uses regex first; falls back to plain str.find() when the outer block
+    regex fails (e.g. due to invisible Unicode differences between the source
+    pattern and the model's output that visually appear identical).
+    """
+    tc_match = _RAW_TOOL_CALL_RE.search(content)
+    if tc_match:
+        block = tc_match.group(0)
+    else:
+        # Plain-string fallback — tolerates invisible character differences
+        start = content.find(_DSML_OPEN_TAG)
+        end = content.find(_DSML_CLOSE_TAG)
+        if start == -1 or end == -1 or end < start:
+            return []
+        block = content[start : end + len(_DSML_CLOSE_TAG)]
+
+    calls = []
+    for i, invoke in enumerate(_DSML_INVOKE_RE.finditer(block)):
+        tool_name = invoke.group("name")
+        params: dict = {}
+        for pm in _DSML_PARAM_RE.finditer(invoke.group("body")):
+            raw = pm.group("value").strip()
+            if pm.group("is_str") == "true":
+                params[pm.group("name")] = raw
+            else:
+                try:
+                    params[pm.group("name")] = json.loads(raw)
+                except json.JSONDecodeError:
+                    params[pm.group("name")] = raw
+        calls.append({"id": f"dsml_{i}_{tool_name}", "name": tool_name, "input": params})
+    return calls
 
 from app.agent.error_handler import ErrorHandler
 from app.agent.prompts import build_phase_prompt, build_system_prompt
@@ -41,6 +121,7 @@ from app.blender.client import BlenderClient
 from app.blender.state import SceneCache
 from app.llm.client import LLMClient, LLMResponse, Message
 from app.phases.base import PhaseError, PhaseTool
+from app.phases.query_tools import QueryTool
 
 # ── constants ──────────────────────────────────────────────────────────────
 
@@ -58,10 +139,12 @@ _PHASE_SEQUENCE: list[str] = [
 ]
 
 _NEGOTIATING_PHASES: frozenset[str] = frozenset(
-    {"phase_35", "phase_4a", "phase_4b", "phase_5", "phase_6"}
+    {"phase_5", "phase_6"}
 )
 
-_MAX_TOOL_ROUNDS = 8
+_MAX_TOOL_ROUNDS = 15
+_MAX_ASK_ROUNDS = 3
+_MAX_QUERY_ONLY_ROUNDS = 2  # after this many consecutive query-only rounds, drop query tools
 
 
 # ── state enum ─────────────────────────────────────────────────────────────
@@ -158,11 +241,25 @@ class AgentLoop:
         Drive the LLM in a tool-call loop until it produces a text-only response.
         Uses global_history as the active conversation context.
         Returns the final text reply.
+
+        Query-tool throttle: after _MAX_QUERY_ONLY_ROUNDS consecutive rounds where
+        every call was a query tool (scene_info, list_objects, etc.), the tool list
+        is restricted to phase tools only. This forces the LLM to commit to a phase
+        tool call instead of indefinitely querying scene state.
         """
         history = self._global_history
-        tools = self._build_tool_list()
+        query_tool_names = {
+            name for name, t in self._phase_tools.items() if isinstance(t, QueryTool)
+        }
+        query_only_rounds = 0  # consecutive rounds with only query tool calls
 
         for _ in range(_MAX_TOOL_ROUNDS):
+            # Restrict to phase tools after too many query-only rounds
+            if query_only_rounds >= _MAX_QUERY_ONLY_ROUNDS:
+                tools = self._build_phase_only_tool_list()
+            else:
+                tools = self._build_tool_list()
+
             response = await asyncio.to_thread(
                 self._llm.chat,
                 history,
@@ -171,10 +268,52 @@ class AgentLoop:
             )
 
             if not response.has_tool_calls:
-                return response.content
+                content = response.content
+                # DeepSeek fallback: DSML markup in text instead of API tool_calls.
+                # Parse the markup directly and execute — retrying doesn't help
+                # because DeepSeek repeatedly outputs markup when in thinking mode.
+                dsml_calls = _parse_dsml_tool_calls(content)
+                if dsml_calls:
+                    clean = _strip_dsml_block(content)
+                    history.append({
+                        "role": "assistant",
+                        "content": clean or "[tool call via inline markup]",
+                    })
+                    all_query = all(c["name"] in query_tool_names for c in dsml_calls)
+                    query_only_rounds = query_only_rounds + 1 if all_query else 0
+                    tool_results_text: list[str] = []
+                    error_reply: str | None = None
+                    for tc in dsml_calls:
+                        result_text, error_reply = await self._execute_tool_call(tc)
+                        tool_results_text.append(result_text)
+                        if error_reply or self.state != LoopState.RUNNING_PHASE:
+                            break
+                    history.append({"role": "user", "content": "\n".join(tool_results_text)})
+                    if error_reply:
+                        return error_reply
+                    if self.state != LoopState.RUNNING_PHASE:
+                        final = await asyncio.to_thread(
+                            self._llm.chat,
+                            history,
+                            system=self._system_prompt,
+                        )
+                        return final.content
+                    continue
+                # Detect propose-and-confirm proposal (may occur in RUNNING_PHASE
+                # when LLM classifies chains before calling a tool).
+                if (
+                    '"requires_user_review": true' in content
+                    or '"requires_user_review":true' in content
+                ):
+                    self.state = LoopState.AWAIT_CONFIRM
+                return content
 
             # Append assistant message with tool_use blocks
             history.append(self._build_assistant_tool_msg(response))
+
+            # Track whether this round was query-tools-only
+            all_query = all(tc["name"] in query_tool_names for tc in response.tool_calls)
+            query_only_rounds = query_only_rounds + 1 if all_query else 0
 
             # Execute each tool call; collect results
             tool_results: list[dict[str, Any]] = []
@@ -216,16 +355,25 @@ class AgentLoop:
         Returns (tool_result_text, error_reply).
         error_reply is non-None when the phase fails; it is the formatted
         user-facing error message and should be returned from step() directly.
+
+        Query tools (isinstance(tool, QueryTool)) return their result directly
+        without advancing phase state or triggering error handling.
         """
         tool_name = tc["name"]
         params = tc.get("input", {})
 
-        phase = self._phase_tools.get(tool_name)
-        if phase is None:
-            return f"Tool '{tool_name}' is not yet available in this version.", None
+        tool = self._phase_tools.get(tool_name)
+        if tool is None:
+            return f"Tool '{tool_name}' is not available.", None
 
+        # Query tools: read-only, no phase advancement
+        if isinstance(tool, QueryTool):
+            result_str = await asyncio.to_thread(tool.run, self._blender, params)
+            return result_str, None
+
+        # Phase tools: execute, advance state on success
         result = await asyncio.to_thread(
-            phase.run, self._blender, self._cache, params
+            tool.run, self._blender, self._cache, params
         )
 
         if result.success:
@@ -288,7 +436,7 @@ class AgentLoop:
             system=self._system_prompt,
         )
 
-        reply = response.content
+        reply = _strip_dsml_block(response.content)
         self._phase_history.append({"role": "assistant", "content": reply})
 
         # Detect structured proposal from LLM (propose_and_confirm protocol)
@@ -299,17 +447,24 @@ class AgentLoop:
 
     async def _handle_await_confirm(self, user_message: str) -> str:
         """
-        User replied to a proposal. Both confirm and correction re-enter NEGOTIATING:
-        the LLM handles the distinction from the message content.
+        User replied to a proposal (confirm or correction).
+
+        Transitions back to RUNNING_PHASE so the LLM can call the phase tool
+        with the confirmed parameters.  The full conversation history provides
+        the classification context needed to build the correct tool call.
+        If the user made a correction the LLM will re-propose; the proposal
+        detection in _run_react_turn will set AWAIT_CONFIRM again.
         """
-        self.state = LoopState.NEGOTIATING
-        return await self._run_negotiating_turn(user_message)
+        self.state = LoopState.RUNNING_PHASE
+        return await self._run_react_turn()
 
     # ── error handling ────────────────────────────────────────────────────
 
     async def _handle_error_choice(self, user_message: str) -> str:
         """Route user's [Retry] / [Skip] / [Ask] choice after a phase failure."""
-        choice = self._error_handler.parse_user_choice(user_message)
+        choice = await asyncio.to_thread(
+            self._error_handler.parse_user_choice, user_message, self._llm
+        )
 
         match choice:
             case "retry":
@@ -349,13 +504,24 @@ class AgentLoop:
 
     async def _handle_ask_mode(self, user_message: str) -> str:
         """
-        Free Q&A mode: LLM answers without calling any tools (A2).
+        Explanation + scene-query mode (A2).
+
+        The LLM may call read-only query tools (scene_info, list_objects,
+        get_bone_info, list_collections) to fetch live data for its answer.
+        Phase-advancing tools are NOT available — the loop rejects them.
         Exits back to ERROR_HANDLING when user mentions retry/skip/continue.
 
-        Raw error details from _pending_error are injected into the system
-        prompt so the LLM can explain the actual failure, not guess at it.
+        Error details from _pending_error are injected into the system prompt
+        so the LLM can explain the actual failure rather than guessing.
         """
-        system = self._system_prompt
+        system = self._system_prompt + (
+            "\n\n[ASK MODE] You are in explanation-and-query mode. "
+            "You may call the scene inspection tools (scene_info, list_objects, "
+            "get_bone_info, list_collections) to fetch live Blender data. "
+            "You CANNOT call phase-advancing tools (pose_correction, skeleton_align, "
+            "vertex_groups, physics_*, etc.) in this mode. "
+            "Do NOT output DSML tool-call markup."
+        )
         if self._pending_error:
             err = self._pending_error
             detail_lines = [
@@ -367,38 +533,124 @@ class AgentLoop:
                 detail_lines.append(f"suggestion: {err.suggestion}")
             if err.raw:
                 detail_lines.append(f"raw_output: {err.raw}")
-            system = system + "\n".join(detail_lines)
+            system += "\n".join(detail_lines)
 
-        response = await asyncio.to_thread(
-            self._llm.chat,
-            self._global_history,
-            system=system,
-            # No tools passed — pure explanation mode
-        )
-        exit_keywords = ("continue", "retry", "skip", "back", "继续", "重试", "跳过", "返回")
+        query_tools = self._build_query_tool_list()
+        history = self._global_history
+
+        for _ in range(_MAX_ASK_ROUNDS):
+            response = await asyncio.to_thread(
+                self._llm.chat,
+                history,
+                system=system,
+                tools=query_tools if query_tools else None,
+            )
+
+            if not response.has_tool_calls:
+                # Check for DSML markup even in ASK_MODE (DeepSeek fallback)
+                dsml_calls = _parse_dsml_tool_calls(response.content)
+                if dsml_calls:
+                    # Filter to query tools only; reject phase tools silently
+                    query_names = {t["name"] for t in query_tools}
+                    dsml_calls = [c for c in dsml_calls if c["name"] in query_names]
+                if dsml_calls:
+                    clean = _strip_dsml_block(response.content)
+                    history.append({
+                        "role": "assistant",
+                        "content": clean or "[querying scene]",
+                    })
+                    results = []
+                    for tc in dsml_calls:
+                        res, _ = await self._execute_tool_call(tc)
+                        results.append(res)
+                    history.append({"role": "user", "content": "\n".join(results)})
+                    continue
+                # Plain text answer — done
+                reply = _strip_dsml_block(response.content)
+                break
+
+            # Structured tool calls
+            history.append(self._build_assistant_tool_msg(response))
+            results: list[dict] = []
+            query_names = {t["name"] for t in query_tools}
+            for tc in response.tool_calls:
+                if tc["name"] not in query_names:
+                    res_text = (
+                        f"Tool '{tc['name']}' is not available in ASK MODE. "
+                        "Only scene inspection tools may be called here."
+                    )
+                else:
+                    res_text, _ = await self._execute_tool_call(tc)
+                results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tc["id"],
+                    "content": res_text,
+                })
+            history.append({"role": "user", "content": results})
+        else:
+            reply = "已达到查询轮数上限。请根据以上信息告诉我您想 [重试] 还是 [跳过]。"
+
+        exit_keywords = ("continue", "retry", "skip", "back", "exit",
+                         "继续", "重试", "跳过", "返回", "退出", "开始", "执行")
         if any(kw in user_message.lower() for kw in exit_keywords):
             self.state = LoopState.ERROR_HANDLING
-        return response.content
+        return reply
 
     # ── helpers ───────────────────────────────────────────────────────────
 
     def _register_available_phases(self) -> None:
+        from app.phases.physics_bones import (
+            PhysicsChains,
+            PhysicsClassification,
+            PhysicsTransplant,
+        )
         from app.phases.pose_correction import PoseCorrection
+        from app.phases.query_tools import (
+            GetBoneInfo,
+            ListCollections,
+            ListObjects,
+            SceneInfo,
+        )
         from app.phases.setup import SetupImportMHWilds, SetupValidateScene
         from app.phases.skeleton_align import SkeletonAlign
         from app.phases.vertex_groups import VertexGroups
 
-        for phase in (
+        for tool in (
+            # Phase tools (advance _phase_idx on success)
             SetupValidateScene(),
             SetupImportMHWilds(),
             PoseCorrection(),
             SkeletonAlign(),
             VertexGroups(),
+            PhysicsTransplant(),
+            PhysicsClassification(),
+            PhysicsChains(),
+            # Query tools (read-only, always available)
+            SceneInfo(),
+            ListObjects(),
+            GetBoneInfo(),
+            ListCollections(),
         ):
-            self._phase_tools[phase.name] = phase
+            self._phase_tools[tool.name] = tool
 
     def _build_tool_list(self) -> list[dict]:
-        return [p.tool_schema() for p in self._phase_tools.values()]
+        return [t.tool_schema() for t in self._phase_tools.values()]
+
+    def _build_phase_only_tool_list(self) -> list[dict]:
+        """Phase tools only — excludes query tools. Used when the LLM has spent
+        too many rounds on scene inspection and must commit to a phase tool call."""
+        return [
+            t.tool_schema()
+            for t in self._phase_tools.values()
+            if not isinstance(t, QueryTool)
+        ]
+
+    def _build_query_tool_list(self) -> list[dict]:
+        return [
+            t.tool_schema()
+            for t in self._phase_tools.values()
+            if isinstance(t, QueryTool)
+        ]
 
     @staticmethod
     def _build_assistant_tool_msg(response: LLMResponse) -> Message:
