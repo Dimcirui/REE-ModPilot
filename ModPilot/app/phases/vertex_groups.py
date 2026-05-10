@@ -206,13 +206,13 @@ class VertexGroups(PhaseTool):
         Returns (None, merged_name) on success, (PhaseError, "") on failure.
         """
         lookup_lines = "\n".join(
-            f"    obj = bpy.data.objects.get({name!r})\n"
-            f"    if obj is None:\n"
-            f"        missing.append({name!r})\n"
-            f"    elif obj.type != 'MESH':\n"
-            f"        not_mesh.append({name!r})\n"
-            f"    else:\n"
-            f"        mesh_objs.append(obj)\n"
+            f"obj = bpy.data.objects.get({name!r})\n"
+            f"if obj is None:\n"
+            f"    missing.append({name!r})\n"
+            f"elif obj.type != 'MESH':\n"
+            f"    not_mesh.append({name!r})\n"
+            f"else:\n"
+            f"    mesh_objs.append(obj)"
             for name in mesh_objects
         )
 
