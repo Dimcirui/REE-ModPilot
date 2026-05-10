@@ -1,0 +1,404 @@
+{
+  "_schema_note": "Distilled RE Chain Editor physics parameter knowledge for MHWilds character mods. Sourced from 20 MHWilds native presets (high confidence) and 15 RE4 presets (secondary reference). Used by Phase 4B to set chain settings parameters directly without requiring any preset files to be installed. All gravity/damping/etc values are calibrated for MHWilds (presetVersion 6).",
+  "_key_notes": [
+    "motionForce > 0 means the chain actively pushes bones toward rest pose — used for short/mid hair that should stay 'up' under normal movement, NOT for hair that should hang down.",
+    "gravity=[0,0,0] + motionForce is the MHWilds-native pattern for hair that stands/floats; gravity=[0,-9.8,0] + motionForce=0 is for hanging hair.",
+    "reduceSelfDistanceRate: high=poofy/resistant, low=compresses easily. 0=no self-distance limit.",
+    "groupDefaultAttr: 65536=basic chain, 65568=medium complexity, 65696=cloth-type, 65712=dense cloth.",
+    "windDelayType: 1 for all MHWilds; 0 for RE4.",
+    "RE4 presets use 'hardness' for structural stiffness; MHWilds uses springForce instead. hardness is 0 in all MHWilds presets.",
+    "secondDamping=damping (equal) unless you want velocity-sensitive damping; Long Wavy Hair uses equal secondDamping + secondDampingSpeed=3.0 for a snappy-then-free feel."
+  ],
+
+  "types": {
+
+    "hair_short": {
+      "description": "Short hair, closely cropped or poofy bob. Stays up, minimal droop. Uses motionForce to maintain shape.",
+      "source_presets": ["MHWilds Short Hair"],
+      "confidence": "high",
+      "params": {
+        "gravity": [0.0, 0.0, 0.0],
+        "damping": 0.185,
+        "springForce": 0.0,
+        "reduceSelfDistanceRate": 0.86,
+        "windEffectCoef": 0.0,
+        "envWindEffectCoef": 0.06,
+        "motionForce": 20.0,
+        "windDelayType": 1,
+        "settingsAttrFlags": 1,
+        "groupDefaultAttr": 65536
+      },
+      "notes": "Very high reduceSelfDistanceRate (0.86) keeps the shape poofy/resistant. Zero gravity — shape maintained entirely by motionForce=20."
+    },
+
+    "hair_medium": {
+      "description": "Medium length hair, chin to shoulder. Slight droop under motion but still has body.",
+      "source_presets": ["MHWilds Medium Length Hair"],
+      "confidence": "high",
+      "params": {
+        "gravity": [0.0, 0.0, 0.0],
+        "damping": 0.104,
+        "springForce": 0.00073,
+        "reduceSelfDistanceRate": 0.51,
+        "windEffectCoef": 0.1,
+        "envWindEffectCoef": 0.17,
+        "motionForce": 20.0,
+        "windDelayType": 1,
+        "settingsAttrFlags": 1,
+        "groupDefaultAttr": 65568
+      },
+      "notes": "colliderFilterInfoPath typically Character_Chain_Player.cfil for player character. Lower damping than short hair = more fluid motion."
+    },
+
+    "hair_long_straight": {
+      "description": "Long straight hair, falls naturally under gravity. No motionForce — hangs freely.",
+      "source_presets": ["MHWilds Long Straight Hair"],
+      "confidence": "high",
+      "params": {
+        "gravity": [0.0, -9.8, 0.0],
+        "damping": 0.13,
+        "springForce": 0.0,
+        "reduceSelfDistanceRate": 0.6,
+        "shockAbsorptionRate": 0.28,
+        "windEffectCoef": 0.24,
+        "envWindEffectCoef": 0.27,
+        "motionForce": 0.0,
+        "windDelayType": 1,
+        "settingsAttrFlags": 1,
+        "groupDefaultAttr": 65568
+      },
+      "notes": "shockAbsorptionRate=0.28 absorbs impact/bounce. Significant wind response (0.24/0.27). No motionForce — pure gravity hang."
+    },
+
+    "hair_long_wavy": {
+      "description": "Long wavy hair with velocity-sensitive damping — snappy during fast motion, loose at rest.",
+      "source_presets": ["MHWilds Long Wavy Hair"],
+      "confidence": "high",
+      "params": {
+        "gravity": [0.0, -5.0, 0.0],
+        "damping": 0.104,
+        "secondDamping": 0.104,
+        "secondDampingSpeed": 3.0,
+        "springForce": 0.0,
+        "reduceSelfDistanceRate": 0.58,
+        "windEffectCoef": 0.39,
+        "envWindEffectCoef": 0.3,
+        "motionForce": 10.0,
+        "windDelayType": 1,
+        "settingsAttrFlags": 8,
+        "groupDefaultAttr": 65568
+      },
+      "notes": "Reduced gravity (-5 not -9.8) combined with motionForce=10 gives a half-floating, half-hanging feel. secondDampingSpeed=3.0 activates secondDamping during fast motion. settingsAttrFlags=8 (differs from most hair types)."
+    },
+
+    "hair_long_curly": {
+      "description": "Long curly hair — floats/bounces, uses motionForce. High wind response.",
+      "source_presets": ["MHWilds Long Curly Hair"],
+      "confidence": "high",
+      "params": {
+        "gravity": [0.0, 0.0, 0.0],
+        "damping": 0.079,
+        "springForce": 0.0,
+        "reduceSelfDistanceRate": 0.74,
+        "windEffectCoef": 0.5,
+        "envWindEffectCoef": 0.15,
+        "motionForce": 10.0,
+        "windDelayType": 1,
+        "settingsAttrFlags": 1,
+        "groupDefaultAttr": 65568
+      },
+      "notes": "Low damping (0.079) = very bouncy/springy feel. Zero gravity + motionForce=10 makes curls maintain volume. High windEffectCoef=0.5."
+    },
+
+    "hair_braided": {
+      "description": "Braided or structured hair — heavier, falls under gravity, slight spring tension.",
+      "source_presets": ["MHWilds Long Braided Hair"],
+      "confidence": "high",
+      "params": {
+        "gravity": [0.0, -9.8, 0.0],
+        "damping": 0.1,
+        "springForce": 0.0015,
+        "reduceSelfDistanceRate": 0.67,
+        "windEffectCoef": 0.5,
+        "envWindEffectCoef": 0.5,
+        "motionForce": 5.0,
+        "windDelayType": 1,
+        "settingsAttrFlags": 1,
+        "groupDefaultAttr": 65536
+      },
+      "notes": "Thin braid variant: use damping=0.055, reduceSelf=0.41, motionForce=5. Small springForce=0.0015 adds subtle structural tension to the braid."
+    },
+
+    "hair_twintail": {
+      "description": "Twintail / side ponytail. Hangs from attachment point, moderate gravity.",
+      "source_presets": ["MHWilds Twin Tail Hair Short", "MHWilds Twin Tail Hair"],
+      "confidence": "high",
+      "params": {
+        "gravity": [0.0, -9.8, 0.0],
+        "damping": 0.104,
+        "springForce": 0.0,
+        "reduceSelfDistanceRate": 0.68,
+        "windEffectCoef": 0.1,
+        "envWindEffectCoef": 0.1,
+        "motionForce": 0.0,
+        "windDelayType": 1,
+        "settingsAttrFlags": 0,
+        "groupDefaultAttr": 65568
+      },
+      "notes": "For longer/heavier twintails: use dampingPow=3 and reduceSelfDistanceRate=0.74, secondReduceDistanceRate=0.1 (from Long Twin Tail). The dampingPow=3 creates nonlinear damping that resists large swings more than small ones."
+    },
+
+    "hair_front_bangs": {
+      "description": "Front bangs, forehead fringe. Floats lightly, high motionForce to keep shape.",
+      "source_presets": ["MHWilds Front Bangs Long"],
+      "confidence": "high",
+      "params": {
+        "gravity": [0.0, 0.0, 0.0],
+        "damping": 0.1,
+        "springForce": 0.0015,
+        "reduceSelfDistanceRate": 0.54,
+        "windEffectCoef": 0.5,
+        "envWindEffectCoef": 0.5,
+        "motionForce": 20.0,
+        "windDelayType": 1,
+        "settingsAttrFlags": 0,
+        "groupDefaultAttr": 65536
+      },
+      "notes": "High motionForce=20 keeps bangs from drooping. Zero gravity. High wind sensitivity (0.5/0.5) makes bangs responsive."
+    },
+
+    "cloth_hanging": {
+      "description": "Hanging decorative cloth, light fabric panels, leather straps. Falls under gravity, moderate drag.",
+      "source_presets": ["MHWilds Hanging Cloth", "MHWilds Leather Straps"],
+      "confidence": "high",
+      "params": {
+        "gravity": [0.0, -9.8, 0.0],
+        "damping": 0.12,
+        "springForce": 0.0,
+        "reduceSelfDistanceRate": 0.69,
+        "windEffectCoef": 0.05,
+        "envWindEffectCoef": 0.05,
+        "motionForce": 15.0,
+        "windDelayType": 1,
+        "settingsAttrFlags": 0,
+        "groupDefaultAttr": 65536
+      },
+      "notes": "Low wind response (0.05) — cloth hangs stiffly, minimal flutter. motionForce=15 provides return-to-rest pull. Leather Straps uses damping=0.2 for stiffer feel."
+    },
+
+    "cloth_skirt_waist": {
+      "description": "Waist cloth, skirt panels, layered fabric around hips. Complex secondary motion.",
+      "source_presets": ["MHWilds Long Waist Cloth"],
+      "confidence": "high",
+      "params": {
+        "gravity": [0.0, -9.8, 0.0],
+        "damping": 0.12,
+        "springForce": 0.002,
+        "reduceSelfDistanceRate": 0.4,
+        "secondReduceDistanceRate": 0.2,
+        "secondReduceDistanceSpeed": 5.0,
+        "shockAbsorptionRate": 0.5,
+        "windEffectCoef": 0.1,
+        "envWindEffectCoef": 0.3,
+        "motionForce": 0.0,
+        "windDelayType": 1,
+        "settingsAttrFlags": 1,
+        "groupDefaultAttr": 65696
+      },
+      "notes": "groupDefaultAttr=65696 (cloth type). secondReduceDistanceRate=0.2 + secondReduceDistanceSpeed=5 gives dynamic compression response. shockAbsorptionRate=0.5 prevents bouncing on landing."
+    },
+
+    "cloth_coat_heavy": {
+      "description": "Heavy long coat, stiff outer garment. Resists compression, high damping at extremes.",
+      "source_presets": ["MHWilds Long Coat"],
+      "confidence": "high",
+      "params": {
+        "gravity": [0.0, -9.8, 0.0],
+        "damping": 0.051,
+        "secondDamping": 1.0,
+        "dampingPow": 3.0,
+        "springForce": 0.0,
+        "reduceSelfDistanceRate": 0.3,
+        "shockAbsorptionRate": 0.5,
+        "friction": 0.2,
+        "windEffectCoef": 0.4,
+        "envWindEffectCoef": 0.5,
+        "motionForce": 0.0,
+        "windDelayType": 1,
+        "settingsAttrFlags": 0,
+        "groupDefaultAttr": 65696
+      },
+      "notes": "Unusual: secondDamping=1.0 (full stop at velocity threshold). dampingPow=3 = heavily nonlinear. friction=0.2 adds surface drag. Low reduceSelf=0.3 = coat panels stay separated. Good for stiff trench coats, long cloaks."
+    },
+
+    "cloth_sleeves_wide": {
+      "description": "Wide billowing sleeves, very light fabric. Extremely low damping = floats freely.",
+      "source_presets": ["MHWilds Large Sleeves"],
+      "confidence": "high",
+      "params": {
+        "gravity": [0.0, -9.8, 0.0],
+        "damping": 0.00073,
+        "springForce": 0.00133,
+        "reduceSelfDistanceRate": 0.43,
+        "windEffectCoef": 0.23,
+        "envWindEffectCoef": 0.1,
+        "motionForce": 0.0,
+        "windDelayType": 1,
+        "settingsAttrFlags": 1,
+        "groupDefaultAttr": 65536
+      },
+      "notes": "Extremely low damping (0.00073) is intentional — wide sleeves should billow and float with almost no friction. Very different from cloth_hanging which has damping=0.12. Do NOT use for cloth that should feel weighted."
+    },
+
+    "fur_dense": {
+      "description": "Thick dense fur, matted or heavy animal-style fur. High damping, minimal compression.",
+      "source_presets": ["MHWilds Thick Fur"],
+      "confidence": "high",
+      "params": {
+        "gravity": [0.0, -9.8, 0.0],
+        "damping": 0.3,
+        "springForce": 0.02,
+        "reduceSelfDistanceRate": 0.4,
+        "secondReduceDistanceRate": 0.2,
+        "secondReduceDistanceSpeed": 5.0,
+        "shockAbsorptionRate": 0.15,
+        "windEffectCoef": 0.5,
+        "envWindEffectCoef": 0.2,
+        "motionForce": 0.0,
+        "windDelayType": 1,
+        "settingsAttrFlags": 0,
+        "groupDefaultAttr": 65712
+      },
+      "notes": "groupDefaultAttr=65712 (densest chain type). High damping=0.3 = slow, heavy movement. springForce=0.02 provides spring-back. Good for fur trim on armor, dense tails."
+    },
+
+    "fur_tail": {
+      "description": "Animal tail or long fur tail. Hangs naturally, high shock absorption for impact resistance.",
+      "source_presets": ["MHWilds Long Tail Fur"],
+      "confidence": "high",
+      "params": {
+        "gravity": [0.0, -9.8, 0.0],
+        "damping": 0.1,
+        "springForce": 0.02,
+        "reduceSelfDistanceRate": 0.3,
+        "shockAbsorptionRate": 0.61,
+        "windEffectCoef": 0.1,
+        "envWindEffectCoef": 0.5,
+        "motionForce": 0.0,
+        "windDelayType": 1,
+        "settingsAttrFlags": 1,
+        "groupDefaultAttr": 65536
+      },
+      "notes": "Very high shockAbsorptionRate=0.61 prevents tail from bouncing wildly on ground impact. springForce=0.02 adds spring-back. envWindEffectCoef=0.5 = very wind-responsive (tail waves in wind)."
+    },
+
+    "body_jiggle": {
+      "description": "Soft body jiggle physics: breast, buttocks, similar soft tissue.",
+      "source_presets": ["MHWilds Jiggle Physics"],
+      "confidence": "high",
+      "params": {
+        "gravity": [0.0, -9.8, 0.0],
+        "damping": 0.02,
+        "springForce": 0.015,
+        "reduceSelfDistanceRate": 0.75,
+        "windEffectCoef": 0.5,
+        "envWindEffectCoef": 0.5,
+        "motionForce": 0.0,
+        "windDelayType": 1,
+        "settingsAttrFlags": 0,
+        "groupDefaultAttr": 65536
+      },
+      "notes": "Very low damping=0.02 = highly responsive/jiggly. springForce=0.015 provides bounce-back. reduceSelf=0.75 keeps volume. Adjust springForce up for firmer jiggle, down for softer. MHWilds native preset — directly applicable."
+    },
+
+    "accessory_ribbon": {
+      "description": "Soft ribbon, bow knot, light fabric accessory. Extremely free movement, near-zero damping.",
+      "source_presets": ["MHWilds Ribbon Knot"],
+      "confidence": "high",
+      "params": {
+        "gravity": [0.0, -9.8, 0.0],
+        "damping": 0.00034,
+        "springForce": 0.0,
+        "reduceSelfDistanceRate": 0.21,
+        "windEffectCoef": 0.2,
+        "envWindEffectCoef": 0.2,
+        "motionForce": 0.0,
+        "windDelayType": 1,
+        "settingsAttrFlags": 0,
+        "groupDefaultAttr": 65536
+      },
+      "notes": "Near-zero damping (0.00034) = ribbon flutters freely with almost no resistance. Very low reduceSelf=0.21. For silk ribbons, hair ties, soft bows."
+    },
+
+    "accessory_bouncy": {
+      "description": "Springy pouch or soft rigid accessory that bounces on impact.",
+      "source_presets": ["MHWilds Waist Pouch"],
+      "confidence": "high",
+      "params": {
+        "gravity": [0.0, -9.8, 0.0],
+        "damping": 0.043,
+        "springForce": 0.018,
+        "reduceSelfDistanceRate": 0.0,
+        "windEffectCoef": 0.1,
+        "envWindEffectCoef": 0.1,
+        "motionForce": 0.0,
+        "windDelayType": 1,
+        "settingsAttrFlags": 0,
+        "groupDefaultAttr": 65536
+      },
+      "notes": "reduceSelfDistanceRate=0 means chain can fully compress (pouch can swing up past attachment). springForce=0.018 provides strong spring-back. Low damping = bouncy feel. Good for bag/pouch accessories, pendants."
+    },
+
+    "_re4_hair_structured": {
+      "description": "RE4-style structured hair with hardness. Secondary reference only — not MHWilds native.",
+      "source_presets": ["RE4_Ponytail", "RE4_Front Hair", "RE4_Back Side Hair"],
+      "confidence": "medium",
+      "params": {
+        "gravity": [0.0, -9.8, 0.0],
+        "damping": 0.157,
+        "springForce": 0.09,
+        "hardness": 0.605,
+        "springCalcType": 2,
+        "reduceSelfDistanceRate": 0.2,
+        "windEffectCoef": 0.1,
+        "envWindEffectCoef": 0.1,
+        "motionForce": 0.0,
+        "windDelayType": 0,
+        "settingsAttrFlags": 1,
+        "groupDefaultAttr": 0
+      },
+      "notes": "RE4 uses hardness+springCalcType=2 pattern instead of motionForce. windDelayType=0. No subDataValues. NOT directly applicable to MHWilds targets — use only if porting RE4 mods or as fallback reference for springForce calibration."
+    },
+
+    "_re4_body_breast": {
+      "description": "RE4-style breast jiggle. Secondary reference only.",
+      "source_presets": ["RE4_Breast"],
+      "confidence": "medium",
+      "params": {
+        "gravity": [0.0, -3.0, 0.0],
+        "damping": 0.2,
+        "springForce": 0.12,
+        "hardness": 0.116,
+        "angleLimitInteractionRatio": 0.65,
+        "windEffectCoef": 0.0,
+        "motionForce": 0.0,
+        "windDelayType": 0,
+        "groupDefaultAttr": 3
+      },
+      "notes": "RE4 uses reduced gravity (-3) for breast to feel soft without going crazy. angleLimitInteractionRatio=0.65 tightens angle constraints. Compare with MHWilds body_jiggle which uses full gravity -9.8 + damping=0.02."
+    }
+  },
+
+  "_usage_guide": {
+    "selection_logic": "Phase 4A classifies each bone chain's inferred_type. Phase 4B looks up this JSON, extracts the 'params' dict, and passes it to the RE Chain Editor operator. Types prefixed with '_re4_' are reference-only and should not be used for MHWilds targets unless explicitly requested.",
+    "common_mistakes": [
+      "Using hair_long_straight for hair that should float — it has full gravity and no motionForce.",
+      "Using cloth_sleeves_wide for cloth that should feel heavy — its damping=0.00073 is intentionally near-zero.",
+      "Forgetting that groupDefaultAttr differs between types — using 65536 for cloth types that need 65696.",
+      "Applying RE4 presets (_re4_*) to MHWilds targets — they lack subDataValues and use hardness which is ignored in MHWilds."
+    ],
+    "colliderFilterInfoPath_default": "System/Collision/Filter/Character/Character_Chain.cfil",
+    "presetVersion": 6,
+    "subDataValues_template": [[0, 1, 0, 0, 0, 0, 0], [0, 1, 0, 0, 77, 0, 0]]
+  }
+}
