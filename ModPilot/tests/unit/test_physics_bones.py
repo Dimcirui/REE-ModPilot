@@ -332,12 +332,13 @@ class TestPhysicsChains:
 
     def test_successful_pipeline_returns_ok(self):
         new_cs = ["RE_CHAIN_CHAINSETTINGS_0"]
-        # Responses: validate=OK, create=NEW_CS, apply=APPLIED
+        # Responses (SEPARATE mode): validate, create, apply, angle_ramp
         client = MagicMock()
         client.execute_and_extract.side_effect = [
             ["OK"],
-            [f"NEW_CS:{json.dumps(new_cs)}"],
+            [f"NEW_CS:{json.dumps({'new_cs': new_cs, 'col': 'MHWilds_Female.chain2'})}"],
             [f"APPLIED:{json.dumps([])}"],
+            ["RAMP:{'FINISHED'}"],
         ]
         result = self.tool.run(
             client,
@@ -346,19 +347,182 @@ class TestPhysicsChains:
                 "target_armature": "MHWs",
                 "chain_collection": "ChainCol",
                 "inferred_types": {"hair_001": "hair_short"},
-                "x_preset": "MMD",
             },
         )
         assert result.success
         assert result.state_diff["chain_settings_created"] == new_cs
 
-    def test_skipped_params_recorded_in_state_diff(self):
-        skipped = ["RE_CHAIN_CHAINSETTINGS_0.motionForce"]
+    def test_prepare_only_returns_ok_without_chain_creation(self):
+        """prepare_only=True runs cleanup only and returns early."""
+        client = MagicMock()
+        # Responses: validate, clear_and_refresh
+        client.execute_and_extract.side_effect = [
+            ["OK"],
+            ["OK"],
+        ]
+        result = self.tool.run(
+            client,
+            _make_cache(),
+            {
+                "target_armature": "MHWs",
+                "inferred_types": {},  # not required for prepare_only
+                "prepare_only": True,
+            },
+        )
+        assert result.success
+        assert "message" in result.state_diff
+        assert "verify" in result.state_diff["message"].lower()
+        # Must NOT have called create chains — only 2 calls
+        assert client.execute_and_extract.call_count == 2
+
+    def test_prepare_only_armature_not_found_fails(self):
+        """prepare_only=True propagates precondition error from validate."""
+        client = MagicMock()
+        client.execute_and_extract.return_value = ["PRECONDITION:armature_not_found:MHWs"]
+        result = self.tool.run(
+            client,
+            _make_cache(),
+            {
+                "target_armature": "MHWs",
+                "inferred_types": {},
+                "prepare_only": True,
+            },
+        )
+        assert not result.success
+        assert result.error.category == "precondition"
+
+    def test_bones_to_clear_runs_before_merge_and_creation(self):
+        """bones_to_clear fires first, then merge, then create chains."""
+        new_cs = ["RE_CHAIN_CHAINSETTINGS_0"]
+        client = MagicMock()
+        # Responses: validate, clear, merge, create, apply, angle_ramp
+        client.execute_and_extract.side_effect = [
+            ["OK"],
+            ["{'FINISHED'}"],
+            ["{'FINISHED'}"],
+            [f"NEW_CS:{json.dumps({'new_cs': new_cs, 'col': 'MHWilds_Female.chain2'})}"],
+            [f"APPLIED:{json.dumps([])}"],
+            ["RAMP:{'FINISHED'}"],
+        ]
+        result = self.tool.run(
+            client,
+            _make_cache(),
+            {
+                "target_armature": "MHWs",
+                "bones_to_clear": ["Cage", "Cage_L"],
+                "bones_to_merge": ["Ribbon_root"],
+                "inferred_types": {"hair_001": "hair_short"},
+            },
+        )
+        assert result.success
+        assert client.execute_and_extract.call_count == 6
+        # clear call is index 1; verify bone names appear in the code
+        clear_code = client.execute_and_extract.call_args_list[1][0][0]
+        assert "Cage" in clear_code
+        assert "clear_chain_role" in clear_code
+        # merge call is index 2
+        merge_code = client.execute_and_extract.call_args_list[2][0][0]
+        assert "Ribbon_root" in merge_code
+
+    def test_bones_to_clear_without_merge(self):
+        """bones_to_clear works without bones_to_merge."""
+        new_cs = ["RE_CHAIN_CHAINSETTINGS_0"]
+        client = MagicMock()
+        # Responses: validate, clear, create, apply, angle_ramp
+        client.execute_and_extract.side_effect = [
+            ["OK"],
+            ["{'FINISHED'}"],
+            [f"NEW_CS:{json.dumps({'new_cs': new_cs, 'col': 'MHWilds_Female.chain2'})}"],
+            [f"APPLIED:{json.dumps([])}"],
+            ["RAMP:{'FINISHED'}"],
+        ]
+        result = self.tool.run(
+            client,
+            _make_cache(),
+            {
+                "target_armature": "MHWs",
+                "bones_to_clear": ["Cage"],
+                "inferred_types": {"hair_001": "hair_short"},
+            },
+        )
+        assert result.success
+        assert client.execute_and_extract.call_count == 5
+
+    def test_bones_to_clear_failure_stops_pipeline(self):
+        """If clear_chain_role fails, phase fails without calling _create_chains."""
         client = MagicMock()
         client.execute_and_extract.side_effect = [
             ["OK"],
-            ["NEW_CS:[\"RE_CHAIN_CHAINSETTINGS_0\"]"],
+            ["PRECONDITION:armature_not_found"],
+        ]
+        result = self.tool.run(
+            client,
+            _make_cache(),
+            {
+                "target_armature": "MHWs",
+                "bones_to_clear": ["Cage"],
+                "inferred_types": {"hair_001": "hair_short"},
+            },
+        )
+        assert not result.success
+        assert client.execute_and_extract.call_count == 2
+
+    def test_bones_to_merge_runs_before_chain_creation(self):
+        """bones_to_merge step fires before _create_chains."""
+        new_cs = ["RE_CHAIN_CHAINSETTINGS_0"]
+        client = MagicMock()
+        # Responses (SEPARATE mode): validate, merge, create, apply, angle_ramp
+        client.execute_and_extract.side_effect = [
+            ["OK"],
+            ["{'FINISHED'}"],
+            [f"NEW_CS:{json.dumps({'new_cs': new_cs, 'col': 'MHWilds_Female.chain2'})}"],
+            [f"APPLIED:{json.dumps([])}"],
+            ["RAMP:{'FINISHED'}"],
+        ]
+        result = self.tool.run(
+            client,
+            _make_cache(),
+            {
+                "target_armature": "MHWs",
+                "bones_to_merge": ["Ribbon_root"],
+                "inferred_types": {"hair_001": "hair_short"},
+            },
+        )
+        assert result.success
+        assert client.execute_and_extract.call_count == 5
+        # Merge call is the 2nd call (index 1); verify bone name appears in code
+        merge_code = client.execute_and_extract.call_args_list[1][0][0]
+        assert "Ribbon_root" in merge_code
+        assert "merge_into_parent" in merge_code
+
+    def test_merge_failure_stops_pipeline(self):
+        """If merge_into_parent fails, phase fails without calling _create_chains."""
+        client = MagicMock()
+        client.execute_and_extract.side_effect = [
+            ["OK"],
+            ["PRECONDITION:armature_not_found"],
+        ]
+        result = self.tool.run(
+            client,
+            _make_cache(),
+            {
+                "target_armature": "MHWs",
+                "bones_to_merge": ["Ribbon_root"],
+                "inferred_types": {"hair_001": "hair_short"},
+            },
+        )
+        assert not result.success
+        assert client.execute_and_extract.call_count == 2
+
+    def test_skipped_params_recorded_in_state_diff(self):
+        skipped = ["RE_CHAIN_CHAINSETTINGS_0.motionForce"]
+        client = MagicMock()
+        # Responses (SEPARATE mode): validate, create, apply (with skips), angle_ramp
+        client.execute_and_extract.side_effect = [
+            ["OK"],
+            [f"NEW_CS:{json.dumps({'new_cs': ['RE_CHAIN_CHAINSETTINGS_0'], 'col': 'MHWilds_Female.chain2'})}"],
             [f"APPLIED:{json.dumps(skipped)}"],
+            ["RAMP:{'FINISHED'}"],
         ]
         result = self.tool.run(
             client,
@@ -409,17 +573,73 @@ class TestPhysicsChains:
         assert not result.success
         assert result.error.category == "operator_failed"
 
-    def test_apply_params_separate_mode_ordering(self):
-        """SEPARATE mode maps cs_names[i] to alphabetically sorted bone names[i]."""
+    def test_consolidation_deduplicates_same_type_chains(self):
+        """Single type → Blender creates no extra CS; returns {canonical: type}."""
         tool = PhysicsChains()
-        # Two bone heads, two chain settings objects
+        inferred_types = {"aa_bone": "hair_short", "bb_bone": "hair_short"}
+        canonical = "CS_0"
+        consolidated = {"CS_0": "hair_short"}  # single type, no extra CS created
+        client = _make_client([
+            f"CONSOLIDATED:{json.dumps({'cs_to_type': consolidated, 'type_to_cs': {'hair_short': 'CS_0'}, 'errors': [], 'unmapped': []})}"
+        ])
+        _, cs_to_type = tool._consolidate_chain_settings(
+            client, canonical, "MHWilds_Female.chain2", inferred_types
+        )
+        assert cs_to_type == consolidated
+        assert len(cs_to_type) == 1
+
+    def test_consolidation_keeps_separate_types(self):
+        """Two types → Blender creates one extra CS; both types preserved."""
+        tool = PhysicsChains()
+        inferred_types = {"aa_bone": "hair_short", "bb_bone": "cloth_skirt_waist"}
+        canonical = "CS_0"
+        consolidated = {"CS_0": "hair_short", "CS_1": "cloth_skirt_waist"}
+        client = _make_client([
+            f"CONSOLIDATED:{json.dumps({'cs_to_type': consolidated, 'type_to_cs': {'hair_short': 'CS_0', 'cloth_skirt_waist': 'CS_1'}, 'errors': [], 'unmapped': []})}"
+        ])
+        _, cs_to_type = tool._consolidate_chain_settings(
+            client, canonical, "col", inferred_types
+        )
+        assert cs_to_type == consolidated
+        assert len(cs_to_type) == 2
+
+    def test_consolidation_fallback_on_empty_output(self):
+        """No output from Blender → fallback: canonical CS → first unique type."""
+        tool = PhysicsChains()
+        inferred_types = {"aa_bone": "hair_short", "bb_bone": "cloth_skirt_waist"}
+        canonical = "CS_0"
+        client = _make_client([])  # empty output
+        _, cs_to_type = tool._consolidate_chain_settings(
+            client, canonical, "col", inferred_types
+        )
+        # Fallback: canonical maps to alphabetically first type ("cloth_skirt_waist" < "hair_short")
+        assert canonical in cs_to_type
+        assert cs_to_type[canonical] in ("hair_short", "cloth_skirt_waist")
+
+    def test_apply_params_by_type_injects_correct_params(self):
+        """_apply_params_by_type uses type → params mapping, not bone order."""
+        tool = PhysicsChains()
+        inferred_types = {"aa_bone": "hair_short", "bb_bone": "hair_short"}
+        resolved = {
+            "aa_bone": get_physics_params("hair_short"),
+            "bb_bone": get_physics_params("hair_short"),
+        }
+        cs_to_type = {"CS_0": "hair_short"}  # after consolidation, only one CS
+        client = _make_client(["APPLIED:[]"])
+        skipped = tool._apply_params_by_type(client, cs_to_type, inferred_types, resolved)
+        assert skipped == []
+        # Verify Blender code was called with hair_short params
+        code = client.execute_and_extract.call_args[0][0]
+        assert "Character_Chain.cfil" in code  # default collider path
+
+    def test_apply_params_separate_mode_ordering(self):
+        """SEPARATE mode (legacy path, SHARED-like) maps cs_names to bone order."""
+        tool = PhysicsChains()
         inferred_types = {"zz_bone": "hair_long_straight", "aa_bone": "hair_short"}
         resolved = {
             "aa_bone": get_physics_params("hair_short"),
             "zz_bone": get_physics_params("hair_long_straight"),
         }
-        # Expect: aa_bone (index 0) → cs_0, zz_bone (index 1) → cs_1
-        # The code injected into Blender should have params for hair_short first
         client = _make_client(["APPLIED:[]"])
         tool._apply_params_to_chain_settings(
             client,
@@ -429,7 +649,6 @@ class TestPhysicsChains:
             "SEPARATE",
         )
         call_args = client.execute_and_extract.call_args[0][0]
-        # params_list[0] should have damping from hair_short (0.185)
         assert "0.185" in call_args
 
     def test_collider_path_default_injected(self):

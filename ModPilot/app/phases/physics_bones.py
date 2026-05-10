@@ -17,6 +17,11 @@ and are named CHAIN_SETTINGS_00, CHAIN_SETTINGS_01, etc.
 Enum fields (windDelayType, springCalcType, chainType, muzzleDirection,
 motionForceCalcType) require str() conversion before assignment. Fields that
 cannot be set are silently skipped and logged in state_diff["skipped_params"].
+
+mhws.auto_create_chains calling convention (post-toolkit patch):
+  Set toolpanel.chainCollection via PointerProperty BEFORE calling the operator.
+  Do NOT pass chain_collection= as a kwarg — the dynamic enum is unreliable in
+  scripted context; the operator now uses the PointerProperty as fallback.
 """
 
 from __future__ import annotations
@@ -218,14 +223,19 @@ class PhysicsTransplant(PhaseTool):
             f"    print('PRECONDITION:not_found:' + ','.join(missing))\n"
             f"else:\n"
             f"    settings = bpy.context.scene.mhw_suite_settings\n"
-            f"    settings.import_preset_enum = {x_preset!r}\n"
-            f"    settings.target_preset_enum = {y_preset!r}\n"
+            f"    settings.import_preset_enum = {(x_preset + '.json')!r}\n"
+            f"    settings.target_preset_enum = {(y_preset + '.json')!r}\n"
+            f"    bpy.context.view_layer.objects.active = tgt\n"
             f"    bpy.ops.object.mode_set(mode='OBJECT')\n"
             f"    bpy.ops.object.select_all(action='DESELECT')\n"
             f"    src.select_set(True)\n"
             f"    tgt.select_set(True)\n"
-            f"    bpy.context.view_layer.objects.active = tgt\n"
             f"    ret = bpy.ops.{_OP_SMART_GRAFT}()\n"
+            f"    if 'FINISHED' in str(ret):\n"
+            # Step 4: hide source armature — no longer needed after transplant
+            f"        src.hide_viewport = True\n"
+            # Step 5: switch X preset to MHWilds for all downstream ops
+            f"        settings.import_preset_enum = {(y_preset + '.json')!r}\n"
             f"    print({BLENDER_SENTINEL!r})\n"
             f"    print(ret)\n"
         )
@@ -269,8 +279,9 @@ class PhysicsClassification(PhaseTool):
         return {
             "name": "physics_classification",
             "description": (
-                "Phase 4A: Refresh chain_role colors on the target armature and return "
-                "physics bone chain topology data for the agent to classify."
+                "Phase 4A: Refresh chain_role colors on the MHWilds target armature "
+                "(using MHWilds preset, which was set at the end of Phase 3.5) and "
+                "return physics bone chain topology data for the agent to classify."
             ),
             "input_schema": {
                 "type": "object",
@@ -279,13 +290,8 @@ class PhysicsClassification(PhaseTool):
                         "type": "string",
                         "description": "MHWilds ARMATURE object name (post-transplant).",
                     },
-                    "x_preset": {
-                        "type": "string",
-                        "enum": ["MMD", "VRChat", "终末地"],
-                        "description": "X preset for physics bone detection.",
-                    },
                 },
-                "required": ["target_armature", "x_preset"],
+                "required": ["target_armature"],
             },
         }
 
@@ -296,7 +302,6 @@ class PhysicsClassification(PhaseTool):
         params: dict,
     ) -> PhaseResult:
         target_arm = params.get("target_armature", "")
-        x_preset = params.get("x_preset", "")
 
         if not target_arm:
             return PhaseResult.fail(
@@ -306,19 +311,11 @@ class PhysicsClassification(PhaseTool):
                     message="'target_armature' is required.",
                 )
             )
-        if x_preset not in X_PRESETS:
-            return PhaseResult.fail(
-                PhaseError(
-                    category="precondition",
-                    operator="",
-                    message=f"Unknown X preset {x_preset!r}.",
-                )
-            )
 
         state_before = cache.refresh()
 
         try:
-            err, chain_data = self._inspect_and_refresh(client, target_arm, x_preset)
+            err, chain_data = self._inspect_and_refresh(client, target_arm)
             if err is not None:
                 return PhaseResult.fail(err)
         except BlenderError as exc:
@@ -349,45 +346,68 @@ class PhysicsClassification(PhaseTool):
         self,
         client: BlenderClient,
         target_arm: str,
-        x_preset: str,
     ) -> tuple[PhaseError | None, dict]:
+        # After Phase 3.5, X preset is switched to MHWilds (怪猎荒野).
+        # refresh_physics_bone_colors identifies physics bones as those NOT in the
+        # MHWilds preset list — exactly what we want post-transplant.
+        # Each step is wrapped in try/except so Blender errors surface as readable
+        # STEP_ERR messages instead of opaque {"status": "error"} responses.
         code = (
-            f"import bpy, json\n"
+            f"import bpy, json, traceback\n"
             f"arm_obj = bpy.data.objects.get({target_arm!r})\n"
             f"if arm_obj is None:\n"
             f"    print({BLENDER_SENTINEL!r})\n"
             f"    print('PRECONDITION:not_found:{target_arm}')\n"
             f"else:\n"
             f"    settings = bpy.context.scene.mhw_suite_settings\n"
-            f"    settings.import_preset_enum = {x_preset!r}\n"
+            f"    settings.import_preset_enum = '怪猎荒野.json'\n"
+            f"    bpy.context.view_layer.objects.active = arm_obj\n"
+            f"    bpy.ops.object.mode_set(mode='OBJECT')\n"
             f"    bpy.ops.object.select_all(action='DESELECT')\n"
             f"    arm_obj.select_set(True)\n"
-            f"    bpy.context.view_layer.objects.active = arm_obj\n"
-            f"    bpy.ops.object.mode_set(mode='POSE')\n"
-            f"    bpy.ops.{_OP_REFRESH_COLORS}()\n"
+            # refresh_physics_bone_colors is a visualization step; if it fails,
+            # log the error but continue to collect topology data.
+            f"    refresh_err = ''\n"
+            f"    try:\n"
+            f"        bpy.ops.object.mode_set(mode='POSE')\n"
+            f"        bpy.ops.{_OP_REFRESH_COLORS}()\n"
+            f"    except Exception as _e:\n"
+            f"        refresh_err = traceback.format_exc(limit=3)\n"
+            f"        try: bpy.ops.object.mode_set(mode='OBJECT')\n"
+            f"        except: pass\n"
             # Collect chain topology: bones with chain_role = 'head' or 'branch_head'
             f"    chains = []\n"
-            f"    arm = arm_obj.data\n"
-            f"    for bone in arm.bones:\n"
-            f"        role = arm_obj.pose.bones[bone.name].get('chain_role', '')\n"
-            f"        if role in ('head', 'branch_head'):\n"
-            # Walk chain to measure depth
+            f"    chain_err = ''\n"
+            f"    try:\n"
+            f"        arm = arm_obj.data\n"
+            f"        for bone in arm.bones:\n"
+            f"            pb = arm_obj.pose.bones.get(bone.name)\n"
+            f"            if pb is None: continue\n"
+            f"            role = pb.get('chain_role', '')\n"
+            f"            if role not in ('head', 'branch_head'): continue\n"
             f"            depth = 0\n"
             f"            cur = bone\n"
             f"            while cur is not None:\n"
             f"                depth += 1\n"
-            f"                children_roles = [\n"
-            f"                    arm_obj.pose.bones[c.name].get('chain_role', '')\n"
-            f"                    for c in cur.children\n"
+            f"                cont = [\n"
+            f"                    c for c in cur.children\n"
+            f"                    if arm_obj.pose.bones.get(c.name) is not None and\n"
+            f"                       arm_obj.pose.bones[c.name].get('chain_role', '')\n"
+            f"                       not in ('head', 'branch_head', '')\n"
             f"                ]\n"
-            f"                cont = [c for c, r in zip(cur.children, children_roles)\n"
-            f"                        if r not in ('head', 'branch_head') and r != '']\n"
             f"                cur = cont[0] if cont else None\n"
             f"            parent_name = bone.parent.name if bone.parent else ''\n"
             f"            chains.append({{'name': bone.name, 'role': role,\n"
             f"                           'depth': depth, 'parent': parent_name}})\n"
+            f"    except Exception as _e:\n"
+            f"        chain_err = traceback.format_exc(limit=3)\n"
             f"    print({BLENDER_SENTINEL!r})\n"
-            f"    print('CHAINS:' + json.dumps(chains))\n"
+            f"    if chain_err:\n"
+            f"        print('CHAIN_ERR:' + chain_err.replace('\\n', '|'))\n"
+            f"    elif refresh_err:\n"
+            f"        print('REFRESH_ERR:' + refresh_err.replace('\\n', '|'))\n"
+            f"    else:\n"
+            f"        print('CHAINS:' + json.dumps(chains))\n"
         )
         lines = client.execute_and_extract(code)
         if not lines:
@@ -406,6 +426,30 @@ class PhysicsClassification(PhaseTool):
                     operator=_OP_REFRESH_COLORS,
                     message=f"Armature {target_arm!r} not found in scene.",
                     suggestion="Run physics_transplant first.",
+                ),
+                {},
+            )
+        if lines[0].startswith("CHAIN_ERR:"):
+            detail = lines[0][len("CHAIN_ERR:"):].replace("|", "\n")
+            return (
+                PhaseError(
+                    category="unexpected",
+                    operator="chain topology walk",
+                    message="Failed to walk physics bone chain topology.",
+                    raw=detail,
+                ),
+                {},
+            )
+        if lines[0].startswith("REFRESH_ERR:"):
+            # Color refresh failed but topology is still available: degrade gracefully.
+            # Return empty chains — the error surfaces as a warning in state_diff.
+            detail = lines[0][len("REFRESH_ERR:"):].replace("|", "\n")
+            return (
+                PhaseError(
+                    category="operator_failed",
+                    operator=_OP_REFRESH_COLORS,
+                    message="refresh_physics_bone_colors raised an exception.",
+                    raw=detail,
                 ),
                 {},
             )
@@ -444,11 +488,11 @@ class PhysicsChains(PhaseTool):
 
     Pipeline:
       Step 1 — Validate inferred_types and resolve each to a params dict.
-      Step 2 — Verify armature + chain collection exist in Blender.
-      Step 3 — Snapshot existing CHAINSETTINGS objects before creation.
-      Step 4 — Call mhws.auto_create_chains (SEPARATE or SHARED mode).
-      Step 5 — Identify newly created CHAINSETTINGS objects.
-      Step 6 — Apply physics params from JSON to each new object.
+      Step 2 — Verify armature exists in Blender.
+      Step 3 — Merge '合并到父级' bones into parents (if any).
+      Step 4 — Discover / create RE Chain collection; set toolpanel.chainCollection
+               (PointerProperty); call mhws.auto_create_chains; identify new objects.
+      Step 5 — Apply physics params from JSON to each new chain settings object.
     """
 
     @property
@@ -473,36 +517,69 @@ class PhysicsChains(PhaseTool):
                     },
                     "chain_collection": {
                         "type": "string",
-                        "description": "Blender Collection name containing the RE_CHAIN_HEADER object.",
+                        "description": (
+                            "Optional hint: Blender Collection name for the RE Chain collection. "
+                            "Must have '.chain' or '.clsp' in its name and be a valid "
+                            "RE_CHAIN_COLLECTION (created via RE Chain Editor). "
+                            "If omitted, the phase auto-discovers the first matching collection "
+                            "in the scene."
+                        ),
+                    },
+                    "bones_to_clear": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Bone names whose chain_role marks should be cleared before "
+                            "chain creation. Use for native game bones that were accidentally "
+                            "marked by refresh_physics_bone_colors and should NOT participate "
+                            "in physics (e.g. Cage, Cage_L). The bones remain in the armature "
+                            "— only their chain_role custom property is removed. "
+                            "Runs BEFORE bones_to_merge and chain creation."
+                        ),
+                    },
+                    "bones_to_merge": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Bone names classified as '合并到父级'. "
+                            "Each bone's vertex weights are merged into its direct parent "
+                            "via modder.merge_into_parent; the bone is then deleted and its "
+                            "children reconnect to the grandparent. "
+                            "This step runs BEFORE chain creation."
+                        ),
                     },
                     "inferred_types": {
                         "type": "object",
                         "description": (
-                            "Map of chain_head_bone_name → inferred_type. "
+                            "Map of chain_head_bone_name → inferred_type for bones "
+                            "classified as '启用物理'. "
                             f"Valid types: {list_inferred_types()}"
                         ),
                         "additionalProperties": {"type": "string"},
-                    },
-                    "x_preset": {
-                        "type": "string",
-                        "enum": ["MMD", "VRChat", "终末地"],
-                        "description": "X preset for physics bone detection.",
                     },
                     "settings_mode": {
                         "type": "string",
                         "enum": ["SEPARATE", "SHARED"],
                         "description": (
-                            "SEPARATE: one chain settings object per chain (required when "
-                            "chains have different inferred_types). SHARED: all chains share "
-                            "one settings object."
+                            "SEPARATE (default): one chain settings object per chain "
+                            "(correct for scenes with different inferred_types). "
+                            "SHARED: all chains share one settings object (experimental)."
+                        ),
+                    },
+                    "prepare_only": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, clear all chain_role marks and bone colors on the "
+                            "armature, then re-detect physics bones via "
+                            "refresh_physics_bone_colors. Returns immediately — call "
+                            "physics_chains again (without prepare_only) after the user "
+                            "has confirmed bone colors look correct in Blender."
                         ),
                     },
                 },
                 "required": [
                     "target_armature",
-                    "chain_collection",
                     "inferred_types",
-                    "x_preset",
                 ],
             },
         }
@@ -515,9 +592,11 @@ class PhysicsChains(PhaseTool):
     ) -> PhaseResult:
         target_arm = params.get("target_armature", "")
         chain_col = params.get("chain_collection", "")
+        bones_to_clear: list[str] = params.get("bones_to_clear") or []
+        bones_to_merge: list[str] = params.get("bones_to_merge") or []
         inferred_types: dict[str, str] = params.get("inferred_types", {})
-        x_preset = params.get("x_preset", "")
         settings_mode = params.get("settings_mode", "SEPARATE")
+        prepare_only: bool = bool(params.get("prepare_only", False))
 
         # ── param validation ───────────────────────────────────────────────
         if not target_arm:
@@ -528,15 +607,56 @@ class PhysicsChains(PhaseTool):
                     message="'target_armature' is required.",
                 )
             )
-        if not chain_col:
+        if settings_mode not in ("SEPARATE", "SHARED"):
             return PhaseResult.fail(
                 PhaseError(
                     category="precondition",
                     operator="",
-                    message="'chain_collection' is required.",
-                    suggestion="Create a collection with a RE_CHAIN_HEADER object first.",
+                    message=f"settings_mode must be 'SEPARATE' or 'SHARED', got {settings_mode!r}.",
                 )
             )
+
+        # ── prepare_only branch: cleanup chain_role marks + colors, refresh ──
+        if prepare_only:
+            state_before = cache.refresh()
+            try:
+                err = self._validate_scene(client, target_arm)
+                if err is not None:
+                    return PhaseResult.fail(err)
+                err = self._clear_and_refresh_chain_roles(client, target_arm)
+                if err is not None:
+                    return PhaseResult.fail(err)
+            except BlenderError as exc:
+                return PhaseResult.fail(
+                    PhaseError(
+                        category="unexpected",
+                        operator=_OP_REFRESH_COLORS,
+                        message="Blender error during chain_role cleanup.",
+                        raw=str(exc),
+                    )
+                )
+            except OSError as exc:
+                return PhaseResult.fail(
+                    PhaseError(
+                        category="timeout",
+                        operator=_OP_REFRESH_COLORS,
+                        message="Lost connection to Blender during chain_role cleanup.",
+                        raw=str(exc),
+                    )
+                )
+            state_after = cache.refresh()
+            diff = state_before.diff(state_after)
+            diff["message"] = (
+                "All chain_role marks cleared and bone colors reset. "
+                "Physics bones re-detected via refresh_physics_bone_colors. "
+                "Please verify bone colors in Blender — physics bones should be "
+                "highlighted with their chain_role color. Once confirmed, call "
+                "physics_chains again (with inferred_types) to create RE Chain structures."
+            )
+            return PhaseResult.ok(diff)
+
+        # ── chain creation branch ─────────────────────────────────────────
+        # chain_col is optional; _create_chains auto-discovers if empty
         if not inferred_types:
             return PhaseResult.fail(
                 PhaseError(
@@ -544,22 +664,6 @@ class PhysicsChains(PhaseTool):
                     operator="",
                     message="'inferred_types' must be a non-empty dict of bone → type pairs.",
                     suggestion="Run physics_classification first to get chain heads.",
-                )
-            )
-        if x_preset not in X_PRESETS:
-            return PhaseResult.fail(
-                PhaseError(
-                    category="precondition",
-                    operator="",
-                    message=f"Unknown X preset {x_preset!r}.",
-                )
-            )
-        if settings_mode not in ("SEPARATE", "SHARED"):
-            return PhaseResult.fail(
-                PhaseError(
-                    category="precondition",
-                    operator="",
-                    message=f"settings_mode must be 'SEPARATE' or 'SHARED', got {settings_mode!r}.",
                 )
             )
 
@@ -585,22 +689,54 @@ class PhysicsChains(PhaseTool):
         state_before = cache.refresh()
 
         try:
-            # Step 1 — validate scene objects
-            err = self._validate_scene(client, target_arm, chain_col)
+            # Step 1 — validate armature; chain collection discovered in step 3
+            err = self._validate_scene(client, target_arm)
             if err is not None:
                 return PhaseResult.fail(err)
 
-            # Step 2 — snapshot, create chains, find new objects
-            err, new_cs_names = self._create_chains(
-                client, target_arm, chain_col, x_preset, settings_mode
+            # Step 2a — clear chain_role on native game bones that must not be physics
+            if bones_to_clear:
+                err = self._clear_specific_bone_roles(client, target_arm, bones_to_clear)
+                if err is not None:
+                    return PhaseResult.fail(err)
+
+            # Step 2b — merge '合并到父级' bones into their parents before chain creation
+            if bones_to_merge:
+                err = self._merge_into_parents(client, target_arm, bones_to_merge)
+                if err is not None:
+                    return PhaseResult.fail(err)
+
+            # Step 3 — create chains; settings_mode controls CS count per chain
+            err, new_cs_names, chain_col_name = self._create_chains(
+                client, target_arm, chain_col, settings_mode
             )
             if err is not None:
                 return PhaseResult.fail(err)
 
-            # Step 3 — apply physics params to newly created chain settings
-            skipped = self._apply_params_to_chain_settings(
-                client, new_cs_names, inferred_types, resolved, settings_mode
-            )
+            # Step 4 — apply physics params to chain settings objects
+            if new_cs_names:
+                if settings_mode == "SEPARATE":
+                    # One CS per chain — apply params in alphabetical bone order
+                    # (consistent with operator iteration order)
+                    skipped = self._apply_params_to_chain_settings(
+                        client, new_cs_names, inferred_types, resolved, "SEPARATE"
+                    )
+                    final_cs = new_cs_names
+                else:
+                    # SHARED: one CS was created; split into per-type CS via consolidation
+                    _, cs_to_type = self._consolidate_chain_settings(
+                        client, new_cs_names[0], chain_col_name, inferred_types
+                    )
+                    skipped = self._apply_params_by_type(
+                        client, cs_to_type, inferred_types, resolved
+                    )
+                    final_cs = list(cs_to_type.keys())
+            else:
+                skipped = []
+                final_cs = []
+
+            # Step 5 — angle limit ramp on all new chain groups (default 60°, 4 iter)
+            self._apply_angle_limit_ramp(client, chain_col_name)
 
         except BlenderError as exc:
             return PhaseResult.fail(
@@ -623,29 +759,117 @@ class PhysicsChains(PhaseTool):
 
         state_after = cache.refresh()
         diff = state_before.diff(state_after)
-        diff["chain_settings_created"] = new_cs_names
+        diff["chain_settings_created"] = final_cs
         if skipped:
             diff["skipped_params"] = skipped
         return PhaseResult.ok(diff)
 
     # ── private helpers ────────────────────────────────────────────────────
 
+    def _clear_and_refresh_chain_roles(
+        self,
+        client: BlenderClient,
+        target_arm: str,
+    ) -> "PhaseError | None":
+        """
+        Clear stale chain_role marks and bone colors, then re-detect physics bones.
+
+        Sequence:
+          1. Enter POSE mode; select all bones.
+          2. Call modder.clear_chain_role() — removes the chain_role custom property
+             from every selected bone. Does NOT remove bone colors.
+          3. Reset bone color palette to DEFAULT for all pose bones (color removal).
+          4. Call modder.refresh_physics_bone_colors() — re-detects physics bones
+             using the active X preset and marks correct chain_roles + colors.
+
+        This prevents stale chain_role marks from prior sessions causing spurious
+        chain groups during auto_create_chains (e.g. body bones incorrectly getting
+        chain_role='head' → one CHAINGROUP per body bone).
+        """
+        _OP_CLEAR_ROLE = "modder.clear_chain_role"
+        code = (
+            f"import bpy\n"
+            f"arm_obj = bpy.data.objects.get({target_arm!r})\n"
+            f"if arm_obj is None:\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    print('PRECONDITION:not_found:{target_arm}')\n"
+            f"else:\n"
+            # Step 1: enter POSE mode and select all bones
+            f"    bpy.context.view_layer.objects.active = arm_obj\n"
+            f"    bpy.ops.object.mode_set(mode='OBJECT')\n"
+            f"    bpy.ops.object.select_all(action='DESELECT')\n"
+            f"    arm_obj.select_set(True)\n"
+            f"    bpy.ops.object.mode_set(mode='POSE')\n"
+            f"    bpy.ops.pose.select_all(action='SELECT')\n"
+            # Step 2: clear chain_role custom properties from all selected bones
+            f"    clear_err = ''\n"
+            f"    try:\n"
+            f"        bpy.ops.{_OP_CLEAR_ROLE}()\n"
+            f"    except Exception as _e:\n"
+            f"        clear_err = str(_e)[:120]\n"
+            # Step 3: clear bone colors (palette reset — clear_chain_role does NOT do this)
+            f"    for pb in arm_obj.pose.bones:\n"
+            f"        try: pb.color.palette = 'DEFAULT'\n"
+            f"        except Exception: pass\n"
+            # Step 4: re-detect physics bones and mark correct chain_roles + colors
+            f"    refresh_err = ''\n"
+            f"    try:\n"
+            f"        bpy.ops.{_OP_REFRESH_COLORS}()\n"
+            f"    except Exception as _e:\n"
+            f"        refresh_err = str(_e)[:120]\n"
+            f"    bpy.ops.object.mode_set(mode='OBJECT')\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    if clear_err:\n"
+            f"        print('CLEAR_ERR:' + clear_err)\n"
+            f"    elif refresh_err:\n"
+            f"        print('REFRESH_ERR:' + refresh_err)\n"
+            f"    else:\n"
+            f"        print('OK')\n"
+        )
+        lines = client.execute_and_extract(code)
+        if not lines:
+            return PhaseError(
+                category="operator_failed",
+                operator=_OP_CLEAR_ROLE,
+                message="clear_chain_role returned no output from Blender.",
+            )
+        if lines[0].startswith("PRECONDITION:"):
+            return PhaseError(
+                category="precondition",
+                operator=_OP_CLEAR_ROLE,
+                message=f"Armature {target_arm!r} not found.",
+                suggestion="Ensure physics_transplant has been run successfully.",
+            )
+        if lines[0].startswith("CLEAR_ERR:"):
+            detail = lines[0][len("CLEAR_ERR:"):]
+            return PhaseError(
+                category="operator_failed",
+                operator=_OP_CLEAR_ROLE,
+                message="clear_chain_role raised an exception.",
+                raw=detail,
+            )
+        if lines[0].startswith("REFRESH_ERR:"):
+            detail = lines[0][len("REFRESH_ERR:"):]
+            return PhaseError(
+                category="operator_failed",
+                operator=_OP_REFRESH_COLORS,
+                message="refresh_physics_bone_colors raised an exception after clearing roles.",
+                raw=detail,
+            )
+        return None  # 'OK'
+
     def _validate_scene(
         self,
         client: BlenderClient,
         target_arm: str,
-        chain_col: str,
     ) -> PhaseError | None:
+        """Validate only the armature; chain collection is discovered in _create_chains."""
         code = (
             f"import bpy\n"
             f"arm_obj = bpy.data.objects.get({target_arm!r})\n"
-            f"col = bpy.data.collections.get({chain_col!r})\n"
-            f"missing = []\n"
-            f"if arm_obj is None: missing.append('armature:' + {target_arm!r})\n"
-            f"if col is None: missing.append('collection:' + {chain_col!r})\n"
             f"print({BLENDER_SENTINEL!r})\n"
-            f"if missing:\n"
-            f"    print('PRECONDITION:' + '|'.join(missing))\n"
+            f"if arm_obj is None:\n"
+            f"    print('PRECONDITION:armature_not_found:{target_arm}')\n"
             f"else:\n"
             f"    print('OK')\n"
         )
@@ -657,62 +881,212 @@ class PhysicsChains(PhaseTool):
                 message="Scene validation returned no output from Blender.",
             )
         if lines[0].startswith("PRECONDITION:"):
-            detail = lines[0][len("PRECONDITION:"):]
             return PhaseError(
                 category="precondition",
                 operator="",
-                message=f"Required objects not found: {detail}",
-                suggestion=(
-                    "Ensure the MHWilds armature is in the scene and the chain "
-                    "collection with RE_CHAIN_HEADER has been created."
-                ),
+                message=f"MHWilds armature {target_arm!r} not found in scene.",
+                suggestion="Ensure physics_transplant has been run successfully.",
             )
         return None
+
+    def _clear_specific_bone_roles(
+        self,
+        client: BlenderClient,
+        target_arm: str,
+        bone_names: list[str],
+    ) -> "PhaseError | None":
+        """
+        Clear chain_role marks on specific named bones without affecting the rest.
+
+        Use for native game bones that were accidentally picked up by
+        refresh_physics_bone_colors and should NOT participate in physics
+        (e.g. Cage, Cage_L). The bones remain in the armature unchanged —
+        only their chain_role custom property is removed via modder.clear_chain_role.
+
+        Runs BEFORE bones_to_merge and chain creation.
+        """
+        _OP_CLEAR_ROLE = "modder.clear_chain_role"
+        names_json = json.dumps(bone_names, ensure_ascii=False)
+        code = (
+            f"import bpy\n"
+            f"bone_names = {names_json}\n"
+            f"arm_obj = bpy.data.objects.get({target_arm!r})\n"
+            f"if arm_obj is None:\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    print('PRECONDITION:armature_not_found')\n"
+            f"else:\n"
+            f"    bpy.context.view_layer.objects.active = arm_obj\n"
+            f"    bpy.ops.object.mode_set(mode='OBJECT')\n"
+            f"    bpy.ops.object.select_all(action='DESELECT')\n"
+            f"    arm_obj.select_set(True)\n"
+            f"    bpy.ops.object.mode_set(mode='POSE')\n"
+            f"    bpy.ops.pose.select_all(action='DESELECT')\n"
+            f"    missing = []\n"
+            f"    for name in bone_names:\n"
+            f"        pb = arm_obj.pose.bones.get(name)\n"
+            f"        if pb: pb.bone.select = True\n"
+            f"        else: missing.append(name)\n"
+            f"    ret = bpy.ops.{_OP_CLEAR_ROLE}()\n"
+            f"    bpy.ops.object.mode_set(mode='OBJECT')\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    if missing:\n"
+            f"        print('WARN:not_found:' + ','.join(missing))\n"
+            f"    print(str(ret))\n"
+        )
+        lines = client.execute_and_extract(code)
+        if not lines:
+            return PhaseError(
+                category="operator_failed",
+                operator=_OP_CLEAR_ROLE,
+                message="clear_chain_role (specific bones) returned no output from Blender.",
+            )
+        if lines[0].startswith("PRECONDITION:"):
+            return PhaseError(
+                category="precondition",
+                operator=_OP_CLEAR_ROLE,
+                message=f"Armature {target_arm!r} not found — cannot clear bone marks.",
+            )
+        # WARN:not_found is non-fatal: some bones may have been renamed; log and continue
+        result_line = lines[-1]
+        return require_finished([result_line], _OP_CLEAR_ROLE)
+
+    def _merge_into_parents(
+        self,
+        client: BlenderClient,
+        target_arm: str,
+        bone_names: list[str],
+    ) -> PhaseError | None:
+        """
+        Select the given bones and call modder.merge_into_parent in POSE mode.
+
+        Each bone's vertex weights are merged into its direct parent; the bone is
+        deleted and its children reconnect to the grandparent automatically.
+        The operator also auto-refreshes chain_role bone colors.
+        """
+        names_json = json.dumps(bone_names, ensure_ascii=False)
+        op = "modder.merge_into_parent"
+        code = (
+            f"import bpy\n"
+            f"bone_names = {names_json}\n"
+            f"arm_obj = bpy.data.objects.get({target_arm!r})\n"
+            f"if arm_obj is None:\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    print('PRECONDITION:armature_not_found')\n"
+            f"else:\n"
+            f"    bpy.context.view_layer.objects.active = arm_obj\n"
+            f"    bpy.ops.object.mode_set(mode='OBJECT')\n"
+            f"    bpy.ops.object.select_all(action='DESELECT')\n"
+            f"    arm_obj.select_set(True)\n"
+            f"    bpy.ops.object.mode_set(mode='POSE')\n"
+            f"    bpy.ops.pose.select_all(action='DESELECT')\n"
+            f"    for name in bone_names:\n"
+            f"        pb = arm_obj.pose.bones.get(name)\n"
+            f"        if pb: pb.bone.select = True\n"
+            f"    ret = bpy.ops.{op}()\n"
+            f"    bpy.ops.object.mode_set(mode='OBJECT')\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    print(str(ret))\n"
+        )
+        lines = client.execute_and_extract(code)
+        if not lines:
+            return PhaseError(
+                category="operator_failed",
+                operator=op,
+                message="merge_into_parent returned no output from Blender.",
+            )
+        if lines[0].startswith("PRECONDITION:"):
+            return PhaseError(
+                category="precondition",
+                operator=op,
+                message=f"Armature {target_arm!r} not found — cannot merge bones.",
+            )
+        return require_finished(lines, op)
 
     def _create_chains(
         self,
         client: BlenderClient,
         target_arm: str,
         chain_col: str,
-        x_preset: str,
-        settings_mode: str,
-    ) -> tuple[PhaseError | None, list[str]]:
+        settings_mode: str = "SEPARATE",
+    ) -> tuple[PhaseError | None, list[str], str]:
         """
-        Snapshot CHAINSETTINGS objects, call mhws.auto_create_chains,
-        return names of newly created CHAINSETTINGS objects.
+        Discover the RE Chain collection, snapshot existing CHAINSETTINGS objects,
+        set re_chain_toolpanel.chainCollection (PointerProperty — NOT enum kwarg),
+        call mhws.auto_create_chains with the given settings_mode, and return the
+        list of newly created CHAINSETTINGS object names plus the collection name.
+
+        settings_mode='SEPARATE' (default): creates one CS per chain head.
+        settings_mode='SHARED': creates one CS shared by all chains (used by the
+        SHARED consolidation path).
+
+        Uses a 300-second socket timeout because auto_create_chains can be slow
+        for scenes with many chain heads (45+ chains ≈ 30-120 seconds).
+
+        chain_collection discovery rules (in order):
+          1. Use chain_col hint if provided and the collection has .chain/.clsp suffix.
+          2. Auto-discover: prefer a collection with ~TYPE=RE_CHAIN_COLLECTION;
+             fall back to any .chain/.clsp collection in the scene.
+          3. Auto-create via re_chain.create_chain_header if still none found.
+
+        Calling convention (post-toolkit patch):
+          toolpanel.chainCollection = chain_col  ← PointerProperty assignment
+          bpy.ops.mhws.auto_create_chains(settings_mode=...)  ← no chain_collection kwarg
         """
         code = (
-            f"import bpy\n"
-            # RE Chain Editor marks chain settings objects with TYPE custom property
-            # and names them CHAIN_SETTINGS_00, CHAIN_SETTINGS_01, etc.
-            f"def _is_cs(obj):\n"
-            f"    return obj.get('TYPE') == 'RE_CHAIN_CHAINSETTINGS'\n"
+            f"import bpy, json\n"
+            f"def _is_cs(obj): return obj.get('TYPE') == 'RE_CHAIN_CHAINSETTINGS'\n"
             f"existing_cs = set(obj.name for obj in bpy.data.objects if _is_cs(obj))\n"
-            # Set up scene
+            # Look up arm_obj early so it can be used as active object before mode_set calls
             f"arm_obj = bpy.data.objects.get({target_arm!r})\n"
-            f"settings = bpy.context.scene.mhw_suite_settings\n"
-            f"settings.import_preset_enum = {x_preset!r}\n"
-            f"bpy.ops.object.mode_set(mode='OBJECT')\n"
-            f"bpy.ops.object.select_all(action='DESELECT')\n"
-            f"arm_obj.select_set(True)\n"
-            f"bpy.context.view_layer.objects.active = arm_obj\n"
-            f"bpy.ops.object.mode_set(mode='POSE')\n"
-            # Call operator
-            f"ret = bpy.ops.{_OP_AUTO_CHAINS}(\n"
-            f"    chain_collection={chain_col!r},\n"
-            f"    settings_mode={settings_mode!r},\n"
-            f")\n"
-            # Find new CHAINSETTINGS objects
-            f"new_cs = [obj.name for obj in bpy.data.objects\n"
-            f"          if _is_cs(obj) and obj.name not in existing_cs]\n"
-            f"print({BLENDER_SENTINEL!r})\n"
-            f"if 'FINISHED' not in str(ret):\n"
-            f"    print('CANCELLED:' + str(ret))\n"
+            # Step 1: discover chain collection
+            f"chain_col = None\n"
+            f"hint = {chain_col!r}\n"
+            f"if hint:\n"
+            f"    _c = bpy.data.collections.get(hint)\n"
+            f"    if _c and ('.chain' in _c.name or '.clsp' in _c.name):\n"
+            f"        chain_col = _c\n"
+            # Auto-discover: prefer ~TYPE-tagged collection, fall back to name match
+            f"if chain_col is None:\n"
+            f"    for _c in bpy.data.collections:\n"
+            f"        if ('.chain' in _c.name or '.clsp' in _c.name):\n"
+            f"            if _c.get('~TYPE') == 'RE_CHAIN_COLLECTION':\n"
+            f"                chain_col = _c\n"
+            f"                break\n"
+            f"            elif chain_col is None:\n"
+            f"                chain_col = _c\n"
+            # Step 2: auto-create if still not found
+            f"if chain_col is None:\n"
+            f"    if arm_obj: bpy.context.view_layer.objects.active = arm_obj\n"
+            f"    bpy.ops.object.mode_set(mode='OBJECT')\n"
+            f"    bpy.ops.re_chain.create_chain_header(\n"
+            f"        collectionName='MHWilds_Female',\n"
+            f"        chainFormat='.chain2',\n"
+            f"    )\n"
+            f"    chain_col = bpy.data.collections.get('MHWilds_Female.chain2')\n"
+            f"if chain_col is None:\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    print('PRECONDITION:chain_collection_create_failed')\n"
             f"else:\n"
-            f"    import json\n"
-            f"    print('NEW_CS:' + json.dumps(new_cs))\n"
+            # Step 3: set PointerProperty (avoids dynamic enum callback issues),
+            # select armature in POSE mode, call auto_create_chains without kwarg
+            f"    bpy.context.scene.re_chain_toolpanel.chainCollection = chain_col\n"
+            f"    settings = bpy.context.scene.mhw_suite_settings\n"
+            f"    settings.import_preset_enum = '怪猎荒野.json'\n"
+            f"    if arm_obj: bpy.context.view_layer.objects.active = arm_obj\n"
+            f"    bpy.ops.object.mode_set(mode='OBJECT')\n"
+            f"    bpy.ops.object.select_all(action='DESELECT')\n"
+            f"    if arm_obj: arm_obj.select_set(True)\n"
+            f"    bpy.ops.object.mode_set(mode='POSE')\n"
+            f"    ret = bpy.ops.{_OP_AUTO_CHAINS}(settings_mode={settings_mode!r})\n"
+            f"    new_cs = [obj.name for obj in bpy.data.objects\n"
+            f"              if _is_cs(obj) and obj.name not in existing_cs]\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    if 'FINISHED' not in str(ret):\n"
+            f"        print('CANCELLED:' + str(ret))\n"
+            f"    else:\n"
+            f"        print('NEW_CS:' + json.dumps({{'new_cs': new_cs, 'col': chain_col.name}}))\n"
         )
-        lines = client.execute_and_extract(code)
+        lines = client.execute_and_extract(code, timeout=300)
         if not lines:
             return (
                 PhaseError(
@@ -721,6 +1095,24 @@ class PhysicsChains(PhaseTool):
                     message="auto_create_chains returned no output.",
                 ),
                 [],
+                "",
+            )
+        if lines[0].startswith("PRECONDITION:chain_collection_create_failed"):
+            return (
+                PhaseError(
+                    category="precondition",
+                    operator=_OP_AUTO_CHAINS,
+                    message=(
+                        "No RE Chain collection found and auto-create failed. "
+                        "A collection with '.chain' or '.clsp' in its name is required."
+                    ),
+                    suggestion=(
+                        "In RE Chain Editor, create a chain collection "
+                        "(e.g. 'MHWilds_Female.chain2') before running this phase."
+                    ),
+                ),
+                [],
+                "",
             )
         if lines[0].startswith("CANCELLED:"):
             return (
@@ -734,11 +1126,14 @@ class PhysicsChains(PhaseTool):
                     ),
                 ),
                 [],
+                "",
             )
         if lines[0].startswith("NEW_CS:"):
             try:
-                new_cs_names: list[str] = json.loads(lines[0][len("NEW_CS:"):])
-                return None, new_cs_names
+                payload = json.loads(lines[0][len("NEW_CS:"):])
+                new_cs_names: list[str] = payload.get("new_cs", [])
+                col_name: str = payload.get("col", "")
+                return None, new_cs_names, col_name
             except json.JSONDecodeError:
                 return (
                     PhaseError(
@@ -747,6 +1142,7 @@ class PhysicsChains(PhaseTool):
                         message="Could not parse new chain settings names from Blender.",
                     ),
                     [],
+                    "",
                 )
         return (
             PhaseError(
@@ -755,6 +1151,7 @@ class PhysicsChains(PhaseTool):
                 message=f"Unexpected output: {lines[0]!r}",
             ),
             [],
+            "",
         )
 
     def _apply_params_to_chain_settings(
@@ -777,10 +1174,10 @@ class PhysicsChains(PhaseTool):
 
         Returns a list of skipped param keys (those that could not be set).
 
-        NOTE: Parameter assignment uses Blender's custom property interface (obj[key]).
-        RE Chain Editor stores chain settings fields as custom RNA properties accessible
-        this way. If a field cannot be set (read-only / wrong type), it is silently
-        skipped and logged in the return list.
+        NOTE: Parameter assignment uses Blender's RNA PropertyGroup interface (setattr).
+        RE Chain Editor stores chain settings fields as PropertyGroup attributes.
+        If a field cannot be set (read-only / wrong type), it is silently skipped and
+        logged in the return list.
         """
         if not cs_names:
             return []
@@ -790,12 +1187,10 @@ class PhysicsChains(PhaseTool):
         params_list: list[dict] = []
 
         if settings_mode == "SHARED":
-            # Apply the first inferred_type's params to the single shared object
             first_bone = ordered_bone_names[0] if ordered_bone_names else ""
             shared_params = resolved_params.get(first_bone, {})
             params_list = [shared_params] * len(cs_names)
         else:
-            # SEPARATE: match cs_names[i] to ordered_bone_names[i]
             for i in range(len(cs_names)):
                 bone_name = ordered_bone_names[i] if i < len(ordered_bone_names) else ordered_bone_names[-1]
                 params_list.append(resolved_params.get(bone_name, {}))
@@ -850,3 +1245,246 @@ class PhysicsChains(PhaseTool):
             except json.JSONDecodeError:
                 pass
         return []
+
+    def _consolidate_chain_settings(
+        self,
+        client: BlenderClient,
+        canonical_cs_name: str,
+        col_name: str,
+        inferred_types: dict[str, str],
+    ) -> tuple[PhaseError | None, dict[str, str]]:
+        """
+        Split the single shared CHAINSETTINGS into one CS per unique inferred_type.
+
+        Strategy (SHARED + create per type):
+          1. Discover CHAINGROUP → bone_name by reading the first child CHAINNODE's
+             parent_bone property (re_chain_chainnode or re_chain_chainnodesettings PG).
+          2. Group CHAINGROUPs by inferred_type.
+          3. The alphabetically-first type gets the existing canonical CS.
+          4. Each additional type: call re_chain.create_chain_settings() to create a new
+             CS object inside the chain collection; detect by diffing object names.
+          5. Reassign CHAINGROUPs of non-first types to their new CS.
+
+        Returns (None, cs_to_type) — always non-fatal. Fallback: canonical CS → first type.
+        """
+        unique_types = sorted(set(inferred_types.values()))
+        _fallback: dict[str, str] = {canonical_cs_name: unique_types[0] if unique_types else ""}
+
+        inferred_json = json.dumps(inferred_types, ensure_ascii=False)
+        code = (
+            f"import bpy, json\n"
+            f"canonical_cs_name = {canonical_cs_name!r}\n"
+            f"col_name = {col_name!r}\n"
+            f"inferred_types = {inferred_json}\n"
+            f"col = bpy.data.collections.get(col_name)\n"
+            # Step 1: discover CHAINGROUP→bone via first child CHAINNODE's parent_bone
+            f"cg_to_bone = {{}}\n"
+            f"col_obj_names = {{o.name for o in col.all_objects}} if col else None\n"
+            f"for obj in bpy.data.objects:\n"
+            f"    if obj.get('TYPE') != 'RE_CHAIN_CHAINGROUP': continue\n"
+            f"    if col_obj_names is not None and obj.name not in col_obj_names: continue\n"
+            f"    for child in obj.children:\n"
+            f"        if child.get('TYPE') != 'RE_CHAIN_CHAINNODE': continue\n"
+            f"        for pname in ('re_chain_chainnode', 're_chain_chainnodesettings'):\n"
+            f"            pg = getattr(child, pname, None)\n"
+            f"            if pg is not None and hasattr(pg, 'parent_bone') and pg.parent_bone:\n"
+            f"                cg_to_bone[obj.name] = pg.parent_bone\n"
+            f"                break\n"
+            f"        if obj.name in cg_to_bone: break\n"
+            # Step 2: group CHAINGROUPs by inferred_type
+            f"type_to_cgs = {{}}\n"
+            f"unmapped = []\n"
+            f"for cg_name, bone_name in cg_to_bone.items():\n"
+            f"    itype = inferred_types.get(bone_name)\n"
+            f"    if itype: type_to_cgs.setdefault(itype, []).append(cg_name)\n"
+            f"    else: unmapped.append(cg_name + ':' + bone_name)\n"
+            f"unique_types = sorted(type_to_cgs.keys())\n"
+            # Step 3: assign canonical CS to first type; create new CS for remaining types
+            f"cs_to_type = {{}}\n"
+            f"type_to_cs = {{}}\n"
+            f"errors = []\n"
+            f"if unique_types:\n"
+            f"    type_to_cs[unique_types[0]] = canonical_cs_name\n"
+            f"    cs_to_type[canonical_cs_name] = unique_types[0]\n"
+            f"    if len(unique_types) > 1:\n"
+            f"        _cs0 = bpy.data.objects.get(canonical_cs_name)\n"
+            f"        if _cs0: bpy.context.view_layer.objects.active = _cs0\n"
+            f"        bpy.ops.object.mode_set(mode='OBJECT')\n"
+            f"        if col: bpy.context.scene.re_chain_toolpanel.chainCollection = col\n"
+            f"        for itype in unique_types[1:]:\n"
+            f"            before = {{o.name for o in bpy.data.objects if o.get('TYPE') == 'RE_CHAIN_CHAINSETTINGS'}}\n"
+            f"            try:\n"
+            f"                bpy.ops.re_chain.create_chain_settings()\n"
+            f"            except Exception as _e:\n"
+            f"                errors.append('create_cs:' + itype + ':' + str(_e)[:80])\n"
+            f"                type_to_cs[itype] = canonical_cs_name\n"
+            f"                continue\n"
+            f"            new_cands = [o.name for o in bpy.data.objects\n"
+            f"                         if o.get('TYPE') == 'RE_CHAIN_CHAINSETTINGS' and o.name not in before]\n"
+            f"            if new_cands:\n"
+            f"                type_to_cs[itype] = new_cands[0]\n"
+            f"                cs_to_type[new_cands[0]] = itype\n"
+            f"            else:\n"
+            f"                errors.append('create_cs:' + itype + ':no_new_object')\n"
+            f"                type_to_cs[itype] = canonical_cs_name\n"
+            # Step 4: reassign CHAINGROUPs of non-first types to their new CS
+            f"    for itype, cg_names in type_to_cgs.items():\n"
+            f"        target_cs_name = type_to_cs.get(itype, canonical_cs_name)\n"
+            f"        if target_cs_name == canonical_cs_name: continue\n"
+            f"        target_cs_obj = bpy.data.objects.get(target_cs_name)\n"
+            f"        if not target_cs_obj: continue\n"
+            f"        for cg_name in cg_names:\n"
+            f"            cg = bpy.data.objects.get(cg_name)\n"
+            f"            if not cg: continue\n"
+            f"            for pname in ('re_chain_chaingroup', 're_chain_chaingroupsettings'):\n"
+            f"                pg = getattr(cg, pname, None)\n"
+            f"                if pg is not None and hasattr(pg, 'chainSetting'):\n"
+            f"                    try: pg.chainSetting = target_cs_obj\n"
+            f"                    except Exception as _e: errors.append('reassign:' + cg_name + ':' + str(_e)[:60])\n"
+            f"                    break\n"
+            f"else:\n"
+            f"    first_type = sorted(set(inferred_types.values()))[0] if inferred_types else ''\n"
+            f"    cs_to_type[canonical_cs_name] = first_type\n"
+            f"print({BLENDER_SENTINEL!r})\n"
+            f"print('CONSOLIDATED:' + json.dumps({{\n"
+            f"    'cs_to_type': cs_to_type, 'type_to_cs': type_to_cs,\n"
+            f"    'errors': errors, 'unmapped': unmapped,\n"
+            f"}}))\n"
+        )
+
+        try:
+            lines = client.execute_and_extract(code)
+        except Exception:
+            return None, _fallback
+
+        if not lines:
+            return None, _fallback
+        if lines[0].startswith("CONSOLIDATED:"):
+            try:
+                payload = json.loads(lines[0][len("CONSOLIDATED:"):])
+                cs_to_type: dict[str, str] = payload.get("cs_to_type", {})
+                return None, cs_to_type if cs_to_type else _fallback
+            except json.JSONDecodeError:
+                pass
+        return None, _fallback
+
+    def _apply_params_by_type(
+        self,
+        client: BlenderClient,
+        cs_to_type: dict[str, str],
+        inferred_types: dict[str, str],
+        resolved_params: dict[str, dict],
+    ) -> list[str]:
+        """
+        Apply physics params to each chain settings object after consolidation.
+
+        cs_to_type maps remaining CS object names to their inferred_type.
+        Builds type → params from the first bone found for each type.
+        Functionally identical to _apply_params_to_chain_settings but keyed by
+        inferred_type rather than alphabetical bone position.
+        """
+        if not cs_to_type:
+            return []
+
+        # Build type → params (all bones of same type share identical params)
+        type_to_params: dict[str, dict] = {}
+        for bone_name, itype in inferred_types.items():
+            if itype not in type_to_params:
+                type_to_params[itype] = dict(resolved_params.get(bone_name, {}))
+
+        collider_default = (
+            _load_presets()
+            .get("_usage_guide", {})
+            .get("colliderFilterInfoPath_default", _DEFAULT_COLLIDER_PATH)
+        )
+        for p in type_to_params.values():
+            p.setdefault("colliderFilterInfoPath", collider_default)
+
+        cs_names = list(cs_to_type.keys())
+        params_list = [type_to_params.get(cs_to_type[cs], {}) for cs in cs_names]
+        params_json = json.dumps(params_list, ensure_ascii=False)
+        cs_names_json = json.dumps(cs_names, ensure_ascii=False)
+        enum_fields_repr = repr({
+            "windDelayType", "springCalcType", "chainType",
+            "muzzleDirection", "motionForceCalcType",
+        })
+        code = (
+            f"import bpy, json\n"
+            f"cs_names = json.loads({cs_names_json!r})\n"
+            f"params_list = json.loads({params_json!r})\n"
+            f"ENUM_FIELDS = {enum_fields_repr}\n"
+            f"skipped = []\n"
+            f"for i, cs_name in enumerate(cs_names):\n"
+            f"    cs_obj = bpy.data.objects.get(cs_name)\n"
+            f"    if cs_obj is None:\n"
+            f"        skipped.append(cs_name + '.(not found)')\n"
+            f"        continue\n"
+            f"    pg = cs_obj.re_chain_chainsettings\n"
+            f"    p = params_list[i] if i < len(params_list) else params_list[-1]\n"
+            f"    for key, val in p.items():\n"
+            f"        if isinstance(val, list):\n"
+            f"            val = tuple(val)\n"
+            f"        if key in ENUM_FIELDS:\n"
+            f"            val = str(int(val))\n"
+            f"        try:\n"
+            f"            setattr(pg, key, val)\n"
+            f"        except (AttributeError, TypeError):\n"
+            f"            skipped.append(cs_name + '.' + key)\n"
+            f"print({BLENDER_SENTINEL!r})\n"
+            f"print('APPLIED:' + json.dumps(skipped))\n"
+        )
+        lines = client.execute_and_extract(code)
+        if lines and lines[0].startswith("APPLIED:"):
+            try:
+                return json.loads(lines[0][len("APPLIED:"):])
+            except json.JSONDecodeError:
+                pass
+        return []
+
+    def _apply_angle_limit_ramp(
+        self,
+        client: BlenderClient,
+        chain_col_name: str,
+    ) -> None:
+        """
+        Select all RE_CHAIN_CHAINGROUP objects in the chain collection and call
+        re_chain.apply_angle_limit_ramp with default values (60° / 4 iterations).
+
+        This step is non-fatal: failures are silently ignored. The ramp smoothly
+        increases angle limits from the chain root to the tip (node 0 gets step*1,
+        node 1 gets step*2, ..., nodes >= maxIteration get maxAngleLimit).
+        """
+        if not chain_col_name:
+            return
+        code = (
+            f"import bpy\n"
+            f"col = bpy.data.collections.get({chain_col_name!r})\n"
+            f"if col is None:\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    print('SKIP:collection_not_found')\n"
+            f"else:\n"
+            f"    _first_cg = next((o for o in col.all_objects if o.get('TYPE') == 'RE_CHAIN_CHAINGROUP'), None)\n"
+            f"    if _first_cg: bpy.context.view_layer.objects.active = _first_cg\n"
+            f"    bpy.ops.object.mode_set(mode='OBJECT')\n"
+            f"    bpy.ops.object.select_all(action='DESELECT')\n"
+            f"    last_cg = None\n"
+            f"    for obj in col.all_objects:\n"
+            f"        if obj.get('TYPE') == 'RE_CHAIN_CHAINGROUP':\n"
+            f"            obj.select_set(True)\n"
+            f"            last_cg = obj\n"
+            f"    if last_cg is None:\n"
+            f"        print({BLENDER_SENTINEL!r})\n"
+            f"        print('SKIP:no_chain_groups')\n"
+            f"    else:\n"
+            f"        bpy.context.view_layer.objects.active = last_cg\n"
+            f"        ret = bpy.ops.re_chain.apply_angle_limit_ramp(\n"
+            f"            maxAngleLimit=1.047198,\n"
+            f"            maxIteration=4,\n"
+            f"        )\n"
+            f"        print({BLENDER_SENTINEL!r})\n"
+            f"        print('RAMP:' + str(ret))\n"
+        )
+        try:
+            client.execute_and_extract(code)
+        except Exception:
+            pass  # non-fatal
