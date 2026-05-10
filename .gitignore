@@ -85,3 +85,4 @@ secrets/
 # External Blender addons — installed separately, see README.md Prerequisites
 Modding-Toolkit/
 blender-mcp/
+ModPilot/app/phases/REE-ModPilot.code-workspace
