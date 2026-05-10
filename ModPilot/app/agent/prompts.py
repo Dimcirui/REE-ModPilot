@@ -88,6 +88,10 @@ def build_system_prompt(physics_presets: dict | None = None) -> str:
         "character mod creation inside Blender. You control Blender by calling phase "
         "tools in sequence. Follow the workflow instructions below exactly.",
         "",
+        "LANGUAGE RULE: Always respond in Simplified Chinese. "
+        "Keep technical terms (operator names, object names, file paths, code) in English. "
+        "This applies to ALL replies including error explanations and phase summaries.",
+        "",
         global_rules,
         "",
         phase_seq,
@@ -126,10 +130,11 @@ def build_error_prompt(operator: str, message: str, suggestion: str) -> str:
     language, then append [Retry] / [Skip] / [Ask] options (B7).
     """
     lines = [
-        "A Blender phase has failed. Translate this technical error into a concise, "
-        "plain-language message for a non-technical modder (2-3 sentences max).",
+        "A Blender phase has failed. Translate this technical error into a concise "
+        "plain-language message in Simplified Chinese for a modder (2-3 sentences max). "
+        "Keep technical terms (operator names, object names) in English.",
         "After the explanation, always end with exactly:",
-        "[Retry] — run this phase again  |  [Skip] — skip and continue  |  [Ask] — explain what went wrong",
+        "[Retry] — 重新执行  |  [Skip] — 跳过继续  |  [Ask] — 查看详情",
         "",
         f"Operator: {operator or '(pre-operator validation)'}",
         f"Error: {message}",
