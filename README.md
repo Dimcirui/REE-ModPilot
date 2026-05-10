@@ -11,11 +11,14 @@
 | Phase | State |
 |-------|-------|
 | Stage 0 — connectivity verification | 🟢 done (`verify_blender_mcp.py` 5/5 passing) |
-| Stage Setup — project structure & docs | 🟢 done (initial commit pushed to GitHub) |
-| Stage 1 — communication backbone | 🟡 in progress |
-| Stage 2+ — implementation | ⚪ pending; see [docs/backlog.md](docs/backlog.md) |
+| Stage Setup — project structure & docs | 🟢 done |
+| Stage 1 — communication backbone | 🟢 done (BlenderClient + SceneCache + LLMClient; 30 unit tests) |
+| Stage 2 — phase tool layer (videos 1-3) | 🟢 done (PoseCorrection + SkeletonAlign + VertexGroups; 76 unit tests) |
+| Stage 3 — agent loop | 🟢 done (ReAct loop + prompts + error handler + `/agent/chat`; 117 unit tests) |
+| Stage 4 — phase tools (videos 4-7) | ⚪ pending; see [docs/backlog.md](docs/backlog.md) |
+| Stage 5+ — frontend, MVP verification | ⚪ pending |
 
-All 15 design items in [docs/design.md](docs/design.md) (A/B/C/D layers) are 🟢 decided as of 2026-05-08.
+All design items in [docs/design.md](docs/design.md) (A/B/C/D/E layers) are 🟢 decided.
 
 ---
 
@@ -57,7 +60,7 @@ User's Modding-Toolkit     (bpy.ops.modder.* / mhws.* / re4.* / etc.)
 
 - **Phase tool middle layer**, not raw operator wrappers. LLM orchestrates *between* phases and makes *classification* decisions inside phases; deterministic Python orchestrates *within* phases. (B6, [project memory](.claude/projects/.../memory/project_python_over_llm.md))
 - **Provider-agnostic LLM client** (~100 lines). Default DeepSeek V4 for development; Claude Sonnet 4.6 / Haiku 4.5 as oracle / demo fallback. (C10)
-- **No RAG in MVP** — `plan.md` (~12K tokens) goes directly into system prompt + prompt cache. Content RAG retained as a future upgrade path. (C11)
+- **No RAG in MVP** — `docs/agent_workflow.md` (machine-readable execution manual) goes directly into system prompt + prompt cache. `plan.md` is the video script for humans only. Content RAG retained as a future upgrade path. (C11)
 - **htmx + Jinja2** frontend, no SPA framework. (C12)
 
 ---
@@ -83,35 +86,35 @@ User's Modding-Toolkit     (bpy.ops.modder.* / mhws.* / re4.* / etc.)
 
 ```
 REE-ModPilot/
-├── ModPilot/                     # Backend application (TBD — Stage Setup output)
+├── ModPilot/                     # Backend application
 │   ├── pyproject.toml            # uv-managed
 │   ├── uv.lock
 │   ├── .env.example
 │   ├── app/
-│   │   ├── main.py
-│   │   ├── config.py
-│   │   ├── blender/              # Socket client + scene-state cache
-│   │   ├── llm/                  # Provider-agnostic LLMClient
-│   │   ├── agent/                # ReAct loop, prompts, error handler
-│   │   ├── phases/               # 12-15 phase tools (one per plan.md section)
-│   │   ├── routes/
-│   │   └── templates/
+│   │   ├── main.py               # FastAPI app; /health /scene_info /agent/chat
+│   │   ├── config.py             # Settings (LLM / Blender / vision model)
+│   │   ├── blender/              # BlenderClient (TCP socket) + SceneCache
+│   │   ├── llm/                  # Provider-agnostic LLMClient (Anthropic + OpenAI)
+│   │   ├── agent/                # ReAct loop, prompt builders, error handler
+│   │   └── phases/               # Phase tools: pose_correction, skeleton_align,
+│   │                             #   vertex_groups (done); physics_bones, material,
+│   │                             #   batch_export, advanced (Stage 4)
 │   ├── tests/
-│   │   ├── unit/                 # mock Blender (fake socket server)
-│   │   └── integration/          # real Blender, marker-gated
+│   │   ├── unit/                 # 117 tests; mock Blender + mock LLM
+│   │   └── integration/          # real Blender required; marker-gated
 │   └── static/
 ├── docs/
-│   ├── design.md                 # All 15 design decisions (🟢 complete)
-│   ├── backlog.md                # P0-P3 implementation tasks
-│   ├── plan.md                   # 7-video mod-making pipeline (the workflow being automated)
+│   ├── design.md                 # A/B/C/D/E-layer design decisions (🟢 all decided)
+│   ├── backlog.md                # P0-P3 implementation tasks with status badges
+│   ├── agent_workflow.md         # Machine-readable execution manual for the agent
+│   ├── plan.md                   # 7-video workflow script (human reference only)
 │   ├── plugin_api.md             # Modding-Toolkit operator reference
-│   ├── blender-mcp-analysis.md   # Wire-protocol notes
 │   └── demo_setup.md             # MMD model + game asset setup (TBD)
-├── verify_blender_mcp.py         # Stage 0 verification script (5 checks)
+├── verify_blender_mcp.py         # Stage 0 verification (5 checks)
 ├── verify_mvp.py                 # Stage MVP end-to-end check (TBD)
 ├── README.md                     # ← you are here
 ├── CLAUDE.md                     # Claude-specific working notes
-└── AGENTS.md                     # General agent / contributor baseline
+└── AGENTS.md                     # Contributor baseline (commands, conventions)
 ```
 
 ---
@@ -138,10 +141,10 @@ After enabling both in Blender → Edit → Preferences → Add-ons, open the Bl
 
 ## Quick Start
 
-> ⚠️ Implementation has not started yet. This section grows as Stage 1+ progresses.
-> Live status: [docs/backlog.md](docs/backlog.md).
+> Stages 1-3 are complete. The backend API is runnable. Stage 4 (videos 4-7 phase tools)
+> and Stage 5 (htmx frontend) are pending — see [docs/backlog.md](docs/backlog.md).
 
-For now you can verify the Blender ↔ socket pipeline:
+**1. Verify Blender connectivity (Stage 0)**
 
 ```bash
 # In Blender: enable both addons, open the BlenderMCP side panel,
@@ -151,6 +154,38 @@ python verify_blender_mcp.py
 
 Expected output ends with `=== Stage 0 PASSED. Pipeline is alive. ===`.
 
+**2. Configure environment**
+
+```bash
+cd ModPilot
+cp .env.example .env
+# Edit .env: set LLM_API_KEY (DeepSeek recommended), BLENDER_HOST/PORT if non-default
+```
+
+**3. Run the backend**
+
+```bash
+uv run uvicorn app.main:app --reload
+# Server starts at http://localhost:8000
+# GET  /health        — Blender connectivity check
+# GET  /scene_info    — current Blender scene state
+# POST /agent/chat    — send a message to the agent loop
+```
+
+**4. Send a message to the agent**
+
+```bash
+curl -X POST http://localhost:8000/agent/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Let'\''s start the mod workflow.", "session_id": "my-session"}'
+```
+
+**5. Run unit tests**
+
+```bash
+uv run pytest -m unit -v   # 117 tests, no Blender required
+```
+
 ---
 
 ## References
@@ -159,7 +194,8 @@ Expected output ends with `=== Stage 0 PASSED. Pipeline is alive. ===`.
 |-----|---------|
 | [docs/design.md](docs/design.md) | A/B/C/D-layer design decisions log (rationale, alternatives considered, escape hatches) |
 | [docs/backlog.md](docs/backlog.md) | P0-P3 implementation backlog with status badges |
-| [docs/plan.md](docs/plan.md) | The 7-video mod-making workflow this project automates |
+| [docs/agent_workflow.md](docs/agent_workflow.md) | Machine-readable execution manual for the agent (phases 1-6, protocols, operator index) |
+| [docs/plan.md](docs/plan.md) | 7-video mod-making workflow script (human reference; not injected into agent) |
 | [docs/plugin_api.md](docs/plugin_api.md) | Modding-Toolkit operator API reference |
 | [CLAUDE.md](CLAUDE.md) | Claude-specific working notes (footguns, memory map) |
 | [AGENTS.md](AGENTS.md) | General agent / contributor baseline (commands, hard rules, conventions) |
