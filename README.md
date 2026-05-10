@@ -15,7 +15,7 @@
 | Stage 1 — communication backbone | 🟢 done (BlenderClient + SceneCache + LLMClient; 30 unit tests) |
 | Stage 2 — phase tool layer (videos 1-3) | 🟢 done (PoseCorrection + SkeletonAlign + VertexGroups; 76 unit tests) |
 | Stage 3 — agent loop | 🟢 done (ReAct loop + prompts + error handler + `/agent/chat`; 117 unit tests) |
-| Stage 4 — phase tools (videos 4-7) | 🟡 partial: physics_bones + batch_export done (190 unit tests); material deferred; advanced out of MVP scope |
+| Stage 4 — phase tools (videos 4-7) | 🟢 done (minus advanced): physics_bones + material + batch_export (232 unit tests); advanced out of MVP scope |
 | Stage 5+ — frontend, MVP verification | ⚪ pending |
 
 All design items in [docs/design.md](docs/design.md) (A/B/C/D/E layers) are 🟢 decided.

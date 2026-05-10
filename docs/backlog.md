@@ -11,7 +11,7 @@ Priority-ranked task list. Status badges follow the [project convention](../AGEN
 
 Tasks are grouped by priority band (P0 → P3). Within a band, ordering is suggested execution sequence; tasks are independently deliverable unless an explicit dependency is noted.
 
-**Last updated**: 2026-05-10 — Stage 4 partial: physics_bones (Phase 3.5/4A/4B) + batch_export (Phase 6) done (190 unit tests passing). material (Phase 5) deferred; advanced (Phase 7) out of MVP scope.
+**Last updated**: 2026-05-10 — Stage 4 complete (minus advanced): physics_bones + material + batch_export done (232 unit tests passing). advanced (Phase 7) out of MVP scope.
 
 ---
 
@@ -68,7 +68,7 @@ Items here block MVP shipping. All must reach 🟢 before MVP acceptance (L3, [d
 ### Stage 4 — phase tools (videos 4-7)
 
 - 🟢 `app/phases/physics_bones.py` (Phase 3.5/4A/4B; PhysicsTransplant + PhysicsClassification + PhysicsChains; physics_presets.json distilled from 35 RE Chain Editor presets; 38 unit tests)
-- 🟡 `app/phases/material.py` (video 5; MaterialInspect + MaterialSetup + MaterialGenerate; design in [docs/phase5_material.md](phase5_material.md))
+- 🟢 `app/phases/material.py` (video 5; MaterialInspect + MaterialSetup + MaterialGenerate; 42 unit tests; design in [docs/phase5_material.md](phase5_material.md))
 - 🟢 `app/phases/batch_export.py` (Phase 6; single-call batch export: mesh + mdf2 + chain2 + BoneSystem; 35 unit tests)
 - ⚪ `app/phases/advanced.py` (video 7; MHWs-specific tools) — explicitly out of MVP scope
 
