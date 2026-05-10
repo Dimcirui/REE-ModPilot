@@ -109,18 +109,23 @@ def _parse_response(response: Any) -> LLMResponse:
     """Extract content and tool calls from an Anthropic Messages response."""
     text_parts: list[str] = []
     tool_calls: list[dict] = []
+    content_blocks: list[dict] = []
 
     for block in response.content:
         if block.type == "text":
             text_parts.append(block.text)
+            content_blocks.append({"type": "text", "text": block.text})
         elif block.type == "tool_use":
-            tool_calls.append(
-                {
-                    "name": block.name,
-                    "id": block.id,
-                    "input": block.input,
-                }
+            tool_calls.append({"name": block.name, "id": block.id, "input": block.input})
+            content_blocks.append(
+                {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
             )
+        elif block.type == "thinking":
+            # Thinking blocks must be passed back verbatim on subsequent turns.
+            content_blocks.append({"type": "thinking", "thinking": block.thinking})
+        else:
+            # Unknown block type — pass through opaquely so the API doesn't reject it.
+            content_blocks.append({"type": block.type})
 
     # Normalize stop_reason to our vocabulary
     stop_map = {
@@ -136,4 +141,5 @@ def _parse_response(response: Any) -> LLMResponse:
         tool_calls=tool_calls,
         stop_reason=stop_reason,
         raw=response,
+        content_blocks=content_blocks,
     )

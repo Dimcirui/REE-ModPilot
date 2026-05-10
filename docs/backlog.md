@@ -11,7 +11,7 @@ Priority-ranked task list. Status badges follow the [project convention](../AGEN
 
 Tasks are grouped by priority band (P0 → P3). Within a band, ordering is suggested execution sequence; tasks are independently deliverable unless an explicit dependency is noted.
 
-**Last updated**: 2026-05-10 — Stage 4 complete (minus advanced): physics_bones + material + batch_export done (232 unit tests passing). advanced (Phase 7) out of MVP scope.
+**Last updated**: 2026-05-11 — Setup phase added (SetupValidateScene + SetupImportMHWilds); thinking-block round-trip fix for Anthropic provider; cli.py interactive CLI.
 
 ---
 
@@ -28,6 +28,12 @@ Items here block MVP shipping. All must reach 🟢 before MVP acceptance (L3, [d
 - 🟢 `LICENSE` — MIT (`Copyright (c) 2026 Dimcirui`)
 - 🟢 `git init` + initial commit on `main` (commit `7c2dab1`, 11 files, 2887 lines)
 - 🟢 Push to GitHub (user-driven: create `REE-ModPilot` repo on github.com → `git remote add origin <url>` → `git push -u origin main`)
+
+### Setup Phase — scene validation + MHWilds import
+
+- 🟢 `app/phases/setup.py` — `SetupValidateScene` + `SetupImportMHWilds`; scene validation (exclude MHWilds collection, check 1 armature + mesh children); import via `mbt.import_mhwilds_fmesh` with mode guard + idempotency check
+- 🟢 `app/agent/loop.py` — `setup_validate` + `setup_import` prepended to `_PHASE_SEQUENCE`; both tools registered
+- 🟢 `docs/agent_workflow.md` — Setup Phase section added; Central Collection doctrine; Phase 1-3 entry conditions updated
 
 ### Stage 1 — communication backbone
 

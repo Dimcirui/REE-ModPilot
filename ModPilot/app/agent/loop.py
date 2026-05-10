@@ -45,6 +45,8 @@ from app.phases.base import PhaseError, PhaseTool
 # ── constants ──────────────────────────────────────────────────────────────
 
 _PHASE_SEQUENCE: list[str] = [
+    "setup_validate",   # SetupValidateScene
+    "setup_import",     # SetupImportMHWilds
     "phase_1",
     "phase_2",
     "phase_3",
@@ -365,10 +367,17 @@ class AgentLoop:
 
     def _register_available_phases(self) -> None:
         from app.phases.pose_correction import PoseCorrection
+        from app.phases.setup import SetupImportMHWilds, SetupValidateScene
         from app.phases.skeleton_align import SkeletonAlign
         from app.phases.vertex_groups import VertexGroups
 
-        for phase in (PoseCorrection(), SkeletonAlign(), VertexGroups()):
+        for phase in (
+            SetupValidateScene(),
+            SetupImportMHWilds(),
+            PoseCorrection(),
+            SkeletonAlign(),
+            VertexGroups(),
+        ):
             self._phase_tools[phase.name] = phase
 
     def _build_tool_list(self) -> list[dict]:
@@ -376,7 +385,14 @@ class AgentLoop:
 
     @staticmethod
     def _build_assistant_tool_msg(response: LLMResponse) -> Message:
-        """Build an Anthropic-format assistant message containing tool_use blocks."""
+        """Build an Anthropic-format assistant message containing tool_use blocks.
+
+        Uses response.content_blocks when available so that opaque blocks
+        (e.g. thinking) are round-tripped verbatim and not stripped out.
+        """
+        if response.content_blocks:
+            return {"role": "assistant", "content": response.content_blocks}
+        # Fallback for providers that do not populate content_blocks (OpenAI).
         content: list[dict[str, Any]] = []
         if response.content:
             content.append({"type": "text", "text": response.content})

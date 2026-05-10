@@ -46,11 +46,16 @@ class LLMResponse:
         tool_calls: list[dict],
         stop_reason: str,
         raw: Any,
+        content_blocks: list[dict] | None = None,
     ) -> None:
         self.content = content
         self.tool_calls = tool_calls
         self.stop_reason = stop_reason
         self.raw = raw
+        # Serialized list of all content blocks (text / tool_use / thinking / …).
+        # Populated by providers that need to round-trip opaque blocks (e.g. thinking).
+        # Empty list means the provider did not supply block-level detail.
+        self.content_blocks: list[dict] = content_blocks or []
 
     @property
     def has_tool_calls(self) -> bool:

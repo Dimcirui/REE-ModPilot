@@ -55,6 +55,9 @@ On `PhaseError`, always:
 ## Phase Sequence
 
 ```
+[Setup Block]
+  Setup 1 (Validate Scene) → [user confirm] → Setup 2 (Import MHWilds Armature)
+        ↓
 [1-3 Preprocessing Block]
   Phase 1 → Phase 2 → Phase 3
         ↓
@@ -72,18 +75,76 @@ On `PhaseError`, always:
 [6  Batch Export]
 ```
 
-Phases 1-3 and 3.5 run with minimal LLM involvement (3.5 is fully automatic).
+Setup and Phases 1-3 run as RUNNING_PHASE (LLM calls tools directly).
+Phase 3.5 is fully automatic.
 Phases 4A-6 each contain one or more NEGOTIATING loops.
+
+---
+
+## Setup Phase
+
+**Goal**: Validate source model scene state, then import the MHWilds Female reference skeleton.
+
+### Central Collection
+
+`MHWilds_Female.mesh` is the **central target collection** for ALL downstream phases:
+- Phase 3 (VertexGroups) reparents source meshes into this collection under the MHWilds armature.
+- Phase 5 (Material) operates on meshes within this collection.
+- Phase 6 (BatchExport) exports the contents of this collection.
+
+**Do NOT delete, rename, or move this collection at any point in the pipeline.**
+
+### Step 1: Validate Scene (`setup_validate_scene`)
+
+Call this tool with no parameters on the first user message. No parameters needed.
+
+The tool checks (after excluding objects inside `MHWilds_Female.mesh` if present):
+- Exactly **1 ARMATURE** object exists.
+- All **MESH** objects are direct children of that armature.
+- No other object types (EMPTY, LIGHT, CAMERA, etc.) exist in the scene.
+
+**On failure**: Report the specific errors to the user; ask them to fix the scene and
+say "ready" to re-validate. Do NOT proceed to Step 2 until validation passes.
+
+**On success**: Report scene state and ask for confirmation before importing:
+> "Found source model: armature **[name]**, **[N]** mesh(es): [list].
+> Shall I now import the MHWilds Female reference skeleton? [Yes / Not yet]"
+
+**Do NOT call `setup_import_mhwilds` in the same response.** Wait for the user's reply.
+
+### Step 2: Import MHWilds Armature (`setup_import_mhwilds`)
+
+Call only after the user confirms Step 1.
+
+- If `MHWilds_Female.mesh` already exists: operator is skipped; report as already done.
+- Otherwise: switches Blender to Object mode if needed, then runs `mbt.import_mhwilds_fmesh`.
+
+Default parameters (do not change unless user requests):
+- `convert_to_tpose: true`
+- `merge_facial_bones: true`
+
+On success, report:
+> "MHWilds Female armature imported (`MHWilds_Female.mesh` collection created).
+> Proceeding to Phase 1."
+
+### Common Errors
+
+- **EMPTY objects present**: Source model importers often create EMPTY root or center objects.
+  Ask user to delete them in the Outliner, then retry.
+- **Multiple armatures**: Ask user to remove any test or leftover armature not part of
+  the source model.
+- **Import CANCELLED**: Modder-Batch-Tool addon is not installed or the hardcoded FBX file
+  `games/MHWilds/model/MHWilds_Female.fbx` is missing from the addon directory.
+  Report: "Install Modder-Batch-Tool and verify MHWilds_Female.fbx is present."
 
 ---
 
 ## Phase 1–3: Preprocessing Block
 
 ### Entry Conditions
-- [ ] Source model imported into Blender scene (armature + mesh visible in outliner).
+- [ ] Setup phase complete: source model validated, `MHWilds_Female.mesh` collection present.
 - [ ] X preset selected (source model type: MMD / VRChat / Endfield / other).
 - [ ] Y preset selected (target game: MHWs).
-- [ ] MHWs reference armature present in scene.
 
 ### Preset Paths
 | Source Type | X Preset File | Skeleton Preset |
