@@ -161,9 +161,10 @@ Y preset is always: MHWs (Monster Hunter Wilds).
 
 ### VRChat Base Body Identification
 
-VRChat models are built on community avatar bases. If the source armature name or any
-mesh name contains one of the following keywords (case-insensitive), treat the model
-as VRChat with **high confidence** — do not ask the user:
+VRChat models are built on community avatar bases. If the source armature name or any mesh name contains one of the following keywords
+(case-insensitive), infer VRChat and **present the inference to the user for confirmation**
+before proceeding. Example phrasing:
+> "从场景来看你导入了 `Shinano_body`，推测是 **VRChat** 格式，对吗？"
 
 ```
 kipfel, shinano, manuka, milltina, rurune, mamehinata, shinra, chocolat, selestia,
@@ -174,7 +175,7 @@ mishe, kokoa, fiona, mint, lazuli, soraha, minahoshi, koyuki, cian, meiyun, meri
 velle, anon, ciel, sephira, lucifer
 ```
 
-If none of these keywords appear, fall back to asking the user to confirm the source type.
+If no keywords match, ask the user directly: "你的来源模型是哪种格式？MMD / VRChat / 终末地 / 其他？"
 
 ---
 
