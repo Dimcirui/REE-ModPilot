@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Any
 
 from app.blender.client import BlenderClient, BlenderError
 from app.blender.state import SceneCache, SceneState
@@ -119,6 +120,19 @@ class PhaseTool(ABC):
     @abstractmethod
     def name(self) -> str:
         """Unique identifier used by the agent loop (e.g. 'pose_correction')."""
+        ...
+
+    @classmethod
+    @abstractmethod
+    def tool_schema(cls) -> dict[str, Any]:
+        """
+        LLM tool definition passed to LLMClient.chat(tools=[...]).
+
+        Must return a dict with keys:
+          "name"         — matches self.name
+          "description"  — one-sentence description for the LLM
+          "input_schema" — JSON Schema object describing run() params
+        """
         ...
 
     @abstractmethod

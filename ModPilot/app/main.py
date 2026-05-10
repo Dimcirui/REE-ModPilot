@@ -1,12 +1,13 @@
 """
 FastAPI application entry point.
 
-Stage 1 debug endpoints (no agent loop yet):
+Debug endpoints (Stage 1):
   GET  /health      — liveness + Blender connectivity check; 503 if Blender unreachable
   GET  /scene_info  — proxy get_scene_info from Blender
   POST /exec        — execute arbitrary Python in Blender (DEBUG mode only)
 
-LLMClient is intentionally absent here; it is wired in Stage 3 (agent loop).
+Agent endpoint (Stage 3):
+  POST /agent/chat  — send a user message to the AgentLoop; returns agent reply + state
 """
 
 from __future__ import annotations
@@ -18,8 +19,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from app.agent.loop import AgentLoop
 from app.blender.client import BlenderClient, BlenderError
 from app.config import settings
+from app.llm.client import LLMClient
 
 # ── lifespan: manage shared BlenderClient ─────────────────────────────────
 
@@ -27,8 +30,8 @@ from app.config import settings
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
-    Open one BlenderClient connection for the lifetime of the server.
-    Store it on app.state so route handlers can access it.
+    Open one BlenderClient connection and one LLMClient for the server lifetime.
+    Both are stored on app.state for route handler access.
 
     If Blender is not running at startup, the server still starts — endpoints
     will return 503 until Blender becomes available.
@@ -37,6 +40,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     with contextlib.suppress(OSError):
         client.connect()
     app.state.blender = client
+    app.state.llm = LLMClient.from_settings()
+    app.state.agent_sessions: dict[str, AgentLoop] = {}
 
     yield
 
@@ -127,6 +132,49 @@ class ExecRequest(BaseModel):
 
 class ExecResponse(BaseModel):
     stdout: str
+
+
+# ── /agent/chat ────────────────────────────────────────────────────────────
+
+
+class ChatRequest(BaseModel):
+    message: str
+    session_id: str = "default"
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    state: str
+    session_id: str
+
+
+@app.post("/agent/chat", response_model=ChatResponse)
+async def agent_chat(body: ChatRequest) -> ChatResponse:
+    """
+    Send a user message to the AgentLoop for the given session.
+
+    A new AgentLoop is created on the first message for a session_id.
+    Sessions are in-memory only; they reset on server restart.
+    """
+    sessions: dict[str, AgentLoop] = app.state.agent_sessions
+    if body.session_id not in sessions:
+        blender: BlenderClient = app.state.blender
+        if not blender.connected:
+            try:
+                blender.connect()
+            except OSError as exc:
+                raise HTTPException(status_code=503, detail=_BLENDER_HINT) from exc
+        sessions[body.session_id] = AgentLoop(
+            llm=app.state.llm,
+            blender=blender,
+        )
+
+    loop = sessions[body.session_id]
+    reply = await loop.step(body.message)
+    return ChatResponse(reply=reply, state=loop.state.value, session_id=body.session_id)
+
+
+# ── /exec: debug only ──────────────────────────────────────────────────────
 
 
 if settings.app_debug:

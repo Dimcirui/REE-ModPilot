@@ -24,6 +24,8 @@ Classification decision (agent loop, E17):
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.blender.client import BLENDER_SENTINEL, BlenderClient, BlenderError
 from app.blender.state import SceneCache
 from app.phases.base import (
@@ -45,6 +47,41 @@ class SkeletonAlign(PhaseTool):
     @property
     def name(self) -> str:
         return "skeleton_align"
+
+    @classmethod
+    def tool_schema(cls) -> dict[str, Any]:
+        return {
+            "name": "skeleton_align",
+            "description": (
+                "Phase 2: Align MHWs reference skeleton bones to source model bone "
+                "positions using the X+Y dual-armature preset operator. "
+                "Run after pose_correction, before vertex_groups."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "x_preset": {
+                        "type": "string",
+                        "enum": ["MMD", "VRChat", "终末地"],
+                        "description": "Source model type preset.",
+                    },
+                    "source_armature": {
+                        "type": "string",
+                        "description": "Blender ARMATURE object name for the source model.",
+                    },
+                    "target_armature": {
+                        "type": "string",
+                        "description": "Blender ARMATURE object name for the MHWs reference skeleton.",
+                    },
+                    "y_preset": {
+                        "type": "string",
+                        "enum": ["怪猎荒野"],
+                        "description": "Target game preset. Always 怪猎荒野 for MHWs.",
+                    },
+                },
+                "required": ["x_preset", "source_armature", "target_armature"],
+            },
+        }
 
     def run(
         self,

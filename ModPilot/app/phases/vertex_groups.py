@@ -34,6 +34,8 @@ Optional params:
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.blender.client import BLENDER_SENTINEL, BlenderClient, BlenderError
 from app.blender.state import SceneCache
 from app.phases.base import (
@@ -56,6 +58,42 @@ class VertexGroups(PhaseTool):
     @property
     def name(self) -> str:
         return "vertex_groups"
+
+    @classmethod
+    def tool_schema(cls) -> dict[str, Any]:
+        return {
+            "name": "vertex_groups",
+            "description": (
+                "Phase 3: Merge source meshes into one object, normalize vertex weights, "
+                "rename vertex groups to MHWs bone naming convention, and re-parent "
+                "the merged mesh to the MHWs armature. Run after skeleton_align."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "x_preset": {
+                        "type": "string",
+                        "enum": ["MMD", "VRChat", "终末地"],
+                        "description": "Source model type preset.",
+                    },
+                    "mesh_objects": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Source MESH object names to merge and convert (not armature names).",
+                    },
+                    "target_armature": {
+                        "type": "string",
+                        "description": "Blender ARMATURE object name for the MHWs reference skeleton.",
+                    },
+                    "y_preset": {
+                        "type": "string",
+                        "enum": ["怪猎荒野"],
+                        "description": "Target game preset. Always 怪猎荒野 for MHWs.",
+                    },
+                },
+                "required": ["x_preset", "mesh_objects", "target_armature"],
+            },
+        }
 
     def run(
         self,

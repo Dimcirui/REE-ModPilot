@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     blender_host: str = "127.0.0.1"
     blender_port: int = 9876
 
+    # Vision model for texture classification (E20).
+    # Defaults to empty (vision layer skipped); set to Qwen-VL / DeepSeek-VL2 endpoint.
+    vision_model: str = ""
+    vision_api_key: str = ""
+    vision_base_url: str = ""
+
     # App
     app_host: str = "127.0.0.1"
     app_port: int = 8000

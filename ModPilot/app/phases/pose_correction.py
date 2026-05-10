@@ -31,6 +31,8 @@ Optional params:
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.blender.client import BLENDER_SENTINEL, BlenderClient, BlenderError
 from app.blender.state import SceneCache
 from app.phases.base import (
@@ -54,6 +56,41 @@ class PoseCorrection(PhaseTool):
     @property
     def name(self) -> str:
         return "pose_correction"
+
+    @classmethod
+    def tool_schema(cls) -> dict[str, Any]:
+        return {
+            "name": "pose_correction",
+            "description": (
+                "Phase 1: Clear source armature pose transforms, scale model to match "
+                "MHWs bounding box height, then apply T-pose conversion based on source "
+                "type (MMD: arm rotation, VRChat: skip, Endfield: recorded pose). "
+                "Run before skeleton_align."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "x_preset": {
+                        "type": "string",
+                        "enum": ["MMD", "VRChat", "终末地"],
+                        "description": "Source model type.",
+                    },
+                    "source_armature": {
+                        "type": "string",
+                        "description": "Blender ARMATURE object name for the source model.",
+                    },
+                    "target_armature": {
+                        "type": "string",
+                        "description": "Blender ARMATURE object name for the MHWs reference skeleton.",
+                    },
+                    "skip_scale_align": {
+                        "type": "boolean",
+                        "description": "Skip bbox scale step if models are already scaled. Default: false.",
+                    },
+                },
+                "required": ["x_preset", "source_armature", "target_armature"],
+            },
+        }
 
     def run(
         self,
