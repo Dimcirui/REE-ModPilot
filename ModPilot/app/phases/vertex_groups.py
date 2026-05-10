@@ -184,6 +184,11 @@ class VertexGroups(PhaseTool):
                 )
             )
 
+        # ── cleanup: remove MHWilds reference meshes ───────────────────────
+        # Source meshes are now merged and reparented; reference meshes that
+        # came with the MHWilds skeleton import are no longer needed.
+        self._delete_mhwilds_reference_meshes(client, target_arm, merged_name)
+
         # ── exit cache update ──────────────────────────────────────────────
         state_after = cache.refresh()
         return PhaseResult.ok(state_before.diff(state_after))
@@ -375,6 +380,12 @@ class VertexGroups(PhaseTool):
             f"    arm_mod.object = tgt_arm\n"
             f"    arm_mod.use_vertex_groups = True\n"
             f"    arm_mod.use_bone_envelopes = False\n"
+            # Move merged mesh into MHWilds_Female.mesh collection
+            f"    mhwilds_col = bpy.data.collections.get('MHWilds_Female.mesh')\n"
+            f"    if mhwilds_col:\n"
+            f"        for _c in list(merged.users_collection):\n"
+            f"            _c.objects.unlink(merged)\n"
+            f"        mhwilds_col.objects.link(merged)\n"
             f"    print({BLENDER_SENTINEL!r})\n"
             f"    print('REPARENT_OK')\n"
         )
@@ -397,3 +408,32 @@ class VertexGroups(PhaseTool):
             operator="object.parent_set",
             message=f"Unexpected output from re-parent step: {lines!r}",
         )
+
+    def _delete_mhwilds_reference_meshes(
+        self,
+        client: BlenderClient,
+        target_arm: str,
+        keep_name: str,
+    ) -> None:
+        """
+        Delete MESH objects that are children of the MHWilds armature and
+        belong to the MHWilds_Female.mesh collection, excluding keep_name
+        (the merged source mesh that was just moved there).  Failures are
+        silently ignored.
+        """
+        code = (
+            f"import bpy\n"
+            f"tgt = bpy.data.objects.get({target_arm!r})\n"
+            f"col = bpy.data.collections.get('MHWilds_Female.mesh')\n"
+            f"if tgt and col:\n"
+            f"    to_del = [\n"
+            f"        obj for obj in list(col.objects)\n"
+            f"        if obj.type == 'MESH' and obj.parent == tgt\n"
+            f"        and obj.name != {keep_name!r}\n"
+            f"    ]\n"
+            f"    for obj in to_del:\n"
+            f"        bpy.data.objects.remove(obj, do_unlink=True)\n"
+            f"print({BLENDER_SENTINEL!r})\n"
+            f"print('CLEANUP_OK')\n"
+        )
+        client.execute_and_extract(code)

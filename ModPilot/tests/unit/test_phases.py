@@ -385,16 +385,18 @@ class TestVertexGroups:
 
     def _make_full_client(self, merged_name="Body"):
         """
-        Mock that returns correct output for all 3 steps:
+        Mock that returns correct output for all 4 steps:
           call 1 → PREP_OK:{merged_name}
           call 2 → {'FINISHED'}   (direct_convert)
           call 3 → REPARENT_OK
+          call 4 → DELETED:0      (_delete_mhwilds_reference_meshes)
         """
         client = make_client()
         client.execute_and_extract.side_effect = [
             [f"PREP_OK:{merged_name}"],
             [f"{{'FINISHED'}}"],
             ["REPARENT_OK"],
+            ["DELETED:0"],
         ]
         return client
 
@@ -538,13 +540,13 @@ class TestVertexGroups:
 
     # ── full success ───────────────────────────────────────────────────────
 
-    def test_full_success_three_calls(self):
-        """Happy path: exactly 3 calls and result.success is True."""
+    def test_full_success_four_calls(self):
+        """Happy path: 4 calls (prep+merge, convert, reparent, delete-refs) and result.success."""
         client = self._make_full_client()
         cache = make_cache(client)
         result = self._phase().run(client, cache, self._base_params())
         assert result.success
-        assert client.execute_and_extract.call_count == 3
+        assert client.execute_and_extract.call_count == 4
 
     # ── error propagation ──────────────────────────────────────────────────
 
