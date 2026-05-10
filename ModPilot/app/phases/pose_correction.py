@@ -81,7 +81,11 @@ class PoseCorrection(PhaseTool):
                     },
                     "target_armature": {
                         "type": "string",
-                        "description": "Blender ARMATURE object name for the MHWs reference skeleton.",
+                        "description": (
+                            "Blender ARMATURE object name for the MHWs reference skeleton. "
+                            "Always 'MHWilds_Female Armature' after setup_import_mhwilds — "
+                            "use this fixed value without asking the user."
+                        ),
                     },
                     "skip_scale_align": {
                         "type": "boolean",
@@ -246,6 +250,17 @@ class PoseCorrection(PhaseTool):
             f"    print({BLENDER_SENTINEL!r})\n"
             f"    print('PRECONDITION:objects_not_found:' + ','.join(missing))\n"
             f"else:\n"
+            # Step 0: apply any unapplied scale on source armature + mesh children so
+            # that matrix_world reflects the true visual size before computing the ratio.
+            # Output from transform_apply lands before the sentinel and is discarded.
+            f"    bpy.ops.object.mode_set(mode='OBJECT')\n"
+            f"    bpy.ops.object.select_all(action='DESELECT')\n"
+            f"    src_arm.select_set(True)\n"
+            f"    for _ch in src_arm.children:\n"
+            f"        if _ch.type == 'MESH': _ch.select_set(True)\n"
+            f"    bpy.context.view_layer.objects.active = src_arm\n"
+            f"    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)\n"
+            f"    bpy.context.view_layer.update()\n"
             # Helper: collect meshes bound to arm_obj via Armature modifier
             f"    def bound_meshes(arm_obj):\n"
             f"        return [o for o in bpy.data.objects\n"
@@ -279,7 +294,6 @@ class PoseCorrection(PhaseTool):
             f"            ratio = tgt_h / src_h\n"
             f"            src_arm.scale = (ratio, ratio, ratio)\n"
             f"            bpy.context.view_layer.objects.active = src_arm\n"
-            f"            bpy.ops.object.mode_set(mode='OBJECT')\n"
             f"            bpy.ops.object.select_all(action='DESELECT')\n"
             f"            src_arm.select_set(True)\n"
             f"            bpy.ops.object.transform_apply(\n"

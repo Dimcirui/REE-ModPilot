@@ -71,7 +71,11 @@ class SkeletonAlign(PhaseTool):
                     },
                     "target_armature": {
                         "type": "string",
-                        "description": "Blender ARMATURE object name for the MHWs reference skeleton.",
+                        "description": (
+                            "Blender ARMATURE object name for the MHWs reference skeleton. "
+                            "Always 'MHWilds_Female Armature' after setup_import_mhwilds — "
+                            "use this fixed value without asking the user."
+                        ),
                     },
                     "y_preset": {
                         "type": "string",

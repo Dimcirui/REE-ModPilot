@@ -146,6 +146,10 @@ On success, report:
 - [ ] X preset selected (source model type: MMD / VRChat / Endfield / other).
 - [ ] Y preset selected (target game: MHWs).
 
+> **Fixed names — do NOT ask the user:**
+> - `target_armature` for all phases = `"MHWilds_Female Armature"` (always, after setup)
+> - `y_preset` = `"怪猎荒野"` (always for MHWs MVP)
+
 ### Preset Paths
 | Source Type | X Preset File | Skeleton Preset |
 |---|---|---|
