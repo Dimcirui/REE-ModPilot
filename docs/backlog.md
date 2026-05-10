@@ -68,7 +68,7 @@ Items here block MVP shipping. All must reach 🟢 before MVP acceptance (L3, [d
 ### Stage 4 — phase tools (videos 4-7)
 
 - 🟢 `app/phases/physics_bones.py` (Phase 3.5/4A/4B; PhysicsTransplant + PhysicsClassification + PhysicsChains; physics_presets.json distilled from 35 RE Chain Editor presets; 38 unit tests)
-- ⚪ `app/phases/material.py` (video 5; PBR channel mapping) — deferred ("硬骨头"; no viable automation path yet)
+- 🟡 `app/phases/material.py` (video 5; MaterialInspect + MaterialSetup + MaterialGenerate; design in [docs/phase5_material.md](phase5_material.md))
 - 🟢 `app/phases/batch_export.py` (Phase 6; single-call batch export: mesh + mdf2 + chain2 + BoneSystem; 35 unit tests)
 - ⚪ `app/phases/advanced.py` (video 7; MHWs-specific tools) — explicitly out of MVP scope
 
