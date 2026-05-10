@@ -159,6 +159,23 @@ On success, report:
 
 Y preset is always: MHWs (Monster Hunter Wilds).
 
+### VRChat Base Body Identification
+
+VRChat models are built on community avatar bases. If the source armature name or any
+mesh name contains one of the following keywords (case-insensitive), treat the model
+as VRChat with **high confidence** — do not ask the user:
+
+```
+kipfel, shinano, manuka, milltina, rurune, mamehinata, shinra, chocolat, selestia,
+kikyo, minase, sio, milfy, rinasciita, komano, mafuyu, eku, chiffon, karin, lumina,
+marycia, mao, moe, lasyusha, rusk, ichigo, maya, mizuki, hakka, airi, zome, lapwing,
+deltaflair, lime, kanata, rindo, sophina, platinum, nemesis, sapphy, wolferia, ririka,
+mishe, kokoa, fiona, mint, lazuli, soraha, minahoshi, koyuki, cian, meiyun, merino,
+velle, anon, ciel, sephira, lucifer
+```
+
+If none of these keywords appear, fall back to asking the user to confirm the source type.
+
 ---
 
 ### Phase 1: Pose Correction
