@@ -891,6 +891,47 @@ Parameters:
 
 ---
 
+## Phase 5C: Mesh Cleanup
+
+**Goal**: Run RE Mesh Tools cleanup operators on every mesh in the target collection
+to ensure the geometry is export-ready.
+
+### Entry Conditions
+- [ ] Phase 5B (material_generate) completed — `Group_0_Sub_*` submeshes exist in the collection.
+
+### Execution
+
+Call `mesh_cleanup` with no required parameters (default collection: `MHWilds_Female.mesh`):
+
+```json
+{ "mesh_collection": "MHWilds_Female.mesh" }
+```
+
+The tool applies four operators to each MESH object in the collection, in this order:
+
+| Step | Operator | Effect |
+|---|---|---|
+| 1 | `re_mesh.delete_loose` | Remove disconnected vertices/edges/faces |
+| 2 | `re_mesh.solve_repeated_uvs` | Deduplicate identical UV coordinates |
+| 3 | `re_mesh.remove_zero_weight_vertex_groups` | Drop vertex groups with no weights |
+| 4 | `re_mesh.limit_total_normalize(maxWeights='12')` | Cap at 12 bone influences and renormalize |
+
+Step 4 automatically falls back to `object.vertex_group_limit_total` +
+`object.vertex_group_normalize_all` if the RE Mesh operator cannot run.
+
+### Exit Conditions
+- All MESH objects in the collection processed without fatal errors.
+- `meshes_cleaned` count in result matches the number of submeshes.
+- Any per-mesh operator warnings are reported in `operator_warnings` but do not
+  block Phase 6.
+
+### Common Errors
+- **Collection not found**: Phase 5B has not run yet, or `mesh_collection` name is wrong.
+  Call `list_collections()` to verify the name.
+- **Operator poll failed**: RE Mesh Editor addon is not installed or not enabled in Blender.
+
+---
+
 ## Phase 6: Batch Export
 
 **Goal**: Export final mod files (mesh + mdf2 + chain2) to the Natives directory,

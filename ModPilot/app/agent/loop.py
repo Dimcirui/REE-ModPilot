@@ -135,6 +135,7 @@ _PHASE_SEQUENCE: list[str] = [
     "phase_4a",
     "phase_4b",
     "phase_5",
+    "phase_5c",         # MeshCleanup (pre-export RE Mesh Tools)
     "phase_6",
 ]
 
@@ -615,6 +616,7 @@ class AgentLoop:
 
     def _register_available_phases(self) -> None:
         from app.phases.batch_export import BatchExport
+        from app.phases.mesh_cleanup import MeshCleanup
         from app.phases.material import (
             MaterialConsolidate,
             MaterialGenerate,
@@ -656,6 +658,7 @@ class AgentLoop:
             MaterialInspect(),
             MaterialSetup(),
             MaterialGenerate(),
+            MeshCleanup(),
             BatchExport(),
             # Query tools (read-only, always available)
             SceneInfo(),
