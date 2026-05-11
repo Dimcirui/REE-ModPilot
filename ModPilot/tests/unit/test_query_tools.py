@@ -19,6 +19,9 @@ import pytest
 
 from app.phases.query_tools import (
     GetBoneInfo,
+    GetMaterialInfo,
+    GetMeshInfo,
+    GetObjectProps,
     ListCollections,
     ListObjects,
     QueryTool,
@@ -44,9 +47,20 @@ def _make_scene_client(info: dict) -> MagicMock:
 # ── QueryTool base contract ───────────────────────────────────────────────────
 
 
+_ALL_TOOLS = [
+    SceneInfo(), ListObjects(), GetBoneInfo(), ListCollections(),
+    GetMeshInfo(), GetMaterialInfo(), GetObjectProps(),
+]
+
+_ALL_TOOL_NAMES = {
+    "scene_info", "list_objects", "get_bone_info", "list_collections",
+    "get_mesh_info", "get_material_info", "get_object_props",
+}
+
+
 @pytest.mark.unit
 class TestQueryToolContract:
-    tools = [SceneInfo(), ListObjects(), GetBoneInfo(), ListCollections()]
+    tools = _ALL_TOOLS
 
     def test_all_tools_are_query_tool_instances(self):
         for t in self.tools:
@@ -66,7 +80,7 @@ class TestQueryToolContract:
 
     def test_expected_tool_names(self):
         names = {t.name for t in self.tools}
-        assert names == {"scene_info", "list_objects", "get_bone_info", "list_collections"}
+        assert names == _ALL_TOOL_NAMES
 
 
 # ── SceneInfo ─────────────────────────────────────────────────────────────────
@@ -204,13 +218,13 @@ class TestQueryToolsInLoop:
     def test_query_tools_are_registered(self):
         loop = self._make_loop()
         names = set(loop._phase_tools.keys())
-        assert {"scene_info", "list_objects", "get_bone_info", "list_collections"}.issubset(names)
+        assert _ALL_TOOL_NAMES.issubset(names)
 
     def test_build_query_tool_list_returns_only_query_tools(self):
         loop = self._make_loop()
         query = loop._build_query_tool_list()
         names = {t["name"] for t in query}
-        assert names == {"scene_info", "list_objects", "get_bone_info", "list_collections"}
+        assert names == _ALL_TOOL_NAMES
         # Phase tools must NOT appear
         assert "pose_correction" not in names
 
@@ -237,3 +251,186 @@ class TestQueryToolsInLoop:
         )
         assert error is None
         assert "not available" in result
+
+
+# ── GetMeshInfo ───────────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestGetMeshInfo:
+    tool = GetMeshInfo()
+
+    def test_requires_mesh_name_in_schema(self):
+        schema = self.tool.tool_schema()
+        assert "mesh_name" in schema["input_schema"]["required"]
+
+    def test_returns_mesh_data(self):
+        payload = {
+            "mesh": "Shinano_body",
+            "parent_armature": "MHWilds_Female Armature",
+            "vertex_count": 12480,
+            "vertex_group_count": 68,
+            "vertex_groups": ["Spine", "Hips"],
+            "material_slots": ["Mat_body"],
+            "uv_layers": ["UVMap"],
+        }
+        client = _make_client([json.dumps(payload)])
+        result = json.loads(self.tool.run(client, {"mesh_name": "Shinano_body"}))
+        assert result["mesh"] == "Shinano_body"
+        assert result["vertex_group_count"] == 68
+        assert "Spine" in result["vertex_groups"]
+
+    def test_max_vgroups_passed_into_code(self):
+        client = _make_client([json.dumps({"mesh": "M", "parent_armature": None,
+                                           "vertex_count": 0, "vertex_group_count": 0,
+                                           "vertex_groups": [], "material_slots": [],
+                                           "uv_layers": []})])
+        self.tool.run(client, {"mesh_name": "M", "max_vgroups": 10})
+        code = client.execute_and_extract.call_args[0][0]
+        assert "10" in code
+
+    def test_mesh_not_found_returns_error(self):
+        client = _make_client([json.dumps({"error": "Mesh not found or not MESH type: Ghost"})])
+        result = json.loads(self.tool.run(client, {"mesh_name": "Ghost"}))
+        assert "error" in result
+
+    def test_empty_output_returns_error(self):
+        client = _make_client([])
+        result = json.loads(self.tool.run(client, {"mesh_name": "M"}))
+        assert "error" in result
+
+    def test_exception_returns_error_json(self):
+        client = MagicMock()
+        client.execute_and_extract.side_effect = RuntimeError("socket error")
+        result = json.loads(self.tool.run(client, {"mesh_name": "M"}))
+        assert "error" in result
+
+
+# ── GetMaterialInfo ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestGetMaterialInfo:
+    tool = GetMaterialInfo()
+
+    def test_requires_mesh_name_in_schema(self):
+        schema = self.tool.tool_schema()
+        assert "mesh_name" in schema["input_schema"]["required"]
+
+    def test_returns_material_slot_data(self):
+        payload = {
+            "mesh": "Shinano_body",
+            "material_slots": [
+                {
+                    "slot_index": 0,
+                    "material_name": "Mat_body",
+                    "use_nodes": True,
+                    "shader_type": "Principled BSDF",
+                    "textures": [
+                        {"node": "Image Texture", "image": "body_alb.png",
+                         "filepath": "//tex/body_alb.png", "is_packed": False,
+                         "has_data": True}
+                    ],
+                }
+            ],
+        }
+        client = _make_client([json.dumps(payload)])
+        result = json.loads(self.tool.run(client, {"mesh_name": "Shinano_body"}))
+        assert result["mesh"] == "Shinano_body"
+        slots = result["material_slots"]
+        assert len(slots) == 1
+        assert slots[0]["shader_type"] == "Principled BSDF"
+        assert slots[0]["textures"][0]["has_data"] is True
+
+    def test_broken_texture_detected_via_has_data(self):
+        """has_data=False indicates a missing/broken image path."""
+        payload = {
+            "mesh": "M",
+            "material_slots": [
+                {
+                    "slot_index": 0,
+                    "material_name": "Mat",
+                    "use_nodes": True,
+                    "shader_type": "Principled BSDF",
+                    "textures": [
+                        {"node": "Image Texture", "image": "missing.png",
+                         "filepath": "//tex/missing.png", "is_packed": False,
+                         "has_data": False}
+                    ],
+                }
+            ],
+        }
+        client = _make_client([json.dumps(payload)])
+        result = json.loads(self.tool.run(client, {"mesh_name": "M"}))
+        assert result["material_slots"][0]["textures"][0]["has_data"] is False
+
+    def test_generated_code_inspects_output_material_node(self):
+        """Blender code must walk the node tree from Material Output."""
+        client = _make_client([json.dumps({"mesh": "M", "material_slots": []})])
+        self.tool.run(client, {"mesh_name": "M"})
+        code = client.execute_and_extract.call_args[0][0]
+        assert "OUTPUT_MATERIAL" in code
+        assert "TEX_IMAGE" in code
+        assert "has_data" in code
+
+    def test_mesh_not_found_returns_error(self):
+        client = _make_client([json.dumps({"error": "Mesh not found or not MESH type: Ghost"})])
+        result = json.loads(self.tool.run(client, {"mesh_name": "Ghost"}))
+        assert "error" in result
+
+    def test_empty_output_returns_error(self):
+        client = _make_client([])
+        result = json.loads(self.tool.run(client, {"mesh_name": "M"}))
+        assert "error" in result
+
+    def test_exception_returns_error_json(self):
+        client = MagicMock()
+        client.execute_and_extract.side_effect = RuntimeError("socket error")
+        result = json.loads(self.tool.run(client, {"mesh_name": "M"}))
+        assert "error" in result
+
+
+# ── GetObjectProps ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestGetObjectProps:
+    tool = GetObjectProps()
+
+    def test_requires_object_name_in_schema(self):
+        schema = self.tool.tool_schema()
+        assert "object_name" in schema["input_schema"]["required"]
+
+    def test_returns_object_type_and_props(self):
+        payload = {
+            "object": "CHAIN_SETTINGS_00",
+            "type": "EMPTY",
+            "custom_props": {"TYPE": "RE_CHAIN_CHAINSETTINGS"},
+        }
+        client = _make_client([json.dumps(payload)])
+        result = json.loads(self.tool.run(client, {"object_name": "CHAIN_SETTINGS_00"}))
+        assert result["type"] == "EMPTY"
+        assert result["custom_props"]["TYPE"] == "RE_CHAIN_CHAINSETTINGS"
+
+    def test_object_not_found_returns_error(self):
+        client = _make_client([json.dumps({"error": "Object not found: Ghost"})])
+        result = json.loads(self.tool.run(client, {"object_name": "Ghost"}))
+        assert "error" in result
+
+    def test_underscore_keys_excluded_in_code(self):
+        """Generated code must skip keys starting with '_'."""
+        client = _make_client([json.dumps({"object": "O", "type": "EMPTY", "custom_props": {}})])
+        self.tool.run(client, {"object_name": "O"})
+        code = client.execute_and_extract.call_args[0][0]
+        assert "startswith('_')" in code
+
+    def test_empty_output_returns_error(self):
+        client = _make_client([])
+        result = json.loads(self.tool.run(client, {"object_name": "O"}))
+        assert "error" in result
+
+    def test_exception_returns_error_json(self):
+        client = MagicMock()
+        client.execute_and_extract.side_effect = RuntimeError("socket error")
+        result = json.loads(self.tool.run(client, {"object_name": "O"}))
+        assert "error" in result

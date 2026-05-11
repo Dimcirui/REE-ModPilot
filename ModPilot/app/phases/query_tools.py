@@ -9,6 +9,12 @@ Tools:
   list_objects     — enumerate objects, optionally filtered by Blender type
   get_bone_info    — pose bone list + custom props for a named armature
   list_collections — collections + their custom props (~TYPE, etc.)
+  get_mesh_info    — vertex groups, UV layers, vertex count, parent armature,
+                     material slot names for a MESH object
+  get_material_info — material slots with shader type and texture node paths
+                      for a MESH object; detects broken/missing image links
+  get_object_props — custom properties on any named object (covers RE Chain
+                     objects: TYPE, chain_role, re_chain_* PropertyGroups)
 """
 
 from __future__ import annotations
@@ -253,5 +259,235 @@ class ListCollections(QueryTool):
         try:
             lines = client.execute_and_extract(code)
             return lines[0] if lines else json.dumps([])
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+
+
+# ── get_mesh_info ─────────────────────────────────────────────────────────────
+
+
+class GetMeshInfo(QueryTool):
+    @property
+    def name(self) -> str:
+        return "get_mesh_info"
+
+    @classmethod
+    def tool_schema(cls) -> dict[str, Any]:
+        return {
+            "name": "get_mesh_info",
+            "description": (
+                "Return mesh inspection data for a MESH object: "
+                "vertex group names (confirms Phase 3 rename completion), "
+                "UV layer names, vertex count, parent armature name, "
+                "and material slot names. "
+                "Use max_vgroups to limit output for large rigs."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "mesh_name": {
+                        "type": "string",
+                        "description": "Name of the MESH object in the Blender scene.",
+                    },
+                    "max_vgroups": {
+                        "type": "integer",
+                        "description": (
+                            "Maximum number of vertex group names to return. "
+                            "Default 50. Full count is always returned separately."
+                        ),
+                    },
+                },
+                "required": ["mesh_name"],
+            },
+        }
+
+    def run(self, client: BlenderClient, params: dict) -> str:
+        mesh_name = params.get("mesh_name", "")
+        max_vgroups = int(params.get("max_vgroups", 50))
+        code = (
+            f"import bpy, json\n"
+            f"mesh_obj = bpy.data.objects.get({mesh_name!r})\n"
+            f"max_vg = {max_vgroups}\n"
+            f"if mesh_obj is None or mesh_obj.type != 'MESH':\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    print(json.dumps({{'error': 'Mesh not found or not MESH type: ' + {mesh_name!r}}}))\n"
+            f"else:\n"
+            f"    vgroups = [vg.name for vg in mesh_obj.vertex_groups]\n"
+            f"    mat_slots = [\n"
+            f"        slot.material.name if slot.material else None\n"
+            f"        for slot in mesh_obj.material_slots\n"
+            f"    ]\n"
+            f"    uv_layers = [uv.name for uv in mesh_obj.data.uv_layers]\n"
+            f"    parent_arm = (\n"
+            f"        mesh_obj.parent.name\n"
+            f"        if mesh_obj.parent and mesh_obj.parent.type == 'ARMATURE'\n"
+            f"        else None\n"
+            f"    )\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    print(json.dumps({{\n"
+            f"        'mesh': {mesh_name!r},\n"
+            f"        'parent_armature': parent_arm,\n"
+            f"        'vertex_count': len(mesh_obj.data.vertices),\n"
+            f"        'vertex_group_count': len(vgroups),\n"
+            f"        'vertex_groups': vgroups[:max_vg],\n"
+            f"        'material_slots': mat_slots,\n"
+            f"        'uv_layers': uv_layers,\n"
+            f"    }}, ensure_ascii=False))\n"
+        )
+        try:
+            lines = client.execute_and_extract(code)
+            return lines[0] if lines else json.dumps({"error": "no output"})
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+
+
+# ── get_material_info ─────────────────────────────────────────────────────────
+
+
+class GetMaterialInfo(QueryTool):
+    @property
+    def name(self) -> str:
+        return "get_material_info"
+
+    @classmethod
+    def tool_schema(cls) -> dict[str, Any]:
+        return {
+            "name": "get_material_info",
+            "description": (
+                "Inspect material slots on a MESH object. "
+                "For each slot returns: material name, whether nodes are enabled, "
+                "the shader type connected to the Material Output (e.g. 'Principled BSDF', "
+                "'Group'), and all Image Texture nodes with their image name, "
+                "relative filepath, is_packed flag, and has_data flag "
+                "(False = image not loaded → likely broken path). "
+                "Use before Phase 5 to assess material state without modifying anything."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "mesh_name": {
+                        "type": "string",
+                        "description": "Name of the MESH object in the Blender scene.",
+                    },
+                },
+                "required": ["mesh_name"],
+            },
+        }
+
+    def run(self, client: BlenderClient, params: dict) -> str:
+        mesh_name = params.get("mesh_name", "")
+        code = (
+            f"import bpy, json\n"
+            f"mesh_obj = bpy.data.objects.get({mesh_name!r})\n"
+            f"if mesh_obj is None or mesh_obj.type != 'MESH':\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    print(json.dumps({{'error': 'Mesh not found or not MESH type: ' + {mesh_name!r}}}))\n"
+            f"else:\n"
+            f"    slots = []\n"
+            f"    for i, slot in enumerate(mesh_obj.material_slots):\n"
+            f"        mat = slot.material\n"
+            f"        if mat is None:\n"
+            f"            slots.append({{'slot_index': i, 'material_name': None,\n"
+            f"                           'use_nodes': False, 'shader_type': None,\n"
+            f"                           'textures': []}})\n"
+            f"            continue\n"
+            f"        shader_type = None\n"
+            f"        textures = []\n"
+            f"        if mat.use_nodes and mat.node_tree:\n"
+            # Identify the shader connected to Material Output surface socket
+            f"            for node in mat.node_tree.nodes:\n"
+            f"                if node.type == 'OUTPUT_MATERIAL':\n"
+            f"                    surf = node.inputs.get('Surface')\n"
+            f"                    if surf and surf.links:\n"
+            f"                        shader_type = surf.links[0].from_node.bl_label\n"
+            f"                    break\n"
+            # Collect all Image Texture nodes (regardless of connection state)
+            f"            for node in mat.node_tree.nodes:\n"
+            f"                if node.type == 'TEX_IMAGE':\n"
+            f"                    img = node.image\n"
+            f"                    textures.append({{\n"
+            f"                        'node': node.name,\n"
+            f"                        'image': img.name if img else None,\n"
+            f"                        'filepath': img.filepath if img else None,\n"
+            f"                        'is_packed': bool(img.packed_file) if img else False,\n"
+            # has_data=False → image reference exists but pixels not loaded (broken path)
+            f"                        'has_data': bool(img.has_data) if img else False,\n"
+            f"                    }})\n"
+            f"        slots.append({{\n"
+            f"            'slot_index': i,\n"
+            f"            'material_name': mat.name,\n"
+            f"            'use_nodes': mat.use_nodes,\n"
+            f"            'shader_type': shader_type,\n"
+            f"            'textures': textures,\n"
+            f"        }})\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    print(json.dumps({{\n"
+            f"        'mesh': {mesh_name!r},\n"
+            f"        'material_slots': slots,\n"
+            f"    }}, ensure_ascii=False))\n"
+        )
+        try:
+            lines = client.execute_and_extract(code)
+            return lines[0] if lines else json.dumps({"error": "no output"})
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+
+
+# ── get_object_props ──────────────────────────────────────────────────────────
+
+
+class GetObjectProps(QueryTool):
+    @property
+    def name(self) -> str:
+        return "get_object_props"
+
+    @classmethod
+    def tool_schema(cls) -> dict[str, Any]:
+        return {
+            "name": "get_object_props",
+            "description": (
+                "Return the custom properties of any named Blender object, "
+                "plus its object type. "
+                "Useful for inspecting RE Chain Editor objects "
+                "(TYPE, chain_role, re_chain_chainsettings fields) "
+                "or any other object with custom data. "
+                "Keys starting with '_' (internal Blender props) are excluded."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "object_name": {
+                        "type": "string",
+                        "description": "Name of the Blender object to inspect.",
+                    },
+                },
+                "required": ["object_name"],
+            },
+        }
+
+    def run(self, client: BlenderClient, params: dict) -> str:
+        obj_name = params.get("object_name", "")
+        code = (
+            f"import bpy, json\n"
+            f"obj = bpy.data.objects.get({obj_name!r})\n"
+            f"if obj is None:\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    print(json.dumps({{'error': 'Object not found: ' + {obj_name!r}}}))\n"
+            f"else:\n"
+            f"    custom = {{}}\n"
+            f"    for k, v in obj.items():\n"
+            f"        if k.startswith('_'): continue\n"
+            f"        try: custom[k] = v if isinstance(v, (str, int, float, bool)) else str(v)\n"
+            f"        except Exception: custom[k] = '<unserializable>'\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    print(json.dumps({{\n"
+            f"        'object': obj.name,\n"
+            f"        'type': obj.type,\n"
+            f"        'custom_props': custom,\n"
+            f"    }}, ensure_ascii=False))\n"
+        )
+        try:
+            lines = client.execute_and_extract(code)
+            return lines[0] if lines else json.dumps({"error": "no output"})
         except Exception as exc:
             return json.dumps({"error": str(exc)})

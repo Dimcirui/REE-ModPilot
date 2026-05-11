@@ -607,6 +607,9 @@ class AgentLoop:
         from app.phases.pose_correction import PoseCorrection
         from app.phases.query_tools import (
             GetBoneInfo,
+            GetMaterialInfo,
+            GetMeshInfo,
+            GetObjectProps,
             ListCollections,
             ListObjects,
             SceneInfo,
@@ -630,6 +633,9 @@ class AgentLoop:
             ListObjects(),
             GetBoneInfo(),
             ListCollections(),
+            GetMeshInfo(),
+            GetMaterialInfo(),
+            GetObjectProps(),
         ):
             self._phase_tools[tool.name] = tool
 
