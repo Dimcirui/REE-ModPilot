@@ -52,6 +52,36 @@ On `PhaseError`, always:
 
 ---
 
+## Pipeline State Assessment Protocol
+
+**When asked to assess pipeline progress, verify completion, or describe current scene state:**
+
+> **YOU MUST CALL QUERY TOOLS BEFORE DRAWING ANY CONCLUSIONS.**
+> Do NOT use object or collection names from conversation history — they reflect the
+> scene as it was when those messages were written, which may be many phases ago.
+> The scene changes significantly between phases. Conclusions from stale history will be wrong.
+
+**Mandatory tool calls before any phase-completion assessment:**
+
+1. `list_objects()` — current object list (names, types, visibility flags)
+2. `list_collections()` — all collection names and their contents
+3. `scene_info()` — active object, mode, object count
+4. If evaluating Phase 4A/4B: `get_bone_info(armature_name="MHWilds_Female Armature", filter_custom_prop="chain_role")`
+
+**Interpretation rules — apply ONLY to fresh tool results, never to history:**
+
+| What you see in tool output | What it means |
+|---|---|
+| Meshes named `Group_0_Sub_<N>__<material>` | Phase 3 ✅ + Phase 5B ✅ — generator split the merged mesh by material; this IS the completed state |
+| Source `Armature` object with `"visible": false` | Phase 3.5 ✅ — `false` = hidden; **do NOT call this "still visible"** |
+| EMPTY objects `RE_CHAIN_HEADER / RE_CHAIN_CHAINSETTINGS / RE_CHAIN_CHAINGROUP` | Phase 4B chain file containers — NOT physics bones |
+| Collection with `.mdf2` in its name | Phase 5B ✅ — that IS the `mdf2_collection` name for Phase 6 |
+
+**If any value is needed but not yet known (e.g. mdf2_collection name):**
+Call `list_collections()` and read it from the result. Do NOT report it as "unknown" or "missing" without querying first.
+
+---
+
 ## Phase Sequence
 
 ```
@@ -299,6 +329,7 @@ Mapping preview shows ✓ for all standard bones.
 After Phase 3 user confirms the mapping preview: output a one-paragraph summary of what
 was completed across phases 1-3, then automatically proceed to Phase 3.5.
 Do NOT ask for an additional confirmation at this point.
+
 
 ---
 
@@ -644,41 +675,67 @@ After a preset is applied, the user may request fine-tuning. Translate as follow
 
 ## Phase 5: Material Processing
 
-**Goal**: Connect Principled BSDF nodes, configure the MDF2 Generator, and bake all
-materials into MHWs-compatible MDF2 + texture files.
+**Goal**: Prepare Blender materials for export (Phase 5A), then generate MHWs-native
+`.mdf2` and `.tex` files by mapping each Blender material slot to one MHWs game preset
+(Phase 5B). The three supported output shader types differ only in which sockets are
+relevant and whether `material_setup` is ever needed:
+
+| Output shader | Relevant sockets to check | `material_setup` applies? | Generator handles the rest? |
+|---|---|---|---|
+| **Principled BSDF** | Base Color, Roughness, Metallic, Normal, etc. | Yes — if any slot is blank | Yes |
+| **Emission** | Color (the only input) | **Never** | Yes — all other channels filled by preset |
+| **MMDShaderDev GROUP** | Base Tex, Base Alpha | **Never** | Yes — all other channels filled by preset |
+
+Key points:
+- `material_setup` is a PBS-only tool. Do not call it for Emission or MMDShaderDev regardless
+  of what `material_inspect` shows for their PBS slots (those slots are irrelevant for these
+  shader types).
+- Emission materials have exactly one relevant input: the Color socket. It may hold an
+  ImageTexture (→ generator uses DIRECT strategy, texture path copied) or a constant color
+  (→ generator uses SOLID strategy, 256×256 solid `.tex` generated). Both are valid inputs
+  for `material_generate` — no wiring is needed either way.
+- MMDShaderDev sockets are wired by the CATS importer. Confirm via `material_inspect`, then
+  call `material_generate` directly.
+- A single mesh can have mixed shader types. Apply the correct path per material, not per mesh.
+
+> **Broken-path detection**: The ONLY authoritative signal for a missing texture is
+> `existing_connections[mat][slot].exists == false` returned by `material_inspect`.
+> Do NOT use `bpy.types.Image.has_data` (via query tools or otherwise) to judge path
+> validity — that flag is a lazy-pixel-load indicator (set only after viewport/render
+> touches the image), not a disk-presence check. A texture can be on disk and fully
+> valid while `has_data` is still False.
+
+> **Deep node inspection**: `material_inspect` only summarizes Principled BSDF slot
+> connectivity. When a material uses Emission / MMDShader / MixShader (the actual
+> shader feeding Material Output is NOT a PBS), or when checking for orphan
+> Image Texture nodes left over from prior imports, call `inspect_material_nodes`
+> (a query tool) for a single material's full node tree: every node, every link,
+> the real `output_shader`, and the `orphan_nodes` list. Use it when a material's
+> PBS summary looks suspiciously empty.
 
 ### Entry Conditions
 - [ ] Phases 4A-4B completed (or explicitly skipped with user acknowledgement).
 - [ ] Source texture files accessible on disk or packed into the .blend file.
 
-### Path Selection
-| Source Model | Nodes | Action |
-|---|---|---|
-| MMD (PMX via CATS) | Already connected by CATS | Skip Steps 1-3; go directly to Step 4 |
-| VRChat / Endfield / other | Mostly blank (situation C) | Run all steps in order |
-
 ---
 
-### Step 1: Material Consolidation (non-MMD, run before classification)
+### Phase 5A: Blender Material Prep
 
-Some models have multiple Blender materials that reference the exact same texture files.
-These must be consolidated before node setup.
+**Goal**: Consolidate duplicate materials, inspect each material's output shader type and
+socket connectivity, and (for Principled BSDF materials only) classify and wire blank
+texture slots. Emission and MMDShaderDev materials need no wiring — they pass directly
+to Phase 5B.
 
-**Detection**: Group all materials by their texture file sets.
-For each group sharing identical textures:
+#### Step 1: Material Consolidation
 
-1. Read each material's Principled BSDF `Roughness` and `Metallic` values.
-2. Compare across materials in the group:
-   - Difference ≤ 0.1 on both → **silent merge**: replace duplicate materials with the
-     first one, re-assign all affected mesh faces.
-   - Difference > 0.1 on either → **warn user**:
-     "Materials [A, B] share the same textures but have different roughness/metallic values.
-     Merging them will lose this difference. Do you want to merge? [Yes / No, keep separate]"
-3. If user chooses to keep separate: leave as-is, both materials proceed through classification.
+Some models — especially VRChat community bases — split one logical material into many
+Blender materials that all reference the same image files. Without consolidation, every
+downstream step repeats work for each duplicate.
 
----
+Call `material_consolidate(dry_run=True)` first to see a grouping proposal, confirm with
+the user, then call `material_consolidate(dry_run=False, groups=...)` to apply.
 
-### Step 2: Texture Classification (non-MMD, 4-layer priority)
+#### Step 2: Texture Classification (Principled BSDF only, 4-layer priority)
 
 Run layers in order. Stop at first successful classification for each texture.
 
@@ -713,7 +770,7 @@ Surface via propose_and_confirm. Show texture thumbnail and ask user to assign c
 - Multiple materials, texture filename contains material or mesh name: auto-assign (high).
 - Ambiguous: surface via propose_and_confirm.
 
-### Propose-and-Confirm: Texture Assignment
+##### Propose-and-Confirm: Texture Assignment
 ```json
 {
   "proposals": [
@@ -729,9 +786,7 @@ Surface via propose_and_confirm. Show texture thumbnail and ask user to assign c
 }
 ```
 
----
-
-### Step 3: Node Connection (non-MMD only)
+#### Step 3: Node Connection (Principled BSDF only)
 
 After texture assignment is confirmed, build the Principled BSDF node graph per material.
 Connection patterns (create nodes in this order):
@@ -751,90 +806,88 @@ Notes:
 - If both `ao` and `base_color` exist: chain them (base_color → MixRGB Color1, ao → Color2).
 - NormalMap node strength: default 1.0.
 
----
-
-### Step 4: Pre-Bake Render Configuration
-
-Before opening the MDF2 Generator, configure Blender's render settings:
-1. Properties → Render → Render Engine: set to **Cycles**.
-2. Render → Device: set to **GPU Compute**.
-3. Sampling → Viewport → Max Samples: set to **4**.
-4. Sampling → Render → Max Samples: set to **4**.
-This reduces bake time and GPU load significantly.
+#### Phase 5A Exit Conditions
+- All materials consolidated (duplicates merged).
+- All Principled BSDF materials: texture slots classified and wired.
+- Emission and MMDShaderDev materials: no wiring needed; confirmed via `material_inspect`.
 
 ---
 
-### Step 5: MDF2 Generator Setup
+### Phase 5B: MDF2 Generation
 
-**5a — Open generator and configure mesh/path:**
-1. Open MDF2 Generator.
-2. Select mesh collection → click **Refresh**.
-3. **Mod Root**: ask user to provide a path + folder name.
-   - Agent checks if the folder exists at that path.
-   - If not: create the folder, then select it.
-4. **MDF Collection**: leave blank (auto-fills with default name).
-5. **natives/stm/... path**: ask user for their name + character name.
-   - Fill as `"username/charactername"` using English or pinyin.
-   - Example: `"alice/kirin_mod"`
+**Goal**: Map each Blender material slot to exactly ONE MHWs game-side preset, then call
+`material_generate` to produce `.mdf2` and `.tex` output files.
 
-**5b — Wilds material type selection (per material):**
+> **Preset concept**: A preset is an MHWs game-side rendering material definition — a
+> `.json` file in RE Mesh Editor's `Presets/MHWILDS/` directory. It tells the game engine
+> how to render the mesh in-game. It has **no relationship** to Blender materials, shader
+> types, or texture content. Each Blender material slot maps to exactly ONE preset string.
+> There is no mixing, stacking, or combining presets for a single slot.
 
-First, ask the user:
-"Do you have preferences for which MHWilds material types to use? [Yes — describe / No, let agent decide]"
+#### Step 1: Confirm mesh collection
 
-**If user has preferences**: follow them.
+Call `list_collections()` to enumerate available collections. Identify the mesh collection
+(always `MHWilds_Female.mesh`, created in Phase 3). Use the exact name returned by
+`list_collections()` — do not guess or hardcode it.
 
-**If no preferences**: agent selects from the following standard MHWILDS presets
-(use only non-prefixed presets; ignore `1*` prefixed files — those are user-added):
+#### Step 2: Enumerate available presets
 
-| Heuristic | Recommended preset |
+Call `list_mdf_presets()` to get the actual preset names installed on this machine.
+Present the full list to the user.
+
+#### Step 3: Select ONE preset per Blender material slot
+
+Ask the user to pick exactly ONE preset for each material. If the user has no preference,
+propose via `propose_and_confirm` using these heuristics (then wait for user confirmation):
+
+| Heuristic | Suggested preset |
 |---|---|
-| Mesh name contains `hair`, `fur` | `Hair` |
-| Mesh name contains `eye`, `iris`, `pupil` | `Eye` |
-| Mesh name contains `skin`, `face` | `Skin` |
-| Has emissive texture | `Character Emissive` |
-| Toon rendering requested | `Cel Shaded Character` + `Cel Shade Character Outline` |
-| Everything else (body, armor, cloth) | `Character` |
+| Material/mesh name contains `hair`, `fur` | `Hair` |
+| Material/mesh name contains `eye`, `iris`, `pupil` | `Eye` |
+| Material/mesh name contains `skin`, `face` | `Skin` |
+| Output shader is Emission | `Character Emissive` |
+| Everything else (body, armor, cloth, accessories) | `Character` |
 
-After auto-selection: report to user for review before proceeding.
-"I've assigned the following material types. Please review: [table]. [Confirm / Edit]"
+Present as a `propose_and_confirm` table. Surface any `low` confidence rows for user review
+before proceeding.
 
-**5c — Toon rendering (三渲二) checkbox:**
-- MMD models: **check by default**. Do not ask the user.
-- VRC / Endfield / other: **unchecked by default**.
-  Ask: "Would you like to enable toon (cel-shaded) rendering for this mod? [Yes / No]"
-  If yes: also add the `Cel Shade Character Outline` preset for outline pass.
+#### Step 4: Call `material_generate`
 
-Operator for applying a preset material:
-```python
-# Set the preset name in the tool panel, then apply
-context.scene.re_mdf_toolpanel.mdfPreset = "<preset name>"
-bpy.ops.re_mdf.add_preset_material()
+```json
+{
+  "mesh_collection": "<name confirmed from list_collections()>",
+  "natives_root": "<user-provided mod root folder — any path; toolkit auto-creates natives/ inside>",
+  "texture_base_path": "<user-provided sub-path, e.g. 'Author/CharName/'>",
+  "preset_mapping": { "<mat_name>": "<preset_name>", ... }
+}
 ```
 
-**5d — Confirm and bake:**
-After user confirms material types: click OK to start baking.
-Inform user: "Baking has started. This may take several minutes depending on your GPU.
-Please do not close Blender during this process."
+Parameters:
+- `mesh_collection`: must come from `list_collections()` result — do not hardcode.
+- `natives_root`: **required**. Ask the user for their mod root folder path. Pass whatever
+  folder they specify; the toolkit automatically creates the `natives/` directory structure
+  inside it if it does not exist.
+- `texture_base_path`: ask the user for their author/character sub-path
+  (e.g. `"alice/kirin_mod"`).
+- `preset_mapping`: one entry per Blender material slot; value is the exact preset name
+  from `list_mdf_presets()` output.
 
----
-
-### Exit Conditions
-- All materials baked without `CANCELLED` status.
-- MDF2 file written to the mod root path under `natives/stm/...`.
+#### Phase 5B Exit Conditions
+- `.mdf2` file written under `<natives_root>/natives/STM/...`.
 - `.tex` files generated for all texture channels.
+- `material_generate` tool result contains key `"mdf_collection"` with the exact Blender
+  collection name (e.g. `"MHWilds_Female.mdf2"`). **Record this value.** It is passed
+  verbatim as `mdf2_collection` in Phase 6. Do NOT guess, infer, or reconstruct it.
 
 ### Common Errors
 - **texconv not found**: RE Mesh Editor should bundle texconv; ask user to verify
   RE Mesh Editor is correctly installed.
-- **Render engine not set to Cycles**: Bake operator may fail or use CPU. Verify
-  render engine is Cycles before baking.
 - **Roughness appears inverted in-game**: Source uses smoothness (inverted roughness).
   Enable the roughness invert option in the MDF2 Generator per-material settings.
 - **Normal map lighting wrong**: Source uses GL-format normals. Enable GL→DX normal
   flip in the MDF2 Generator per-material settings.
-- **Bake produces black textures**: GPU not selected, or max samples set too high.
-  Verify Device = GPU and max samples = 4.
+- **`list_mdf_presets` returns error**: RE Mesh Editor addon is not loaded in Blender.
+  Verify the addon is enabled and restart Blender if needed.
 
 ---
 
@@ -867,12 +920,161 @@ Present as a simple choice before opening the exporter.
 
 ### Step 2: Equipment Selection
 
-The Batch Exporter's equipment list is populated at runtime from the game's armor data.
-Ask the user to name the target equipment (e.g. "Kirin Beta chest piece").
-Agent searches the exporter's equipment list for the closest match and selects it.
-If no clear match is found: ask the user to select manually in the UI.
+Ask the user to name the target armor set (e.g. "煌雷龙 β 胸甲"). Match the description
+against the table below to find the `id`. The `id` is passed to the batch export operator
+as `mhws_armor_scheme`.
+
+**If multiple candidates match** (e.g. α and β share the same `id`): present via
+`propose_and_confirm` and wait for user to confirm.
+
+**Variant key** (determined by Hunter Type from Step 1):
+| Variant | Meaning |
+|---|---|
+| `ff` | Female hunter / Female armor set — **default** |
+| `fm` | Female hunter / Male armor set |
+| `mf` | Male hunter / Female armor set |
+| `mm` | Male hunter / Male armor set |
+
+**Part keys**: `1`=手臂(Arm)  `2`=身体(Body)  `3`=头盔(Helmet)  `4`=腿(Leg)  `5`=腰(Waist)
+
+**Full armor set table** (source: `assets/mhws/armor_sets/mhws_armor_sets.json`):
+
+| ID | Name |
+|---|---|
+| pl001 | 希望 α (Hope α) |
+| pl003 | 辟兽 α/β (Doshaguma α/β) |
+| pl003_500 | 护辟兽 α/β (Guardian Doshaguma α/β) |
+| pl004 | 骨制 α (Bone α) |
+| pl005 | 皮制 α (Leather α) |
+| pl006 | 锁甲 α (Chainmail α) |
+| pl007 | 钳速龙 α/β (Talioth α/β) |
+| pl008 | 缠蛙 α/β (Chatacabra α/β) |
+| pl009 | 炎尾龙 α/β (Quematrice α/β) |
+| pl010 | 合金 α (Alloy α) |
+| pl011 | 锯带龙 α/β (Piragill α/β) |
+| pl012 | 刺花蜘蛛 α/β (Lala Barina α/β) |
+| pl013 | 桃毛兽王 α/β (Conga α/β) |
+| pl014 | 沙海龙 α/β (Balahara α/β) |
+| pl015 | 铸铁 α (Ingot α) |
+| pl016 | 血盗虫 α/β (Bulaqchi α/β) |
+| pl017 | 波衣龙 α/β (Uth Duna α/β) |
+| pl017_300 | 波衣龙 γ (Uth Duna γ) |
+| pl018 | 沼喷龙 α/β (Rompopolo α/β) |
+| pl019 | 杜宾 α/β (Dober α/β) |
+| pl020 | 盔速龙 α/β (Kranodath α/β) |
+| pl021 | 煌雷龙 α/β (Rey Dau α/β) |
+| pl021_300 | 煌雷龙 γ (Rey Dau γ) |
+| pl022 | 影蜘蛛 α/β (Nerscylla α/β) |
+| pl023 | 风铗龙 α/β (Hirabami α/β) |
+| pl024 | 赫猿兽 α/β (Ajarakan α/β) |
+| pl025 | 花纹钢 α/β (Damascus α/β) |
+| pl026 | 血眠虫 α/β (Comaqchi α/β) |
+| pl027 | 狱焰蛸 α/β (Nu Udra α/β) |
+| pl027_300 | 狱焰蛸 γ (Nu Udra γ) |
+| pl028 | 巨蜂 α/β (Vespoid α/β) |
+| pl029 | 冻峰龙 α/β (Dahaad α/β) |
+| pl029_300 | 冻峰龙 γ (Dahaad γ) |
+| pl030_600 | 护凶爪龙 α/β (Guardian Ebony α/β) |
+| pl031 | 暗器蛸 α/β (Xu Wu α/β) |
+| pl032 | 锁刃龙 α/β (Arkveld α/β) |
+| pl032_300 | 锁刃龙 γ (Arkveld γ) |
+| pl032_500 | 护锁刃龙 α/β (Guardian Arkveld α/β) |
+| pl033 | 护鹭鹰龙 α/β (Guardian Seikret α/β) |
+| pl034 | 怪鸟 α/β (Kut-Ku α/β) |
+| pl035 | 雌火龙 α/β (Rathian α/β) |
+| pl036 | 火龙 α/β (Rathalos α/β) |
+| pl036_500 | 护火龙 α/β (Guardian Rathalos α/β) |
+| pl037 | 毒怪鸟 α/β (Gypceros α/β) |
+| pl038 | 千刃龙 α/β (Seregios α/β) |
+| pl039 | 海龙 α/β (Lagiacrus α/β) |
+| pl040 | 铠龙 α/β (Gravios α/β) |
+| pl041 | 雪狮子王 α/β (Blango α/β) |
+| pl042 | 黑蚀龙 α/β (Gore α/β) |
+| pl043_600 | 护雷颚龙 α/β (Guardian Fulgur α/β) |
+| pl044 | 龙王的独眼 α (Dragonking α) |
+| pl045 | 封印的龙骸布 α (Sealed Dragon Cloth α) |
+| pl046 | 库纳法 α (Kunafa α) |
+| pl047 | 阿孜兹 α (Azuz α) |
+| pl048 | 西尔德 α (Sild α) |
+| pl049 | 酥加 α (Suja α) |
+| pl050 | 调查团 α (Commission α) |
+| pl051 | 机械 α (Artian α) |
+| pl052 | 咬鱼 α (Gajau α) |
+| pl053 | 死神 α (Death Stench α) |
+| pl054 | 燕尾蝶 α (Butterfly α) |
+| pl055 | 独角仙 α (King Beetle α) |
+| pl056 | 矿石 α (High Metal α) |
+| pl057 | 战斗 α (Battle α) |
+| pl058 | 花瓣 α (Melahoa α) |
+| pl059 | 纯洁龙 α/β (Numinous α/β) |
+| pl060 | 公会骑士 (Guild Knight) |
+| pl061 | 兵之甲冑 (Feudal Soldier) |
+| pl062 | 公会王牌 α (Guild Ace α) |
+| pl063 | 花妖猩 α (Mimiphyta α) |
+| pl064 | 鬼角假发 (Oni Horns Wig) |
+| pl065 | 剑豪独眼罩 (Fencer's Eyepatch) |
+| pl066 | 泡狐龙 α/β (Mizutsune α/β) |
+| pl067 | 贵族 (Noblesse) |
+| pl068 | 萌芽头冠 (Florescent Circlet) |
+| pl069 | 落樱缤纷 α (Sakuratide α) |
+| pl070 | 恶魔 α (Demon) |
+| pl071 | 潜水员 α (Diver α) |
+| pl072 | 龙人族之耳 (Wyverian Ears) |
+| pl073 | 公会十字 α (Guild Cross α) |
+| pl074 | 职员 α (Clerk α) |
+| pl075 | 盛开 α (Blossom α) |
+| pl076 | 奉献耳饰 α (Earrings of Dedication α) |
+| pl076_100 | 大胃王耳饰 α (Gourmand's Earring α) |
+| pl077 | 艾露猫头套 α (Faux Felyne α) |
+| pl078 | 泡歌鸮 α (Amstrigian α) |
+| pl079 | 封印的龙骸布 (Sealed Dragon Cloth) |
+| pl080 | 霹雳舞猫 (Cypurrpunk) |
+| pl081 | 踊火 α (Afi α) |
+| pl083 | 毛茸茸兽耳 (Fluffy Ears) |
+| pl084 | 毛茸茸兽尾 (Fluffy Tail) |
+| pl085 | 哥特幽魂 α (Dreamwalker α) |
+| pl086 | 收获 α (Harvest α) |
+| pl087 | 调查队耳饰 α (Expedition Headgear α) |
+| pl088 | 知性眼镜 α (Strategist Spectacles α) |
+| pl088_100 | 方形眼镜 α (Square Glasses α) |
+| pl088_200 | 墨镜 α (Shadow Shades α) |
+| pl088_300 | 圆框眼镜 α (Round Glasses α) |
+| pl088_400 | 心形眼镜 α (Lovely Shades α) |
+| pl088_500 | 下半框眼镜 α (Half Rim Glasses α) |
+| pl088_600 | 泪滴墨镜 α (Aviator Shades α) |
+| pl088_700 | 猫眼眼镜 α (Kitten Frames α) |
+| pl088_800 | 炫光护目镜 α (Mirror Visor α) |
+| pl088_900 | 分析之眼 α (Analytic E.Y.E. α) |
+| pl089 | 单羽项链 α (Pinion Necklace α) |
+| pl090 | 启程的鹰之心 α (Hawkheart Jacket α) |
+| pl091 | 宇宙机装 (Cosmoloid) |
+| pl092 | 巨戟龙 α/β (Gogmazios α/β) |
+| pl093 | 祭典 α (Ceremonial α) |
+| pl094 | Gala Suit Slacks α |
+| pl095 | 辟兽头套 α (Doshagumask α) |
+| pl096 | 胶鲵 α (Gelidron α) |
+| pl097 | 肉垫手套 α (Toe Bean Mittens α) |
+| pl098 | 骷髅面罩 α (Skull Mask α) |
+| pl099 | 猎户星 α (Orion α) |
+| pl100 | 欧米茄服装 α (Omega Attire α) |
+| pl100_100 | 凶恶套装 α (Bale Armor α) |
+| pl101 | 精力充沛森狸人 α (Eager Wudwud α) |
+| pl102 | 祝福腰饰 α (Blessed Waistchain α) |
+| pl103 | 女王 α (Sororal α) |
+| pl104 | 苍世武士 α (Azure Age Haori) |
+| pl105 | 沼喷龙头套 α (Rompomask α) |
 
 ### Step 3: Collection Assignment
+
+**Before assigning, verify all three collection names exist:**
+Call `list_collections()` and confirm the three names appear in the result:
+- `mesh_collection` — always `"MHWilds_Female.mesh"` (created in Setup Step 2)
+- `mdf2_collection` — use the exact `"mdf_collection"` value from `material_generate`'s
+  result; **never guess or reconstruct this name**
+- `chain2_collection` — name returned by `physics_chains` in Phase 4B
+
+If any collection is missing, stop and report the missing collection to the user before
+proceeding.
 
 With this workflow, there is exactly ONE collection of each type:
 - One mesh collection (contains the merged mesh + MDF2 Collection)
@@ -967,6 +1169,6 @@ If warnings or errors appear in the log:
 | 4B | Apply angle limit ramp | `re_chain.apply_angle_limit_ramp` | Active obj must be CHAINGROUP; params: `maxAngleLimit=1.047198`, `maxIteration=4` |
 | 4B | Create additional Settings | `re_chain.create_chain_settings` | Poll: `chainCollection` must be set; no user params |
 | 4B | Apply Chain Settings preset | `re_chain.apply_chain_settings_preset` | Set `chainSettingsPresets` enum first; name = filename without `.json` |
-| 5 | MDF2 Generator bake | <!-- FILL IN --> | Per-material |
+| 5B | MDF2 generate | `mhws.mdf_gen_refresh` + `mhws.mdf_gen_process` | `material_generate` tool; natives_root = any user folder |
 | 6 | MHWs Batch Exporter | <!-- FILL IN --> | Body slot → mesh collection; all others → empty model; clsp → empty model |
 | 6 | BoneSystem export | <!-- FILL IN --> | Always required; armature = MHWs armature; FBXSkel name = character name |

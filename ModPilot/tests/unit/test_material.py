@@ -358,6 +358,14 @@ class TestMaterialGenerate:
     def test_name(self):
         assert self.tool.name == "material_generate"
 
+    # Common params for happy-path tests (natives_root is now required).
+    _PARAMS = {
+        "mesh_collection": "MeshCol",
+        "texture_base_path": "Author/Char/",
+        "natives_root": "E:/mod/root",
+        "preset_mapping": {},
+    }
+
     def test_tool_schema_shape(self):
         schema = MaterialGenerate.tool_schema()
         assert schema["name"] == "material_generate"
@@ -365,95 +373,77 @@ class TestMaterialGenerate:
         assert "mesh_collection" in required
         assert "texture_base_path" in required
         assert "preset_mapping" in required
+        assert "natives_root" in required
 
     def test_missing_mesh_collection_fails(self):
         result = self.tool.run(
             _make_client([]),
             _make_cache(),
-            {"texture_base_path": "Author/Char/", "preset_mapping": {}},
+            {"texture_base_path": "Author/Char/", "natives_root": "E:/m", "preset_mapping": {}},
         )
         assert not result.success
         assert result.error.category == "precondition"
+
+    def test_missing_natives_root_fails(self):
+        result = self.tool.run(
+            _make_client([]),
+            _make_cache(),
+            {"mesh_collection": "MeshCol", "texture_base_path": "Author/Char/", "preset_mapping": {}},
+        )
+        assert not result.success
+        assert result.error.category == "precondition"
+        assert "natives_root" in result.error.message
 
     def test_missing_texture_base_path_fails(self):
         result = self.tool.run(
             _make_client([]),
             _make_cache(),
-            {"mesh_collection": "MeshCol", "preset_mapping": {}},
+            {"mesh_collection": "MeshCol", "natives_root": "E:/m", "preset_mapping": {}},
         )
         assert not result.success
         assert result.error.category == "precondition"
 
     def test_collection_not_found_precondition(self):
         client = _make_client(["PRECONDITION:collection_not_found:MeshCol"])
-        result = self.tool.run(
-            client,
-            _make_cache(),
-            {
-                "mesh_collection": "MeshCol",
-                "texture_base_path": "Author/Char/",
-                "preset_mapping": {},
-            },
-        )
+        result = self.tool.run(client, _make_cache(), self._PARAMS)
         assert not result.success
         assert result.error.category == "precondition"
         assert "MeshCol" in result.error.message
 
     def test_empty_blender_output_fails(self):
-        result = self.tool.run(
-            _make_client([]),
-            _make_cache(),
-            {
-                "mesh_collection": "MeshCol",
-                "texture_base_path": "Author/Char/",
-                "preset_mapping": {},
-            },
-        )
+        result = self.tool.run(_make_client([]), _make_cache(), self._PARAMS)
         assert not result.success
         assert result.error.category == "operator_failed"
 
     def test_exception_in_process_fails(self):
         client = _make_client(["EXCEPTION:RE Mesh Editor not installed"])
-        result = self.tool.run(
-            client,
-            _make_cache(),
-            {
-                "mesh_collection": "MeshCol",
-                "texture_base_path": "Author/Char/",
-                "preset_mapping": {},
-            },
-        )
+        result = self.tool.run(client, _make_cache(), self._PARAMS)
         assert not result.success
         assert result.error.category == "unexpected"
         assert "RE Mesh Editor not installed" in result.error.message
 
     def test_cancelled_process_fails(self):
         client = _make_client(["CANCELLED:{'CANCELLED'}"])
-        result = self.tool.run(
-            client,
-            _make_cache(),
-            {
-                "mesh_collection": "MeshCol",
-                "texture_base_path": "Author/Char/",
-                "preset_mapping": {},
-            },
-        )
+        result = self.tool.run(client, _make_cache(), self._PARAMS)
         assert not result.success
         assert result.error.category == "operator_failed"
+
+    def test_stderr_b64_captured_into_raw(self):
+        """Captured stdout/stderr from the operator must flow into PhaseError.raw."""
+        import base64
+        msg = "Bake failed: texconv.exe not found"
+        stderr_line = "STDERR_B64:" + base64.b64encode(msg.encode("utf-8")).decode("ascii")
+        client = _make_client(["CANCELLED:{'CANCELLED'}", stderr_line])
+        result = self.tool.run(client, _make_cache(), self._PARAMS)
+        assert not result.success
+        assert msg in result.error.raw
 
     def test_successful_result_populates_state_diff(self):
         client = _make_client([
             _result_response("MeshCol.mdf2", ["Body", "Hair"], [])
         ])
-        result = self.tool.run(
-            client,
-            _make_cache(),
-            {
-                "mesh_collection": "MeshCol",
-                "texture_base_path": "Author/Char/",
-                "preset_mapping": {"Body": "Skin", "Hair": "Hair"},
-            },
-        )
+        params = {**self._PARAMS, "preset_mapping": {"Body": "Skin", "Hair": "Hair"}}
+        result = self.tool.run(client, _make_cache(), params)
         assert result.success
         assert result.state_diff["mdf_collection"] == "MeshCol.mdf2"
         assert result.state_diff["materials_processed"] == ["Body", "Hair"]
@@ -463,73 +453,34 @@ class TestMaterialGenerate:
         client = _make_client([
             _result_response("MeshCol.mdf2", ["Body", "Hair", "Face"], ["Face"])
         ])
-        result = self.tool.run(
-            client,
-            _make_cache(),
-            {
-                "mesh_collection": "MeshCol",
-                "texture_base_path": "Author/Char/",
-                "preset_mapping": {"Body": "Skin", "Hair": "Hair"},
-            },
-        )
+        params = {**self._PARAMS, "preset_mapping": {"Body": "Skin", "Hair": "Hair"}}
+        result = self.tool.run(client, _make_cache(), params)
         assert result.success
         assert "Face" in result.state_diff["presets_auto_guessed"]
 
     def test_preset_mapping_injected_into_blender_code(self):
         client = _make_client([_result_response("Col.mdf2", [], [])])
-        self.tool.run(
-            client,
-            _make_cache(),
-            {
-                "mesh_collection": "MeshCol",
-                "texture_base_path": "Author/Char/",
-                "preset_mapping": {"Body": "Skin", "Hair": "NoPDO Hair"},
-            },
-        )
+        params = {**self._PARAMS, "preset_mapping": {"Body": "Skin", "Hair": "NoPDO Hair"}}
+        self.tool.run(client, _make_cache(), params)
         code = client.execute_and_extract.call_args[0][0]
         assert "Skin" in code
         assert "NoPDO Hair" in code
 
-    def test_optional_natives_root_injected_when_provided(self):
+    def test_natives_root_injected_into_blender_code(self):
         client = _make_client([_result_response("Col.mdf2", [], [])])
-        self.tool.run(
-            client,
-            _make_cache(),
-            {
-                "mesh_collection": "MeshCol",
-                "texture_base_path": "Author/Char/",
-                "preset_mapping": {},
-                "natives_root": "E:/mod/root",
-            },
-        )
+        self.tool.run(client, _make_cache(), self._PARAMS)
         code = client.execute_and_extract.call_args[0][0]
         assert "E:/mod/root" in code
 
     def test_optional_mdf_collection_name_injected_when_provided(self):
         client = _make_client([_result_response("CustomName.mdf2", [], [])])
-        self.tool.run(
-            client,
-            _make_cache(),
-            {
-                "mesh_collection": "MeshCol",
-                "texture_base_path": "Author/Char/",
-                "preset_mapping": {},
-                "mdf_collection_name": "CustomName.mdf2",
-            },
-        )
+        params = {**self._PARAMS, "mdf_collection_name": "CustomName.mdf2"}
+        self.tool.run(client, _make_cache(), params)
         code = client.execute_and_extract.call_args[0][0]
         assert "CustomName.mdf2" in code
 
     def test_empty_preset_mapping_accepted(self):
         client = _make_client([_result_response("Col.mdf2", ["Body"], ["Body"])])
-        result = self.tool.run(
-            client,
-            _make_cache(),
-            {
-                "mesh_collection": "MeshCol",
-                "texture_base_path": "Author/Char/",
-                "preset_mapping": {},
-            },
-        )
+        result = self.tool.run(client, _make_cache(), self._PARAMS)
         assert result.success
         assert "Body" in result.state_diff["presets_auto_guessed"]

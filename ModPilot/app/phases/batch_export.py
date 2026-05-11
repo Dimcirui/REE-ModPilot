@@ -343,9 +343,10 @@ class BatchExport(PhaseTool):
                 operator="",
                 message=f"Required scene objects not found: {detail}",
                 suggestion=(
-                    "Ensure all Phase 1-5 outputs exist: merged mesh collection, "
-                    "MDF2 collection (Phase 5), chain2 collection (Phase 4B), "
-                    "and MHWs armature."
+                    "Use the list_collections() query tool to find the exact collection names "
+                    "in the current scene. The mdf2 collection name comes from material_generate's "
+                    "result key 'mdf_collection' (e.g. 'MHWilds_Female.mdf2') — do not guess it. "
+                    "Ensure all Phase 1-5 outputs exist and use names from tool results, not assumptions."
                 ),
             )
         return None
@@ -395,7 +396,8 @@ class BatchExport(PhaseTool):
             f"s.mhws_armor_scheme   = {armor_scheme!r}\n"
             f"s.mhws_selected_armor = {armor_id!r}\n"
             f"s.mhws_armor_variant  = {armor_variant!r}\n"
-            # ── bonesystem settings ───────────────────────────────────────
+            # ── blank export + bonesystem settings ───────────────────────
+            f"s.mhws_use_blank_export = True\n"
             f"arm_obj = bpy.data.objects.get({target_arm!r})\n"
             f"s.mhws_fbxskel_name  = {fbxskel_name!r}\n"
             f"s.mhws_bs_armature   = arm_obj\n"

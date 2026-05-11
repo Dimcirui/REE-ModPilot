@@ -138,9 +138,10 @@ _PHASE_SEQUENCE: list[str] = [
     "phase_6",
 ]
 
-_NEGOTIATING_PHASES: frozenset[str] = frozenset(
-    {"phase_5", "phase_6"}
-)
+_NEGOTIATING_PHASES: frozenset[str] = frozenset()
+# All phases run in RUNNING_PHASE so the LLM always has tool schemas visible.
+# NEGOTIATING gives the LLM zero tools, causing it to ask users to operate
+# Blender manually instead of calling the registered tools.
 
 _MAX_TOOL_ROUNDS = 15
 _MAX_ASK_ROUNDS = 3
@@ -331,6 +332,21 @@ class AgentLoop:
                 if error_reply or self.state != LoopState.RUNNING_PHASE:
                     break
 
+            # Fill placeholder tool_results for any tool_use IDs not yet executed.
+            # The Anthropic API requires every tool_use block in an assistant message
+            # to have a matching tool_result in the immediately following user message.
+            # When a tool failure triggers `break`, remaining IDs would be left unmatched.
+            executed_ids = {tr["tool_use_id"] for tr in tool_results}
+            for tc in response.tool_calls:
+                if tc["id"] not in executed_ids:
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tc["id"],
+                            "content": "Skipped — a preceding tool call in this round failed.",
+                        }
+                    )
+
             history.append({"role": "user", "content": tool_results})
 
             if error_reply:
@@ -488,12 +504,7 @@ class AgentLoop:
 
             case "ask":
                 self.state = LoopState.ASK_MODE
-                response = await asyncio.to_thread(
-                    self._llm.chat,
-                    self._global_history,
-                    system=self._system_prompt,
-                )
-                return response.content
+                return await self._handle_ask_mode(user_message)
 
             case _:
                 return (
@@ -516,10 +527,14 @@ class AgentLoop:
         """
         system = self._system_prompt + (
             "\n\n[ASK MODE] You are in explanation-and-query mode. "
-            "You may call the scene inspection tools (scene_info, list_objects, "
-            "get_bone_info, list_collections) to fetch live Blender data. "
+            "You may call ANY of the read-only query tools in your tool list "
+            "(scene_info, list_objects, get_bone_info, list_collections, "
+            "get_mesh_info, get_material_info, get_object_props, inspect_material_nodes, "
+            "list_mdf_presets) "
+            "to fetch live Blender data for diagnosis. "
             "You CANNOT call phase-advancing tools (pose_correction, skeleton_align, "
-            "vertex_groups, physics_*, etc.) in this mode. "
+            "vertex_groups, physics_*, material_setup, material_generate, batch_export, etc.) "
+            "in this mode. "
             "Do NOT output DSML tool-call markup."
         )
         if self._pending_error:
@@ -599,6 +614,13 @@ class AgentLoop:
     # ── helpers ───────────────────────────────────────────────────────────
 
     def _register_available_phases(self) -> None:
+        from app.phases.batch_export import BatchExport
+        from app.phases.material import (
+            MaterialConsolidate,
+            MaterialGenerate,
+            MaterialInspect,
+            MaterialSetup,
+        )
         from app.phases.physics_bones import (
             PhysicsChains,
             PhysicsClassification,
@@ -610,7 +632,9 @@ class AgentLoop:
             GetMaterialInfo,
             GetMeshInfo,
             GetObjectProps,
+            InspectMaterialNodes,
             ListCollections,
+            ListMdfPresets,
             ListObjects,
             SceneInfo,
         )
@@ -628,6 +652,11 @@ class AgentLoop:
             PhysicsTransplant(),
             PhysicsClassification(),
             PhysicsChains(),
+            MaterialConsolidate(),
+            MaterialInspect(),
+            MaterialSetup(),
+            MaterialGenerate(),
+            BatchExport(),
             # Query tools (read-only, always available)
             SceneInfo(),
             ListObjects(),
@@ -636,6 +665,8 @@ class AgentLoop:
             GetMeshInfo(),
             GetMaterialInfo(),
             GetObjectProps(),
+            InspectMaterialNodes(),
+            ListMdfPresets(),
         ):
             self._phase_tools[tool.name] = tool
 

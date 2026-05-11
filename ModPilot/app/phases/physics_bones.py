@@ -1196,7 +1196,7 @@ class PhysicsChains(PhaseTool):
             f"    else:\n"
             f"        print('NEW_CS:' + json.dumps({{'new_cs': new_cs, 'col': chain_col.name}}))\n"
         )
-        lines = client.execute_and_extract(code, timeout=300)
+        lines = client.execute_and_extract(code, timeout=600)
         if not lines:
             return (
                 PhaseError(

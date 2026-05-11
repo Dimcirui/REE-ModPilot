@@ -20,6 +20,7 @@ Tools:
 from __future__ import annotations
 
 import json
+import textwrap
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -246,7 +247,12 @@ class ListCollections(QueryTool):
             f"for col in bpy.data.collections:\n"
             f"    if chain_only and '.chain' not in col.name and '.clsp' not in col.name:\n"
             f"        continue\n"
-            f"    custom = {{k: v for k, v in col.items()}}\n"
+            f"    custom = {{}}\n"
+            f"    for k, v in col.items():\n"
+            f"        try:\n"
+            f"            custom[k] = v if isinstance(v, (str, int, float, bool, type(None))) else str(v)\n"
+            f"        except Exception:\n"
+            f"            custom[k] = '<unserializable>'\n"
             f"    cols.append({{\n"
             f"        'name': col.name,\n"
             f"        'object_count': len(col.objects),\n"
@@ -491,3 +497,225 @@ class GetObjectProps(QueryTool):
             return lines[0] if lines else json.dumps({"error": "no output"})
         except Exception as exc:
             return json.dumps({"error": str(exc)})
+
+
+class InspectMaterialNodes(QueryTool):
+    """
+    Full node-tree dump of a single material.
+
+    Use case: material_inspect's per-material summary only shows Principled BSDF
+    slot connectivity. When the LLM needs to understand the real shader path
+    (e.g. Emission → Material Output as in VRChat / MMD), or detect orphan
+    image-texture nodes left over from a previous import, this tool returns the
+    complete nodes + links graph plus convenience fields:
+
+      - output_shader: which shader node is actually feeding Material Output.Surface
+      - orphan_nodes:  nodes that participate in NO link — these include leftover
+                       Image Texture data-blocks the LLM would otherwise miss
+
+    Image data-blocks include the same {path, exists} schema as material_inspect.
+    """
+
+    @property
+    def name(self) -> str:
+        return "inspect_material_nodes"
+
+    @classmethod
+    def tool_schema(cls) -> dict[str, Any]:
+        return {
+            "name": "inspect_material_nodes",
+            "description": (
+                "Return the complete node tree of a single Blender material: every "
+                "shader node, every link, the actual shader driving Material Output, "
+                "and any orphan nodes (including stray Image Texture nodes not linked "
+                "to anything). "
+                "INPUT: material name (string). "
+                "OUTPUT: {nodes[], links[], output_shader, orphan_nodes[]}. "
+                "Each TEX_IMAGE node carries its image as {path, exists} (or null). "
+                "\n"
+                "Use this when material_inspect's PBS-slot summary is insufficient — "
+                "e.g. when materials use Emission/MMDShader/MixShader instead of PBS, "
+                "or when checking whether texture assets exist as orphan nodes outside "
+                "the PBS chain. `exists` is the only authoritative path-validity signal "
+                "(do not use any lazy-pixel-load flag for that judgment)."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "material_name": {
+                        "type": "string",
+                        "description": "Name of the bpy.data.materials entry to dump.",
+                    },
+                },
+                "required": ["material_name"],
+            },
+        }
+
+    def run(self, client: BlenderClient, params: dict) -> str:
+        material_name = params.get("material_name", "")
+        if not material_name:
+            return json.dumps({"error": "material_name is required"})
+
+        header = (
+            f"import bpy, json, os\n"
+            f"_target = {material_name!r}\n"
+            f"_sentinel = {BLENDER_SENTINEL!r}\n"
+        )
+        body = textwrap.dedent("""\
+            def _resolve_image(img):
+                if img is None:
+                    return None
+                fp = bpy.path.abspath(img.filepath) if img.filepath else ""
+                if not fp:
+                    return None
+                return {"path": fp, "exists": os.path.exists(fp)}
+
+            mat = bpy.data.materials.get(_target)
+            if mat is None:
+                print(_sentinel)
+                print(json.dumps({"error": "material_not_found: " + _target}))
+            elif mat.node_tree is None:
+                print(_sentinel)
+                print(json.dumps({
+                    "material": _target,
+                    "node_count": 0,
+                    "nodes": [],
+                    "links": [],
+                    "output_shader": None,
+                    "orphan_nodes": [],
+                    "note": "material has no node_tree (use_nodes is False)",
+                }))
+            else:
+                nodes_list = list(mat.node_tree.nodes)
+                links_list = list(mat.node_tree.links)
+                # Use node.name as key — Blender Python API returns a new wrapper
+                # object each access, so id() is unreliable for identity comparison.
+                # Node names are unique within a material node tree.
+                idx_of = {n.name: i for i, n in enumerate(nodes_list)}
+
+                node_entries = []
+                for i, n in enumerate(nodes_list):
+                    entry = {"id": i, "name": n.name, "type": n.type}
+                    if n.type == "TEX_IMAGE":
+                        entry["image"] = _resolve_image(n.image)
+                    node_entries.append(entry)
+
+                link_entries = []
+                linked_node_ids = set()
+                for lk in links_list:
+                    fn_id = idx_of.get(lk.from_node.name)
+                    tn_id = idx_of.get(lk.to_node.name)
+                    if fn_id is None or tn_id is None:
+                        continue
+                    link_entries.append({
+                        "from": str(fn_id) + "." + lk.from_socket.name,
+                        "to":   str(tn_id) + "." + lk.to_socket.name,
+                    })
+                    linked_node_ids.add(fn_id)
+                    linked_node_ids.add(tn_id)
+
+                output_shader = None
+                for i, n in enumerate(nodes_list):
+                    if n.type != "OUTPUT_MATERIAL":
+                        continue
+                    surf = n.inputs.get("Surface")
+                    if surf is not None and surf.is_linked:
+                        upstream = surf.links[0].from_node
+                        up_id = idx_of.get(upstream.name)
+                        output_shader = {
+                            "node_id": up_id,
+                            "type": upstream.type,
+                            "name": upstream.name,
+                        }
+                    break
+
+                orphan_entries = [
+                    node_entries[i] for i in range(len(nodes_list))
+                    if i not in linked_node_ids
+                ]
+
+                print(_sentinel)
+                print(json.dumps({
+                    "material": _target,
+                    "node_count": len(node_entries),
+                    "nodes": node_entries,
+                    "links": link_entries,
+                    "output_shader": output_shader,
+                    "orphan_nodes": orphan_entries,
+                }, ensure_ascii=False))
+        """)
+        code = header + body
+        try:
+            lines = client.execute_and_extract(code)
+            return lines[0] if lines else json.dumps({"error": "no output"})
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+
+
+class ListMdfPresets(QueryTool):
+    """
+    List available MHWs MDF2 preset names from RE Mesh Editor's Presets/MHWILDS/ directory.
+
+    Calls load_preset_enum_items("MHWILDS") via sys.modules scan (same pattern as
+    MaterialGenerate's internal preset resolution). Returns display names (filenames
+    without .json extension) — these are the exact strings expected by preset_mapping
+    in material_generate.
+
+    Returns an empty list if the RE Mesh Editor addon is not loaded in Blender.
+    """
+
+    @property
+    def name(self) -> str:
+        return "list_mdf_presets"
+
+    @classmethod
+    def tool_schema(cls) -> dict[str, Any]:
+        return {
+            "name": "list_mdf_presets",
+            "description": (
+                "List all available MHWs material preset names from RE Mesh Editor's "
+                "Presets/MHWILDS/ directory. Each name is the .json filename without "
+                "the extension — the exact string to use as a value in preset_mapping "
+                "when calling material_generate. "
+                "Call this before asking the user to pick a preset so you can present "
+                "the actual available options rather than guessing. "
+                "Returns an empty list if the RE Mesh Editor addon is not loaded in Blender."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+            },
+        }
+
+    def run(self, client: BlenderClient, params: dict) -> str:
+        header = f"import sys, json\n_sentinel = {BLENDER_SENTINEL!r}\n"
+        body = textwrap.dedent("""\
+            _load_fn = None
+            for _mod in sys.modules.values():
+                try:
+                    attr = getattr(_mod, "load_preset_enum_items", None)
+                    if attr is not None and callable(attr):
+                        _load_fn = attr
+                        break
+                except Exception:
+                    continue
+            if _load_fn is None:
+                print(_sentinel)
+                print(json.dumps({"error": "RE Mesh Editor addon not loaded", "presets": []}))
+            else:
+                try:
+                    items = _load_fn("MHWILDS")
+                    # items: [(path, display_name, path), ...]
+                    names = [item[1] for item in items]
+                    print(_sentinel)
+                    print(json.dumps({"presets": names}))
+                except Exception as exc:
+                    print(_sentinel)
+                    print(json.dumps({"error": str(exc), "presets": []}))
+        """)
+        code = header + body
+        try:
+            lines = client.execute_and_extract(code)
+            return lines[0] if lines else json.dumps({"error": "no output", "presets": []})
+        except Exception as exc:
+            return json.dumps({"error": str(exc), "presets": []})

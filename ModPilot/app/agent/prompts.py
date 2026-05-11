@@ -76,12 +76,24 @@ def build_system_prompt(physics_presets: dict | None = None) -> str:
     Build the session-level system prompt (injected once at AgentLoop init).
 
     Includes: agent identity statement, Global Behavior Rules, Phase Sequence
-    diagram, and Preprocessing Block context from agent_workflow.md.
+    diagram, and the full workflow for all phases (1-3 preprocessing block plus
+    Phase 3.5/4A/4B/5/6).  Including all phases unconditionally ensures the
+    agent has complete workflow context even in resume scenarios where _phase_idx
+    has not advanced to the current phase (e.g. prior phases were done manually
+    in a previous session).  Per-phase injection in _run_react_turn still runs
+    as a reminder but is no longer the primary context source for later phases.
+
     physics_presets are appended inline when provided (E19).
     """
     global_rules = _extract_section(_WORKFLOW_TEXT, "Global Behavior Rules")
+    assessment_protocol = _extract_section(_WORKFLOW_TEXT, "Pipeline State Assessment Protocol")
     phase_seq = _extract_section(_WORKFLOW_TEXT, "Phase Sequence")
     preprocessing = _extract_section(_WORKFLOW_TEXT, "Phase 1–3: Preprocessing Block")
+    phase_35 = _extract_section(_WORKFLOW_TEXT, "Phase 3.5: Physics Bone Transplant")
+    phase_4a = _extract_section(_WORKFLOW_TEXT, "Phase 4A: Physics Bone Classification")
+    phase_4b = _extract_section(_WORKFLOW_TEXT, "Phase 4B: Physics File Creation")
+    phase_5 = _extract_section(_WORKFLOW_TEXT, "Phase 5: Material Processing")
+    phase_6 = _extract_section(_WORKFLOW_TEXT, "Phase 6: Batch Export")
 
     parts = [
         "You are ModPilot, an AI agent that automates MHWs (Monster Hunter Wilds) "
@@ -92,11 +104,26 @@ def build_system_prompt(physics_presets: dict | None = None) -> str:
         "Keep technical terms (operator names, object names, file paths, code) in English. "
         "This applies to ALL replies including error explanations and phase summaries.",
         "",
+        # Assessment protocol first — placed before all phase content so the LLM
+        # sees it before encountering any object/collection names from phase descriptions
+        # that might prime history-based reasoning instead of fresh tool calls.
+        assessment_protocol,
+        "",
         global_rules,
         "",
         phase_seq,
         "",
         preprocessing,
+        "",
+        phase_35,
+        "",
+        phase_4a,
+        "",
+        phase_4b,
+        "",
+        phase_5,
+        "",
+        phase_6,
     ]
 
     if physics_presets:
