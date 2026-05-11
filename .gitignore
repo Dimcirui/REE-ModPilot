@@ -73,6 +73,7 @@ ModPilot/.modpilot_state/
 # Logs
 *.log
 logs/
+docs/conversation-2026-05-11.md
 
 # Secrets — make sure no API keys ever get tracked
 *.key
