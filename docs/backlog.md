@@ -111,6 +111,23 @@ Items here block MVP shipping. All must reach 🟢 before MVP acceptance (L3, [d
 - ⚪ RE9 game support (sync child orientation phase, test pipeline)
 - ⚪ Per-game advanced tools from video 7
 - ⚪ Additional source-model presets (Unity Humanoid generic, more VRC variants)
+- ⚪ **Phase transition protocol** — add explicit inter-phase consultation behavior.
+  Current gap: after a phase tool returns success, the loop immediately re-enters
+  `RUNNING_PHASE` with no architectural guarantee of a pause. The LLM may call the
+  next phase tool in the same turn without checking state or informing the user.
+  Intended design: phase advancement (ReAct tool calls) and inter-phase consultation
+  (query tools + user Q&A) are conceptually distinct modes but share the same
+  `RUNNING_PHASE` state. Fix options in priority order:
+  (A) `agent_workflow.md` phase transition protocol: after phase success, call query
+      tools to verify outcome, report to user, wait for explicit direction before next
+      phase. Lightweight — prompt-only, no state machine change.
+  (B) `PHASE_COMPLETE` state: loop pauses after each phase, forces verification +
+      user-facing report before re-entering RUNNING_PHASE. Architecture change.
+  (C) Separate NEGOTIATING into all phases that have classification/user decisions
+      (currently only Phase 4A/4B), not just physics phases.
+  Mid-phase inline Q&A is a related sub-problem: user questions during a phase should
+  be answerable using query tools (NOT phase tools) without advancing phase state.
+  Rule: query tools OK in Q&A, phase tools prohibited until user directs next action.
 
 ---
 
