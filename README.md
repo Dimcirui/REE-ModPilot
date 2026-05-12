@@ -15,7 +15,7 @@
 | Stage 1 — communication backbone | 🟢 done (BlenderClient + SceneCache + LLMClient; 30 unit tests) |
 | Stage 2 — phase tool layer (videos 1-3) | 🟢 done (PoseCorrection + SkeletonAlign + VertexGroups; 76 unit tests) |
 | Stage 3 — agent loop | 🟢 done (ReAct loop + prompts + error handler + `/agent/chat`; 117 unit tests) |
-| Stage 4 — phase tools (videos 4-7) | 🟢 done (minus advanced): physics_bones + material + batch_export (274 unit tests); advanced out of MVP scope |
+| Stage 4 — phase tools (videos 4-7) | 🟢 done: physics_bones + material + batch_export + mesh_cleanup + query tools; E2E verified (Phase 1→6 full run); advanced out of MVP scope |
 | Stage 5+ — frontend, MVP verification | ⚪ pending |
 
 All design items in [docs/design.md](docs/design.md) (A/B/C/D/E layers) are 🟢 decided.
@@ -141,8 +141,8 @@ After enabling both in Blender → Edit → Preferences → Add-ons, open the Bl
 
 ## Quick Start
 
-> Stages 1-3 are complete. The backend API is runnable. Stage 4 (videos 4-7 phase tools)
-> and Stage 5 (htmx frontend) are pending — see [docs/backlog.md](docs/backlog.md).
+> Stages 1-4 are complete. The full Phase 1→6 pipeline runs end-to-end.
+> Stage 5 (htmx frontend) is pending — see [docs/backlog.md](docs/backlog.md).
 
 **1. Verify Blender connectivity (Stage 0)**
 
