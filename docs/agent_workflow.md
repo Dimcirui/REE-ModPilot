@@ -685,6 +685,13 @@ After a preset is applied, the user may request fine-tuning. Translate as follow
 - RE Chain presets applied to all Settings blocks.
 - User has confirmed the result (or adjusted and re-confirmed).
 
+> **STOP after `physics_chains` succeeds**: Report chain count, list any
+> `skipped_params`, and ask the user to confirm (e.g. "物理链创建完成，共 N 个
+> CHAIN_SETTINGS。如需调整参数可以告诉我，确认后继续 Phase 5 材质处理。").
+> Do NOT call any material or export tool in the same response.
+> Phase confirmations are NOT transferable across sessions — even if the user
+> confirmed parameters in a previous run, always ask for fresh confirmation here.
+
 ### Common Errors
 - **`create_chain_header` creates chain1 instead of chain2**: `chainFileType` was not
   set before calling. Always set it explicitly first.
@@ -903,6 +910,11 @@ Parameters:
 - `material_generate` tool result contains key `"mdf_collection"` with the exact Blender
   collection name (e.g. `"MHWilds_Female.mdf2"`). **Record this value.** It is passed
   verbatim as `mdf2_collection` in Phase 6. Do NOT guess, infer, or reconstruct it.
+
+> **STOP after `material_generate` succeeds**: Report the generated submesh list and the
+> `mdf_collection` value, then ask: "材质生成完成，继续 Phase 6 批量导出吗？".
+> Do NOT call `batch_export` in the same response.
+> Phase confirmations are NOT transferable across sessions.
 
 ### Common Errors
 - **texconv not found**: RE Mesh Editor should bundle texconv; ask user to verify

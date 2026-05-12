@@ -493,11 +493,29 @@ class PhysicsChains(PhaseTool):
       Step 4 — Discover / create RE Chain collection; set toolpanel.chainCollection
                (PointerProperty); call mhws.auto_create_chains; identify new objects.
       Step 5 — Apply physics params from JSON to each new chain settings object.
+
+    Phase advancement:
+      prepare_only=True  → advances_phase returns False (cleanup check only, not done yet).
+      prepare_only=False → advances_phase returns True  (full creation completes Phase 4B).
     """
+
+    def __init__(self) -> None:
+        # Tracks whether the LAST run() call used prepare_only so advances_phase
+        # can return the correct value.  Safe because AgentLoop executes tool calls
+        # sequentially (each await completes before the next tool call starts).
+        self._last_was_prepare_only: bool = False
 
     @property
     def name(self) -> str:
         return "physics_chains"
+
+    @property
+    def advances_phase(self) -> bool:
+        """
+        False for prepare_only calls (cleanup check — Phase 4B is not done yet).
+        True for full chain creation calls.
+        """
+        return not self._last_was_prepare_only
 
     @classmethod
     def tool_schema(cls) -> dict[str, Any]:
@@ -529,12 +547,12 @@ class PhysicsChains(PhaseTool):
                         "type": "array",
                         "items": {"type": "string"},
                         "description": (
-                            "Bone names whose chain_role marks should be cleared before "
-                            "chain creation. Use for native game bones that were accidentally "
-                            "marked by refresh_physics_bone_colors and should NOT participate "
-                            "in physics (e.g. Cage, Cage_L). The bones remain in the armature "
-                            "— only their chain_role custom property is removed. "
-                            "Runs BEFORE bones_to_merge and chain creation."
+                            "Bone names whose chain_role marks should be cleared. "
+                            "Use for native game bones accidentally marked by "
+                            "refresh_physics_bone_colors (e.g. Cage, Cage_L). "
+                            "The bones remain in the armature — only chain_role is removed. "
+                            "Runs AFTER bones_to_merge (merge auto-refreshes colors, which "
+                            "would re-mark cleared bones if clear ran first)."
                         ),
                     },
                     "bones_to_merge": {
@@ -545,7 +563,7 @@ class PhysicsChains(PhaseTool):
                             "Each bone's vertex weights are merged into its direct parent "
                             "via modder.merge_into_parent; the bone is then deleted and its "
                             "children reconnect to the grandparent. "
-                            "This step runs BEFORE chain creation."
+                            "Runs BEFORE bones_to_clear and chain creation."
                         ),
                     },
                     "inferred_types": {
@@ -579,8 +597,11 @@ class PhysicsChains(PhaseTool):
                 },
                 "required": [
                     "target_armature",
-                    "inferred_types",
                 ],
+                "description": (
+                    "When prepare_only=true: only target_armature is needed. "
+                    "When prepare_only is omitted/false: inferred_types is also required."
+                ),
             },
         }
 
@@ -597,6 +618,11 @@ class PhysicsChains(PhaseTool):
         inferred_types: dict[str, str] = params.get("inferred_types", {})
         settings_mode = params.get("settings_mode", "SEPARATE")
         prepare_only: bool = bool(params.get("prepare_only", False))
+
+        # Record whether this call is prepare_only so advances_phase can return
+        # the correct value.  Must be set before any early return so that a failed
+        # prepare_only call also does not accidentally advance the phase.
+        self._last_was_prepare_only = prepare_only
 
         # ── param validation ───────────────────────────────────────────────
         if not target_arm:
