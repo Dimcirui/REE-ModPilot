@@ -101,3 +101,44 @@ Each session section records: what broke, what was changed, and any workflow kno
 | Phase 4B: Pre-creation cleanup step (prepare_only); `bones_to_clear` usage for native game bones; updated execution steps for SEPARATE mode. | `docs/agent_workflow.md` |
 | Phase 4A: `bones_to_clear` vs `bones_to_merge` distinction added to execution steps. | `docs/agent_workflow.md` |
 | `modder.clear_chain_role`: corrected behavior note — operator does NOT reset bone colors; usage guidance added. | `docs/plugin_api.md` |
+
+---
+
+## Session 3 — 2026-05-13 (Phase 4B → 6, full pipeline)
+
+### Phase 4B — Physics Chain Creation
+
+| Fix | Files |
+|-----|-------|
+| **clear/merge order wrong**: `PhysicsChains.run()` cleared `chain_role` marks (step 2a) BEFORE merging bones (step 2b). `merge_into_parent` auto-refreshes bone colors, which re-marked the just-cleared native bones (e.g. `Cage`, `Cage_L`). Fixed by swapping steps: merge first, clear after. | `app/phases/physics_bones.py` |
+| **`physics_chains(prepare_only=True)` advanced phase**: `prepare_only` is a cleanup-check call, but `advances_phase=True` (default) pushed `_phase_idx` 7→8 (phase_5). LLM then saw phase_5 context, retrieved confirmed material+export params from history, and ran everything to DONE in one turn. Fixed by adding `_last_was_prepare_only` instance variable to `PhysicsChains`; `advances_phase` property returns `not self._last_was_prepare_only`. Flag is set at the start of `run()` before any early return. | `app/phases/physics_bones.py` |
+| **`inferred_types` not required for prepare_only calls**: Removed `inferred_types` from `tool_schema` `required[]` so the LLM doesn't need to populate it for cleanup-only invocations. | `app/phases/physics_bones.py` |
+
+### Query Tools
+
+| Fix | Files |
+|-----|-------|
+| **No PhysicsRead tool**: Agent said "我无法直接读取 CHAIN_SETTINGS 内部的当前重力值" and adjusted physics params blindly without reading current values. Added `PhysicsRead` QueryTool to `query_tools.py`. Reads `re_chain_chainsettings` PropertyGroup properties for named `RE_CHAIN_CHAINSETTINGS` objects (or all in scene). Supports `targets: list[str]` and `properties: list[str]` filters; vector types converted via `list()` for JSON serialization. Registered in main loop and ASK mode whitelist. | `app/phases/query_tools.py`, `app/agent/loop.py` |
+
+### Phase 5 / 5C — Material + Mesh Cleanup
+
+| Fix | Files |
+|-----|-------|
+| **mesh_cleanup → DONE skip**: LLM batched `material_generate` + `mesh_cleanup` + `batch_export` in one DSML block. All three had `advances_phase=True`; `_phase_idx` advanced 3 times in one `step()` call, reaching DONE before the user saw Phase 5C output. Fixed by moving RE Mesh Tools cleanup into `BatchExport._run_mesh_cleanup()` as an internal non-fatal pre-export step (warnings only, never fails the phase). Removed `phase_5c` from `_PHASE_SEQUENCE`, `_PHASE_HEADER_MAP`, and system prompt so the LLM can no longer independently call or batch-skip it. | `app/phases/batch_export.py`, `app/agent/loop.py`, `app/agent/prompts.py` |
+
+### Agent Loop — Cross-Phase Batching
+
+| Fix | Files |
+|-----|-------|
+| **Cross-phase batching via history reuse**: LLM reused previously confirmed parameters from conversation history to skip phase-boundary confirmations, running Phase 4B → 5 → 6 to DONE in a single response without user input. Fixed by adding STOP rules to Phase 4B and Phase 5B exit conditions in `agent_workflow.md`: after `physics_chains` / `material_generate` succeeds the agent must report results and await fresh user confirmation before calling any tool from the next phase. Added: "Phase confirmations are NOT transferable across sessions or turns." | `docs/agent_workflow.md` |
+
+### Docs
+
+| Addition | File |
+|----------|------|
+| Phase 4B Step 0: bones_to_merge runs FIRST (merge auto-refreshes colors); bones_to_clear runs AFTER. | `docs/agent_workflow.md` |
+| Phase 4B / 5B Exit Conditions: STOP rules — do not call next-phase tools in the same response after a terminal phase tool succeeds. | `docs/agent_workflow.md` |
+| Phase 6 Entry Conditions: note that `batch_export` runs RE Mesh Tools cleanup automatically (no separate phase_5c step needed). | `docs/agent_workflow.md` |
+| Phase Sequence diagram: Phase 6 annotated with "includes automatic RE Mesh Tools cleanup". | `docs/agent_workflow.md` |
+| Entire Phase 5C chapter removed (cleanup absorbed into batch_export). | `docs/agent_workflow.md` |
+| `physics_read` tool: always call before `physics_adjust` to read current CHAIN_SETTINGS values. | `docs/agent_workflow.md` |
