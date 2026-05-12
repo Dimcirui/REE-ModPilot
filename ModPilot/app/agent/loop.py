@@ -135,8 +135,7 @@ _PHASE_SEQUENCE: list[str] = [
     "phase_4a",
     "phase_4b",
     "phase_5",
-    "phase_5c",         # MeshCleanup (pre-export RE Mesh Tools)
-    "phase_6",
+    "phase_6",          # BatchExport runs RE Mesh Tools cleanup internally before export
 ]
 
 _NEGOTIATING_PHASES: frozenset[str] = frozenset()
@@ -534,10 +533,11 @@ class AgentLoop:
             "You may call ANY of the read-only query tools in your tool list "
             "(scene_info, list_objects, get_bone_info, list_collections, "
             "get_mesh_info, get_material_info, get_object_props, inspect_material_nodes, "
-            "list_mdf_presets) "
+            "list_mdf_presets, physics_read) "
             "to fetch live Blender data for diagnosis. "
             "You CANNOT call phase-advancing tools (pose_correction, skeleton_align, "
-            "vertex_groups, physics_*, material_setup, material_generate, batch_export, etc.) "
+            "vertex_groups, physics_chains, physics_transplant, physics_classification, "
+            "physics_adjust, material_setup, material_generate, batch_export, etc.) "
             "in this mode. "
             "Do NOT output DSML tool-call markup."
         )
@@ -619,7 +619,6 @@ class AgentLoop:
 
     def _register_available_phases(self) -> None:
         from app.phases.batch_export import BatchExport
-        from app.phases.mesh_cleanup import MeshCleanup
         from app.phases.material import (
             MaterialConsolidate,
             MaterialGenerate,
@@ -642,6 +641,7 @@ class AgentLoop:
             ListCollections,
             ListMdfPresets,
             ListObjects,
+            PhysicsRead,
             SceneInfo,
         )
         from app.phases.setup import SetupImportMHWilds, SetupValidateScene
@@ -663,7 +663,6 @@ class AgentLoop:
             MaterialInspect(),
             MaterialSetup(),
             MaterialGenerate(),
-            MeshCleanup(),
             BatchExport(),
             # Query tools (read-only, always available)
             SceneInfo(),
@@ -675,6 +674,7 @@ class AgentLoop:
             GetObjectProps(),
             InspectMaterialNodes(),
             ListMdfPresets(),
+            PhysicsRead(),
         ):
             self._phase_tools[tool.name] = tool
 

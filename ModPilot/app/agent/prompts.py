@@ -27,7 +27,6 @@ _PHASE_HEADER_MAP: dict[str, str] = {
     "phase_4a": "Phase 4A: Physics Bone Classification",
     "phase_4b": "Phase 4B: Physics File Creation",
     "phase_5": "Phase 5: Material Processing",
-    "phase_5c": "Phase 5C: Mesh Cleanup",
     "phase_6": "Phase 6: Batch Export",
 }
 
@@ -94,7 +93,6 @@ def build_system_prompt(physics_presets: dict | None = None) -> str:
     phase_4a = _extract_section(_WORKFLOW_TEXT, "Phase 4A: Physics Bone Classification")
     phase_4b = _extract_section(_WORKFLOW_TEXT, "Phase 4B: Physics File Creation")
     phase_5 = _extract_section(_WORKFLOW_TEXT, "Phase 5: Material Processing")
-    phase_5c = _extract_section(_WORKFLOW_TEXT, "Phase 5C: Mesh Cleanup")
     phase_6 = _extract_section(_WORKFLOW_TEXT, "Phase 6: Batch Export")
 
     parts = [
@@ -124,8 +122,6 @@ def build_system_prompt(physics_presets: dict | None = None) -> str:
         phase_4b,
         "",
         phase_5,
-        "",
-        phase_5c,
         "",
         phase_6,
     ]

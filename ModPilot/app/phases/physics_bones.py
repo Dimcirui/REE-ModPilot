@@ -724,15 +724,18 @@ class PhysicsChains(PhaseTool):
             if err is not None:
                 return PhaseResult.fail(err)
 
-            # Step 2a — clear chain_role on native game bones that must not be physics
-            if bones_to_clear:
-                err = self._clear_specific_bone_roles(client, target_arm, bones_to_clear)
+            # Step 2a — merge '合并到父级' bones FIRST.
+            # merge_into_parent auto-refreshes chain_role bone colors; running it
+            # after clear would re-mark the just-cleared native bones as physics.
+            if bones_to_merge:
+                err = self._merge_into_parents(client, target_arm, bones_to_merge)
                 if err is not None:
                     return PhaseResult.fail(err)
 
-            # Step 2b — merge '合并到父级' bones into their parents before chain creation
-            if bones_to_merge:
-                err = self._merge_into_parents(client, target_arm, bones_to_merge)
+            # Step 2b — clear chain_role on native game bones AFTER merge, so that
+            # the merge's color-refresh cannot re-mark the excluded bones.
+            if bones_to_clear:
+                err = self._clear_specific_bone_roles(client, target_arm, bones_to_clear)
                 if err is not None:
                     return PhaseResult.fail(err)
 

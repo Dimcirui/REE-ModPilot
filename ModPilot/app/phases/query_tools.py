@@ -652,6 +652,121 @@ class InspectMaterialNodes(QueryTool):
             return json.dumps({"error": str(exc)})
 
 
+class PhysicsRead(QueryTool):
+    """
+    Read current re_chain_chainsettings property values for one or more
+    RE_CHAIN_CHAINSETTINGS objects.
+
+    Returns each object's current physics parameter values as a JSON object.
+    Use before physics_adjust to inspect current values, or to compare settings
+    between two chain groups.
+
+    If targets is an empty list, returns values for ALL CHAIN_SETTINGS objects
+    in the scene.  If properties is empty, returns all known physics parameters.
+    """
+
+    _KNOWN_PROPS: tuple[str, ...] = (
+        "damping",
+        "minDamping",
+        "reduceSelfDistanceRate",
+        "gravity",
+        "springForce",
+        "shockAbsorptionRate",
+        "windEffectCoef",
+        "envWindEffectCoef",
+        "motionForce",
+        "colliderFilterInfoPath",
+    )
+
+    @property
+    def name(self) -> str:
+        return "physics_read"
+
+    @classmethod
+    def tool_schema(cls) -> dict[str, Any]:
+        return {
+            "name": "physics_read",
+            "description": (
+                "Read current re_chain_chainsettings property values for one or more "
+                "RE_CHAIN_CHAINSETTINGS objects. Use before physics_adjust to check "
+                "current values. Pass empty targets list to read all CHAIN_SETTINGS "
+                "in the scene. Pass empty properties list to read all known parameters."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "targets": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Names of RE_CHAIN_CHAINSETTINGS objects to read "
+                            "(e.g. ['CHAIN_SETTINGS_04']). "
+                            "Pass [] to read ALL CHAIN_SETTINGS objects in the scene."
+                        ),
+                    },
+                    "properties": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Property names to read. Pass [] for all known physics params. "
+                            "Valid keys: damping, minDamping, reduceSelfDistanceRate, gravity, "
+                            "springForce, shockAbsorptionRate, windEffectCoef, "
+                            "envWindEffectCoef, motionForce, colliderFilterInfoPath."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        }
+
+    def run(self, client: BlenderClient, params: dict) -> str:
+        targets: list[str] = params.get("targets") or []
+        props: list[str] = params.get("properties") or list(self._KNOWN_PROPS)
+
+        targets_json = json.dumps(targets)
+        props_json = json.dumps(props)
+
+        code = (
+            f"import bpy, json\n"
+            f"_targets = {targets_json}\n"
+            f"_props = {props_json}\n"
+            f"if _targets:\n"
+            f"    _objs = [bpy.data.objects.get(n) for n in _targets]\n"
+            f"    # Preserve original name even when object not found\n"
+            f"    _names = _targets\n"
+            f"else:\n"
+            f"    _objs = [o for o in bpy.data.objects if o.get('TYPE') == 'RE_CHAIN_CHAINSETTINGS']\n"
+            f"    _names = [o.name for o in _objs]\n"
+            f"_results = []\n"
+            f"for _name, _obj in zip(_names, _objs):\n"
+            f"    if _obj is None:\n"
+            f"        _results.append({{'name': _name, 'values': {{'error': 'not found'}}}})\n"
+            f"        continue\n"
+            f"    _s = getattr(_obj, 're_chain_chainsettings', None)\n"
+            f"    if _s is None:\n"
+            f"        _results.append({{'name': _name, 'values': {{'error': 'no re_chain_chainsettings'}}}})\n"
+            f"        continue\n"
+            f"    _vals = {{}}\n"
+            f"    for _p in _props:\n"
+            f"        _v = getattr(_s, _p, None)\n"
+            f"        if _v is None:\n"
+            f"            continue\n"
+            f"        try:\n"
+            f"            _vals[_p] = list(_v) if hasattr(_v, '__len__') and not isinstance(_v, str) else _v\n"
+            f"        except Exception:\n"
+            f"            _vals[_p] = str(_v)\n"
+            f"    _results.append({{'name': _name, 'values': _vals}})\n"
+            f"print({BLENDER_SENTINEL!r})\n"
+            f"print(json.dumps({{'chain_settings': _results}}, ensure_ascii=False))\n"
+        )
+
+        try:
+            lines = client.execute_and_extract(code)
+            return lines[0] if lines else json.dumps({"error": "no output"})
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+
+
 class ListMdfPresets(QueryTool):
     """
     List available MHWs MDF2 preset names from RE Mesh Editor's Presets/MHWILDS/ directory.

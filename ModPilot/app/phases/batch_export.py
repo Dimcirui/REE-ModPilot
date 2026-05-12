@@ -253,6 +253,9 @@ class BatchExport(PhaseTool):
             if err is not None:
                 return PhaseResult.fail(err)
 
+            # Step 1.5 — pre-export mesh cleanup (RE Mesh Tools; warnings only, non-fatal)
+            mesh_cleanup_warnings = self._run_mesh_cleanup(client, mesh_col)
+
             # Step 2+3+4 — configure scene (clear old, write new bindings + settings)
             err = self._configure_scene(
                 client,
@@ -300,6 +303,8 @@ class BatchExport(PhaseTool):
         diff["armor_id"] = armor_id
         diff["armor_variant"] = armor_variant
         diff["fbxskel_name"] = fbxskel_name
+        if mesh_cleanup_warnings:
+            diff["mesh_cleanup_warnings"] = mesh_cleanup_warnings
         return PhaseResult.ok(diff)
 
     # ── private helpers ────────────────────────────────────────────────────
@@ -413,6 +418,81 @@ class BatchExport(PhaseTool):
                 message=f"Scene configuration failed. Output: {lines!r}",
             )
         return None
+
+    def _run_mesh_cleanup(
+        self,
+        client: BlenderClient,
+        mesh_col: str,
+    ) -> dict:
+        """
+        Run RE Mesh Tools cleanup operators on every MESH object in mesh_col.
+
+        Applied per mesh in this order:
+          1. re_mesh.delete_loose
+          2. re_mesh.solve_repeated_uvs
+          3. re_mesh.remove_zero_weight_vertex_groups
+          4. re_mesh.limit_total_normalize(maxWeights='12')
+             Falls back to object.vertex_group_limit_total + normalize_all
+             if the RE Mesh op raises RuntimeError (dialog/poll issue).
+
+        Non-fatal: per-mesh operator errors are returned as a warnings dict
+        so the caller can include them in state_diff.  The phase is never failed
+        here — export proceeds regardless.
+
+        Returns {} on success with no warnings, or {"<mesh>": ["<err>", ...]} on
+        partial operator failures.
+        """
+        code = (
+            f"import bpy, json\n"
+            f"_col = bpy.data.collections.get({mesh_col!r})\n"
+            f"if _col is None:\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    print(json.dumps({{'skip': 'collection_not_found'}}))\n"
+            f"else:\n"
+            f"    if bpy.context.mode != 'OBJECT':\n"
+            f"        bpy.ops.object.mode_set(mode='OBJECT')\n"
+            f"    bpy.ops.object.select_all(action='DESELECT')\n"
+            f"    _meshes = [o for o in _col.objects if o.type == 'MESH']\n"
+            f"    _warn = {{}}\n"
+            f"    for _obj in _meshes:\n"
+            f"        bpy.context.view_layer.objects.active = _obj\n"
+            f"        _obj.select_set(True)\n"
+            f"        _errs = []\n"
+            f"        try:\n"
+            f"            bpy.ops.re_mesh.delete_loose()\n"
+            f"        except Exception as _e:\n"
+            f"            _errs.append('delete_loose: ' + str(_e))\n"
+            f"        try:\n"
+            f"            bpy.ops.re_mesh.solve_repeated_uvs()\n"
+            f"        except Exception as _e:\n"
+            f"            _errs.append('solve_repeated_uvs: ' + str(_e))\n"
+            f"        try:\n"
+            f"            bpy.ops.re_mesh.remove_zero_weight_vertex_groups()\n"
+            f"        except Exception as _e:\n"
+            f"            _errs.append('remove_zero_weight_vertex_groups: ' + str(_e))\n"
+            f"        try:\n"
+            f"            bpy.ops.re_mesh.limit_total_normalize(maxWeights='12')\n"
+            f"        except Exception:\n"
+            f"            try:\n"
+            f"                bpy.ops.object.vertex_group_limit_total(limit=12)\n"
+            f"                bpy.ops.object.vertex_group_normalize_all(lock_active=False)\n"
+            f"            except Exception as _e2:\n"
+            f"                _errs.append('limit_normalize: ' + str(_e2))\n"
+            f"        _obj.select_set(False)\n"
+            f"        if _errs:\n"
+            f"            _warn[_obj.name] = _errs\n"
+            f"    print({BLENDER_SENTINEL!r})\n"
+            f"    print(json.dumps({{'warnings': _warn}}, ensure_ascii=False))\n"
+        )
+        try:
+            lines = client.execute_and_extract(code)
+            if not lines:
+                return {}
+            import json as _json
+            data = _json.loads(lines[0])
+            return data.get("warnings", {})
+        except Exception:
+            return {}  # non-fatal; skip silently
 
     def _run_export(self, client: BlenderClient) -> PhaseError | None:
         code = (
