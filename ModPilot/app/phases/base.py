@@ -114,6 +114,12 @@ class PhaseTool(ABC):
         5. Parse operator return value
         6. cache.refresh()  (exit cache update)
         7. Compute and return PhaseResult.ok(state_diff)
+
+    Phase advancement:
+        By default, a successful run() call increments _phase_idx in the loop.
+        Sub-step tools (e.g. MaterialInspect, PhysicsAdjust) should override
+        advances_phase to return False so that intermediate steps within a phase
+        do not prematurely push the loop past the current phase slot.
     """
 
     @property
@@ -121,6 +127,17 @@ class PhaseTool(ABC):
     def name(self) -> str:
         """Unique identifier used by the agent loop (e.g. 'pose_correction')."""
         ...
+
+    @property
+    def advances_phase(self) -> bool:
+        """
+        Whether a successful run() call should increment _phase_idx.
+
+        Override to False for tools that are sub-steps within a phase
+        (e.g. inspection / classification / parameter adjustment tools).
+        Default: True.
+        """
+        return True
 
     @classmethod
     @abstractmethod

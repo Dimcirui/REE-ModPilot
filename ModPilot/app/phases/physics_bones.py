@@ -1598,3 +1598,207 @@ class PhysicsChains(PhaseTool):
             client.execute_and_extract(code)
         except Exception:
             pass  # non-fatal
+
+
+# ── PhysicsAdjust ─────────────────────────────────────────────────────────────
+
+
+class PhysicsAdjust(PhaseTool):
+    """
+    Adjust physics parameters on one or more RE_CHAIN_CHAINSETTINGS objects
+    without re-creating chains.  Does NOT advance the phase.
+
+    Typical use: fine-tune gravity, damping, spring force, wind coefficients
+    after Phase 4B chain creation.
+
+    Property value types:
+      - Scalar fields (damping, springForce, etc.): number
+      - Vector fields (gravity): [x, y, z]
+      - Enum fields (windDelayType): string representation of int, e.g. "0"
+    """
+
+    @property
+    def name(self) -> str:
+        return "physics_adjust"
+
+    @property
+    def advances_phase(self) -> bool:
+        return False
+
+    @classmethod
+    def tool_schema(cls) -> dict[str, Any]:
+        return {
+            "name": "physics_adjust",
+            "description": (
+                "Adjust physics parameters on one or more RE_CHAIN_CHAINSETTINGS "
+                "objects without re-creating chains. Use for post-creation fine-tuning: "
+                "gravity, damping, reduceSelfDistanceRate, springForce, windEffectCoef, etc. "
+                "Does not advance the phase — safe to call multiple times. "
+                "Gravity example: [0, -9.8, 0] = full down, [0, 3, 0] = light up."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "targets": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Names of RE_CHAIN_CHAINSETTINGS Blender objects to modify "
+                            "(e.g. ['CHAIN_SETTINGS_04', 'CHAIN_SETTINGS_44'])."
+                        ),
+                    },
+                    "properties": {
+                        "type": "object",
+                        "description": (
+                            "Map of property name → new value. "
+                            "Scalar: number. Vector: [x, y, z]. Enum: string int e.g. '0'. "
+                            "Valid keys: damping, minDamping, reduceSelfDistanceRate, gravity, "
+                            "springForce, shockAbsorptionRate, windEffectCoef, "
+                            "envWindEffectCoef, motionForce."
+                        ),
+                    },
+                },
+                "required": ["targets", "properties"],
+            },
+        }
+
+    def run(
+        self,
+        client: BlenderClient,
+        cache: SceneCache,
+        params: dict,
+    ) -> PhaseResult:
+        targets: list[str] = params.get("targets", [])
+        properties: dict = params.get("properties", {})
+
+        if not targets:
+            return PhaseResult.fail(
+                PhaseError(
+                    category="precondition",
+                    operator="",
+                    message="'targets' must be a non-empty list of CHAIN_SETTINGS object names.",
+                )
+            )
+        if not properties:
+            return PhaseResult.fail(
+                PhaseError(
+                    category="precondition",
+                    operator="",
+                    message="'properties' must be a non-empty dict of property_name → value.",
+                )
+            )
+
+        try:
+            err, result = self._apply_adjustments(client, targets, properties)
+        except BlenderError as exc:
+            return PhaseResult.fail(
+                PhaseError(
+                    category="unexpected",
+                    operator="re_chain_chainsettings",
+                    message="Blender error while adjusting physics parameters.",
+                    raw=str(exc),
+                )
+            )
+        except OSError as exc:
+            return PhaseResult.fail(
+                PhaseError(
+                    category="timeout",
+                    operator="re_chain_chainsettings",
+                    message="Lost connection to Blender during physics parameter adjustment.",
+                    raw=str(exc),
+                )
+            )
+
+        if err is not None:
+            return PhaseResult.fail(err)
+        return PhaseResult.ok(result)
+
+    def _apply_adjustments(
+        self,
+        client: BlenderClient,
+        targets: list[str],
+        properties: dict,
+    ) -> tuple[PhaseError | None, dict]:
+        import json as _json
+
+        props_json = _json.dumps(properties)
+        targets_json = _json.dumps(targets)
+
+        code = (
+            f"import bpy, json\n"
+            f"_sentinel = {BLENDER_SENTINEL!r}\n"
+            f"_targets = {targets_json}\n"
+            f"_props = {props_json}\n"
+            f"_results = []\n"
+            f"for _name in _targets:\n"
+            f"    _obj = bpy.data.objects.get(_name)\n"
+            f"    if _obj is None:\n"
+            f"        _results.append({{'target': _name, 'status': 'not_found', 'errors': []}})\n"
+            f"        continue\n"
+            f"    _s = getattr(_obj, 're_chain_chainsettings', None)\n"
+            f"    if _s is None:\n"
+            f"        _results.append({{'target': _name, 'status': 'no_settings', 'errors': []}})\n"
+            f"        continue\n"
+            f"    _errs = []\n"
+            f"    for _k, _v in _props.items():\n"
+            f"        try:\n"
+            f"            _cur = getattr(_s, _k, None)\n"
+            f"            if _cur is not None and hasattr(_cur, '__len__') and isinstance(_v, list):\n"
+            f"                for _i, _val in enumerate(_v):\n"
+            f"                    _cur[_i] = _val\n"
+            f"            else:\n"
+            f"                setattr(_s, _k, _v)\n"
+            f"        except Exception as _e:\n"
+            f"            _errs.append(_k + ': ' + str(_e))\n"
+            f"    _results.append({{'target': _name, 'status': 'ok', 'errors': _errs}})\n"
+            f"print(_sentinel)\n"
+            f"print(json.dumps({{'adjusted': _results}}, ensure_ascii=False))\n"
+        )
+
+        lines = client.execute_and_extract(code)
+        if not lines:
+            return (
+                PhaseError(
+                    category="operator_failed",
+                    operator="re_chain_chainsettings",
+                    message="Physics adjust returned no output from Blender.",
+                ),
+                {},
+            )
+
+        try:
+            data = json.loads(lines[0])
+        except json.JSONDecodeError:
+            return (
+                PhaseError(
+                    category="unexpected",
+                    operator="re_chain_chainsettings",
+                    message=f"Could not parse physics adjust result: {lines[0]!r}",
+                ),
+                {},
+            )
+
+        not_found = [r["target"] for r in data["adjusted"] if r["status"] == "not_found"]
+        if not_found:
+            return (
+                PhaseError(
+                    category="precondition",
+                    operator="",
+                    message=f"CHAIN_SETTINGS objects not found: {not_found}",
+                    suggestion=(
+                        "Use get_object_props or list_objects to verify the exact "
+                        "object names in the scene."
+                    ),
+                ),
+                {},
+            )
+
+        prop_errors = {
+            r["target"]: r["errors"]
+            for r in data["adjusted"]
+            if r.get("errors")
+        }
+        result: dict = {"adjusted_targets": [r["target"] for r in data["adjusted"] if r["status"] == "ok"]}
+        if prop_errors:
+            result["property_errors"] = prop_errors
+        return None, result

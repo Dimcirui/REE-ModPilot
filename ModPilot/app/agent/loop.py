@@ -394,15 +394,18 @@ class AgentLoop:
         )
 
         if result.success:
-            completed = _PHASE_SEQUENCE[self._phase_idx]
-            self._phase_idx += 1
-            self._on_phase_advance()
             diff = (
                 json.dumps(result.state_diff, ensure_ascii=False)
                 if result.state_diff
                 else "no scene changes"
             )
-            return f"Phase {completed} completed. Scene diff: {diff}", None
+            if tool.advances_phase:
+                completed = _PHASE_SEQUENCE[self._phase_idx]
+                self._phase_idx += 1
+                self._on_phase_advance()
+                return f"Phase {completed} completed. Scene diff: {diff}", None
+            else:
+                return f"Tool {tool_name} succeeded (sub-step, phase not advanced). Result: {diff}", None
         else:
             self._pending_error = result.error
             self.state = LoopState.ERROR_HANDLING
@@ -624,6 +627,7 @@ class AgentLoop:
             MaterialSetup,
         )
         from app.phases.physics_bones import (
+            PhysicsAdjust,
             PhysicsChains,
             PhysicsClassification,
             PhysicsTransplant,
@@ -654,6 +658,7 @@ class AgentLoop:
             PhysicsTransplant(),
             PhysicsClassification(),
             PhysicsChains(),
+            PhysicsAdjust(),
             MaterialConsolidate(),
             MaterialInspect(),
             MaterialSetup(),

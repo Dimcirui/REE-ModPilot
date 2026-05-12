@@ -104,6 +104,10 @@ class MaterialConsolidate(PhaseTool):
     def name(self) -> str:
         return "material_consolidate"
 
+    @property
+    def advances_phase(self) -> bool:
+        return False
+
     @classmethod
     def tool_schema(cls) -> dict[str, Any]:
         return {
@@ -489,6 +493,10 @@ class MaterialInspect(PhaseTool):
     def name(self) -> str:
         return "material_inspect"
 
+    @property
+    def advances_phase(self) -> bool:
+        return False
+
     @classmethod
     def tool_schema(cls) -> dict[str, Any]:
         return {
@@ -715,6 +723,10 @@ class MaterialSetup(PhaseTool):
     @property
     def name(self) -> str:
         return "material_setup"
+
+    @property
+    def advances_phase(self) -> bool:
+        return False
 
     @classmethod
     def tool_schema(cls) -> dict[str, Any]:

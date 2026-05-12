@@ -639,6 +639,20 @@ All other parameters are fixed defaults — do NOT change them.
 as default. Empty string = no collision interaction.
 
 ### Natural Language Adjustment Mapping
+
+Use the `physics_adjust` tool to apply these changes. It does NOT re-create chains —
+it sets properties directly on named CHAIN_SETTINGS objects and does not advance the phase.
+
+To identify target CHAIN_SETTINGS names: call `list_objects(type_filter="EMPTY")` and
+look for objects with `RE_CHAIN_CHAINSETTINGS` in their name.
+
+```json
+{
+  "targets": ["CHAIN_SETTINGS_04", "CHAIN_SETTINGS_44"],
+  "properties": {"gravity": [0, 3, 0]}
+}
+```
+
 After a preset is applied, the user may request fine-tuning. Translate as follows:
 | User phrase | Parameters to change |
 |---|---|
@@ -646,6 +660,7 @@ After a preset is applied, the user may request fine-tuning. Translate as follow
 | "softer" / "more floppy" | Decrease `damping`+`minDamping`; increase `reduceSelfDistanceRate` |
 | "add gravity" / "droops too little" | Set `gravity: [0, -9.8, 0]` |
 | "remove gravity" / "floats" | Set `gravity: [0, 0, 0]` |
+| "reverse gravity" / light upward force | Set `gravity: [0, <positive>, 0]` |
 | "more wind responsive" | Increase `windEffectCoef` and `envWindEffectCoef` |
 | "no wind effect" | Set both wind coefficients to 0 |
 | "spring back to pose" | Increase `springForce` |
