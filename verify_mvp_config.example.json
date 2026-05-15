@@ -1,0 +1,53 @@
+{
+  "_comment": "Copy to verify_mvp_config.json and fill in real values. All paths absolute. See docs/demo_setup.md for the demo asset walkthrough.",
+
+  "x_preset": "MMD",
+  "source_armature": "Armature",
+  "target_armature": "MHWilds_Female Armature",
+  "skip_scale_align": false,
+
+  "mesh_objects": ["Body", "Hair", "Outfit"],
+  "merged_mesh_object": "Body",
+  "mesh_collection": "MHWilds_Female.mesh",
+
+  "chain_collection": "ch03_000_9000.chain",
+  "inferred_types": {
+    "hair_001": "hair_long_straight",
+    "skirt_front_01": "cloth_skirt_waist"
+  },
+  "bones_to_clear": [],
+  "bones_to_merge": [],
+
+  "texture_dir": "D:/work/demo/source/textures",
+  "texture_mapping": {
+    "_comment": "Required only for non-MMD (VRChat / 终末地). MMD scenes ignore this field.",
+    "_example_for_VRChat": {
+      "Body.001": {
+        "Base Color": "D:/work/demo/source/textures/body_diffuse.png",
+        "Normal":     "D:/work/demo/source/textures/body_normal.png",
+        "Roughness":  null
+      }
+    }
+  },
+  "preset_mapping": {
+    "Body.001": "Character",
+    "Hair.001": "Hair"
+  },
+  "mdf_collection_name": "",
+  "texture_base_path": "Author/CharName/",
+
+  "armor_id": "pl001",
+  "armor_variant": "ff",
+  "target_parts": ["2"],
+  "mdf2_collection": "MHWilds_Female.mdf",
+  "chain2_collection": "ch03_000_9000.chain",
+  "fbxskel_name": "ch03_000_9000",
+
+  "natives_root": "D:/work/demo/mod_out",
+  "expected_files": [
+    "natives/STM/Art/Character/PlayerEquip/PL999/PL999_001/Common/ID/pl001/pl001_f_body.mesh.241125222",
+    "natives/STM/Art/Character/PlayerEquip/PL999/PL999_001/Common/ID/pl001/pl001_f_body.mdf2.45",
+    "natives/STM/Art/Character/PlayerEquip/PL999/PL999_001/Common/ID/pl001/pl001_f_body.chain2.51",
+    "natives/STM/Art/Character/Equipment/EquipParts/ch03_000_9000.fbxskel.7"
+  ]
+}

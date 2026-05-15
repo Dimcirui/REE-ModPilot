@@ -39,6 +39,10 @@ REE-ModPilot/
 └── lesson.md                     # this file
 ```
 
+## Current state (as of 2026-05-17)
+
+- **Issue #8 closed** (final MVP P0): `verify_mvp.py` at repo root + `verify_mvp_config.example.json` template + `docs/demo_setup.md` user-facing prerequisite + L3 acceptance walkthrough. The script bypasses the agent loop / LLM entirely — it imports phase tools (`SetupValidateScene`, `SetupImportMHWilds`, `PoseCorrection`, `SkeletonAlign`, `VertexGroups`, `PhysicsTransplant`, `PhysicsClassification`, `PhysicsChains`, `MaterialInspect`, `MaterialSetup`, `MaterialGenerate`, `BatchExport`) directly and feeds them config-supplied classification mappings (`x_preset`, `inferred_types`, `texture_mapping`, `preset_mapping`) so the run is fully deterministic. Adds phase-level success aggregation around the per-tool `require_finished()` checks, plus a post-Phase-6 file existence + non-zero-size sweep against `natives_root/expected_files`. CLI: `uv run python ../verify_mvp.py --config ../verify_mvp_config.json [--phases setup phase_1_2_3 ...] [--report out.json]`. `docs/demo_setup.md` covers prerequisites, MMD model recommendations (no assets in repo per D15), `.fbxskel.7` extraction, mod folder layout, full config-field reference, and a symptom→failure-phase table for the in-game L3 acceptance pass. All MVP P0 items 🟢; the actual L3 run remains user-side because it requires a real MHWs install + a self-provided MMD source.
+
 ## Current state (as of 2026-05-16, later)
 
 - Stages 0-4 complete. Phase 1→6 verified end-to-end against real Blender.
@@ -113,6 +117,7 @@ uv run python ../verify_blender_mcp.py
 # Lesson Log
 
 <!-- One line per fix: symptom → resolution. Newest at top. -->
+- Phase-tool param-name drift between schema and runtime is invisible from outside the agent loop: e.g. `MaterialInspect`/`MaterialSetup` take `target_object` (not `mesh_object`), `MaterialGenerate` takes `mesh_collection` + `preset_mapping` (not `mesh_object` + `material_presets`), `PhysicsChains` takes `inferred_types` (not `chain_classifications`). The LLM-driven path normally hides this because the prompt+schema flow ensures names match. When writing direct-call harnesses like `verify_mvp.py`, grep `tool_schema` for each phase you call and use the exact key names — don't mirror what the agent loop appears to do, mirror what the JSON schema declares.
 - `PhaseError` is a `@dataclass`, not an `Exception` subclass → `raise PhaseError(...)` inside a phase tool's helper triggers `TypeError: catching classes that do not inherit from BaseException`. Helpers that may fail must return `(value, error)` tuples instead of raising. Pattern used in `app/phases/infer_model_type.py:_read_armature_bones`.
 - Modding-Toolkit ships **13** X-presets (not 14) in `assets/presets/import/`: `街霸6.json` lives in that folder but declares `preset_info.type="Y_PRESET"`. The X-preset enumeration must filter by `preset_info.type == "X_PRESET"`, not by folder location. Mirror the filter in `SHIPPED_X_PRESETS` so the boot fallback matches the live count.
 - Standard X-preset slot list is **51 keys**, not 58. The "58 standard bone slots" figure in `plugin_api.md` refers to Modding-Toolkit's preset *editor* scaffolding (`modder.init_editor`'s populated slots), not what shipped presets actually fill. For issue #6 / `PresetCustomWrite`, document the 51-slot list in `agent_workflow.md` so the LLM knows what to map.
