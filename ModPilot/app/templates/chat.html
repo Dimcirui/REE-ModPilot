@@ -33,12 +33,13 @@
                  placeholder="C:\path\to\model.fbx or .pmx">
         </label>
         <label>Model type
-          <select name="config.model_type" required>
-            <option value="">—</option>
-            <option value="MMD">MMD</option>
-            <option value="VRChat">VRChat</option>
-            <option value="Other">Other</option>
+          <select name="config.model_type" id="model-type-select" required>
+            <option value="Auto-detect">Auto-detect</option>
+            <!-- Real options are appended by app.js from GET /app/x_presets
+                 on page load. The Auto-detect sentinel triggers InferModelType
+                 (issue #4); a preset name skips inference and uses it directly. -->
           </select>
+          <span class="field-note" id="model-type-note"></span>
         </label>
         <label>Texture directory
           <input type="text" name="config.texture_dir" required

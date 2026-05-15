@@ -129,6 +129,7 @@ from app.phases.query_tools import QueryTool
 
 _PHASE_SEQUENCE: list[str] = [
     "setup_validate",   # SetupValidateScene
+    "setup_infer",      # InferModelType (issue #4 — auto-detect source model preset)
     "setup_import",     # SetupImportMHWilds
     "phase_1",
     "phase_2",
@@ -486,6 +487,7 @@ class AgentLoop:
             self._emit(
                 "error_choice",
                 operator=result.error.operator,
+                category=result.error.category,
                 message=result.error.message,
                 summary=result.error.message[:120],
             )
@@ -518,6 +520,24 @@ class AgentLoop:
                     materials=materials,
                     existing_connections=state_diff.get("existing_connections") or {},
                     texture_files=state_diff.get("texture_files") or [],
+                )
+        elif tool_name == "setup_infer_model_type":
+            # Issue #4: surface the inference outcome to the form's
+            # `model_type` dropdown via SSE so the user can either accept the
+            # auto-pick or override before the pipeline continues. Waves 3/4
+            # (issues #5/#6) hook the non-exact decisions into widget flows;
+            # for now we emit the same event for every decision and let the
+            # frontend / LLM handle the next step.
+            preset = state_diff.get("inferred_preset")
+            decision = state_diff.get("decision")
+            if preset and decision:
+                self._emit(
+                    "model_type_inferred",
+                    preset=preset,
+                    coverage=state_diff.get("coverage", 0.0),
+                    decision=decision,
+                    candidates=state_diff.get("candidates") or [],
+                    uncovered_slots=state_diff.get("uncovered_slots") or [],
                 )
 
     def _on_phase_advance(self, completed_phase: str | None = None) -> None:
@@ -767,6 +787,8 @@ class AgentLoop:
             PhysicsRead,
             SceneInfo,
         )
+        from app.phases.infer_model_type import InferModelType
+        from app.phases.preset_write import PresetCustomWrite, PresetSupplementWrite
         from app.phases.setup import SetupImportMHWilds, SetupValidateScene
         from app.phases.skeleton_align import SkeletonAlign
         from app.phases.vertex_groups import VertexGroups
@@ -774,6 +796,9 @@ class AgentLoop:
         for tool in (
             # Phase tools (advance _phase_idx on success)
             SetupValidateScene(),
+            InferModelType(),
+            PresetSupplementWrite(),  # issue #5 — write _extended.json after user confirm
+            PresetCustomWrite(),      # issue #6 — write _custom.json after user confirm
             SetupImportMHWilds(),
             PoseCorrection(),
             SkeletonAlign(),

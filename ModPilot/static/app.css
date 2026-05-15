@@ -272,6 +272,12 @@ body.config-locked #config-saved-badge { display: flex; }
 .error-choice-btn.skip:hover  { background: #cbd2d9; }
 .error-choice-btn.ask   { background: #fff; color: #2c79f0; border-color: #2c79f0; }
 .error-choice-btn.ask:hover   { background: #eef4ff; }
+/* Issue #6: only rendered when the upstream error is `unsupported_rig`. */
+.error-choice-btn.force-custom {
+  background: #f59e0b; color: #fff;
+  border-color: #d97706;
+}
+.error-choice-btn.force-custom:hover { background: #d97706; }
 
 /* Confirmation widgets (issue #7). Same empty-slot pattern as error-choice:
    the slot is invisible until SSE pushes a widget_classification or

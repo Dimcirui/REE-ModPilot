@@ -37,11 +37,18 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.agent.loop import AgentLoop
 from app.blender.client import BlenderClient, BlenderError
+from app.blender.preset_catalog import (
+    SHIPPED_X_PRESETS,
+    PresetMeta,
+    discover_preset_dir,
+    enumerate_x_presets,
+)
 from app.config import settings
 from app.config_store import PERSISTED_FIELDS, apply_to_settings
 from app.config_store import load as load_persisted_config
 from app.config_store import save as save_persisted_config
 from app.llm.client import LLMClient
+from app.phases.base import X_PRESETS, update_x_presets
 from app.phases.material import PRINCIPLED_SLOTS
 from app.phases.physics_bones import list_inferred_types
 
@@ -89,6 +96,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.agent_streams: dict[str, asyncio.Queue] = {}
     app.state.session_configs: dict[str, SessionConfig] = {}
 
+    # Issue #4 foundation: enumerate the toolkit's X-presets so the
+    # session-config dropdown and the inference phase can both reference
+    # whatever is actually installed. Falls back to the shipped name list
+    # when Blender isn't reachable so server boot is non-fatal.
+    app.state.x_preset_catalog: dict[str, PresetMeta] = {}
+    if client.connected:
+        # Discovery is best-effort: any failure (missing addon, partially-mocked
+        # client in tests, JSON decode errors) falls through to the shipped
+        # list so the server still boots.
+        try:
+            preset_dir = discover_preset_dir(client)
+            app.state.x_preset_catalog = enumerate_x_presets(preset_dir)
+        except Exception:
+            app.state.x_preset_catalog = {}
+    if app.state.x_preset_catalog:
+        update_x_presets(app.state.x_preset_catalog.keys())
+    else:
+        update_x_presets(SHIPPED_X_PRESETS)
+
     yield
 
     client.close()
@@ -117,13 +143,19 @@ _BLENDER_HINT = (
 _QUEUE_MAXSIZE = 256
 
 
-def _render_error_choice_html(session_id: str) -> str:
-    """Render the three-button error-choice fragment for a session.
+def _render_error_choice_html(session_id: str, category: str = "") -> str:
+    """Render the error-choice button fragment for a session.
 
-    Returned HTML is shipped raw as the SSE data field for `error_choice`
-    events so htmx's `sse-swap` can drop it into #error-choice-slot directly.
-    Each button posts the matching keyword to /agent/messages (not /agent/chat)
-    so the retry/skip/ask turn keeps streaming via the session's sink.
+    Default: retry / skip / 查看详情 three-button group (issue #2).
+    When category == "unsupported_rig" (issue #6 0-match path), a fourth
+    [强制自定义] button is appended that sends `[FORCE_CUSTOM]` so the LLM
+    re-runs setup_infer_model_type with force_custom=true and proceeds
+    straight into the custom-preset build.
+
+    Returned HTML is shipped raw as the SSE data field so htmx's `sse-swap`
+    can drop it into #error-choice-slot directly. Each button posts the
+    matching keyword to /agent/messages (not /agent/chat) so the
+    retry/skip/ask turn keeps streaming via the session's sink.
     """
     sid = html.escape(session_id, quote=True)
     # Removal of the .error-choice-group is handled by app.js on
@@ -136,16 +168,25 @@ def _render_error_choice_html(session_id: str) -> str:
     # `encodeParameters` to dynamically-inserted (htmx.process'd) descendants
     # — symptom: Content-Type header is correct but body stays form-urlencoded.
     # The endpoint's Pydantic body expects JSON; mismatched encoding -> 422.
-    return (
-        '<div class="error-choice-group" role="group">'
+    buttons = [
         f'<button class="error-choice-btn retry" hx-ext="json-enc" hx-post="/agent/messages" '
-        f'hx-vals=\'{{"session_id":"{sid}","message":"重试"}}\' hx-swap="none">重试</button>'
+        f'hx-vals=\'{{"session_id":"{sid}","message":"重试"}}\' hx-swap="none">重试</button>',
         f'<button class="error-choice-btn skip" hx-ext="json-enc" hx-post="/agent/messages" '
-        f'hx-vals=\'{{"session_id":"{sid}","message":"跳过"}}\' hx-swap="none">跳过</button>'
+        f'hx-vals=\'{{"session_id":"{sid}","message":"跳过"}}\' hx-swap="none">跳过</button>',
         f'<button class="error-choice-btn ask" hx-ext="json-enc" hx-post="/agent/messages" '
-        f'hx-vals=\'{{"session_id":"{sid}","message":"查看详情"}}\' hx-swap="none">查看详情</button>'
-        '</div>'
-    )
+        f'hx-vals=\'{{"session_id":"{sid}","message":"查看详情"}}\' hx-swap="none">查看详情</button>',
+    ]
+    if category == "unsupported_rig":
+        # Issue #6: let the user force-custom past a 0-match unsupported_rig
+        # error. The LLM (per agent_workflow.md) recognizes the [FORCE_CUSTOM]
+        # prefix and re-runs setup_infer_model_type with force_custom=true.
+        buttons.append(
+            f'<button class="error-choice-btn force-custom" hx-ext="json-enc" '
+            f'hx-post="/agent/messages" '
+            f'hx-vals=\'{{"session_id":"{sid}","message":"[FORCE_CUSTOM] 强制自定义预设"}}\' '
+            f'hx-swap="none">强制自定义</button>'
+        )
+    return '<div class="error-choice-group" role="group">' + "".join(buttons) + '</div>'
 
 
 def _render_classification_widget_html(session_id: str, chains: list[dict]) -> str:
@@ -468,7 +509,15 @@ class SessionConfig(BaseModel):
     """
 
     model_path: str
-    model_type: Literal["MMD", "VRChat", "Other"]
+    # Issue #4: was Literal["MMD", "VRChat", "Other"] in waves 1-4 of stage 5.
+    # Now any preset name the live toolkit reports as installed is valid,
+    # plus the sentinel "Auto-detect" which tells the pipeline to run
+    # InferModelType (setup_infer_model_type) on the imported source rig
+    # and back-fill this field via the `model_type_inferred` SSE event.
+    # Server-side validation happens in the route handler against
+    # app.state.X_PRESETS so newly-supplemented presets work without a
+    # SessionConfig schema bump.
+    model_type: str = "Auto-detect"
     texture_dir: str
 
     mod_root: str
@@ -501,11 +550,52 @@ async def save_session_config(request: Request, body: SessionConfigRequest) -> J
         errors["texture_dir"] = "Directory not found"
     if not Path(cfg.mod_root).is_dir():
         errors["mod_root"] = "Directory not found"
+    # Issue #4: validate model_type against the runtime X_PRESETS catalog
+    # rather than a hardcoded Literal. "Auto-detect" is the sentinel that
+    # triggers InferModelType during the pipeline.
+    if cfg.model_type != "Auto-detect" and cfg.model_type not in X_PRESETS:
+        errors["model_type"] = (
+            f"Unknown preset {cfg.model_type!r}. "
+            f"Pick one of: Auto-detect, {', '.join(sorted(X_PRESETS))}."
+        )
     if errors:
         raise HTTPException(status_code=422, detail={"field_errors": errors})
 
     request.app.state.session_configs[body.session_id] = cfg
     return JSONResponse({"session_id": body.session_id, "saved": True})
+
+
+# ── /app/x_presets (Stage 5 issue #4) ──────────────────────────────────────
+
+
+@app.get("/app/x_presets")
+async def get_x_presets() -> JSONResponse:
+    """Return the currently-installed X-presets for the session-config form.
+
+    The list is built by the lifespan handler from the toolkit's preset folder
+    (with the 13 shipped names as a fallback when Blender isn't reachable at
+    startup). Frontend renders one `<option>` per entry plus the leading
+    "Auto-detect" sentinel.
+    """
+    catalog: dict = getattr(app.state, "x_preset_catalog", {}) or {}
+    presets = [
+        {
+            "name": name,
+            "slot_count": len(meta.mappings),
+            "description": meta.description,
+        }
+        for name, meta in catalog.items()
+    ]
+    # Fallback path: catalog is empty (Blender unreachable at boot) → return
+    # the shipped names with empty slot/description fields so the dropdown
+    # still populates with valid choices.
+    if not presets:
+        presets = [
+            {"name": name, "slot_count": 0, "description": ""}
+            for name in sorted(X_PRESETS)
+        ]
+    presets.sort(key=lambda p: p["name"])
+    return JSONResponse({"presets": presets})
 
 
 # ── /agent/widget (Stage 5 issue #7) ───────────────────────────────────────
@@ -735,8 +825,12 @@ async def agent_stream(session_id: str, request: Request):
             except TimeoutError:
                 continue
             if evt["type"] == "error_choice":
-                # Ship raw HTML for htmx sse-swap to drop into #error-choice-slot
-                data = _render_error_choice_html(session_id)
+                # Ship raw HTML for htmx sse-swap to drop into #error-choice-slot.
+                # Issue #6: when the error came from setup_infer_model_type's
+                # 0-match path, the renderer adds the [Force Custom] button.
+                data = _render_error_choice_html(
+                    session_id, category=evt.get("category", "")
+                )
             elif evt["type"] == "widget_classification":
                 data = _render_classification_widget_html(
                     session_id, evt.get("chains", [])

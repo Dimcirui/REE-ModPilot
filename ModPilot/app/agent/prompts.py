@@ -38,6 +38,12 @@ _WIDGET_PROTOCOL: str = (
     "  Pass that dict as `texture_mapping` to `material_setup` (skip materials\n"
     "  whose mapping is empty).\n"
     "\n"
+    "- When `setup_infer_model_type` returns `decision='unsupported'` and the\n"
+    "  user clicks the `[强制自定义]` button on the error_choice widget, the\n"
+    "  next user message arrives prefixed `[FORCE_CUSTOM]`. Re-call\n"
+    "  `setup_infer_model_type` with `force_custom=true` (and the same\n"
+    "  source_armature) to enter the issue #6 custom-preset flow.\n"
+    "\n"
     "If the prefix is absent, fall back to the legacy text-based confirmation flow."
 )
 
@@ -158,6 +164,10 @@ def build_system_prompt(
     global_rules = _extract_section(_WORKFLOW_TEXT, "Global Behavior Rules")
     assessment_protocol = _extract_section(_WORKFLOW_TEXT, "Pipeline State Assessment Protocol")
     phase_seq = _extract_section(_WORKFLOW_TEXT, "Phase Sequence")
+    # Issue #4: Setup Phase now contains the model-type inference step
+    # (#4/#5/#6); inject it so the LLM knows about the new step 1.5 and
+    # the supplement/custom flows.
+    setup_phase = _extract_section(_WORKFLOW_TEXT, "Setup Phase")
     preprocessing = _extract_section(_WORKFLOW_TEXT, "Phase 1–3: Preprocessing Block")
     phase_35 = _extract_section(_WORKFLOW_TEXT, "Phase 3.5: Physics Bone Transplant")
     phase_4a = _extract_section(_WORKFLOW_TEXT, "Phase 4A: Physics Bone Classification")
@@ -184,6 +194,8 @@ def build_system_prompt(
         global_rules,
         "",
         phase_seq,
+        "",
+        setup_phase,
         "",
         preprocessing,
         "",

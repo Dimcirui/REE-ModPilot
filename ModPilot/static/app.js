@@ -88,6 +88,46 @@
       setStatus("ready", "");
       btn().disabled = false;
     },
+    // Issue #4: source-model type auto-inference. Emitted by AgentLoop
+    // after setup_infer_model_type runs. We back-fill the form's
+    // model_type dropdown, attach a coverage badge, and unlock the field
+    // so the user can override before setup_import runs.
+    model_type_inferred: (e) => {
+      const sel = document.getElementById("model-type-select");
+      const note = document.getElementById("model-type-note");
+      if (sel && e.preset) {
+        // Add the inferred preset as an <option> if the dropdown doesn't
+        // already carry it (e.g. a brand-new supplemented preset whose
+        // name only appeared after the page loaded).
+        if (!Array.from(sel.options).some((o) => o.value === e.preset)) {
+          const opt = document.createElement("option");
+          opt.value = e.preset;
+          opt.textContent = e.preset;
+          sel.appendChild(opt);
+        }
+        sel.value = e.preset;
+        sel.disabled = false;  // Always editable after inference
+      }
+      if (note) {
+        const pct = Math.round((e.coverage || 0) * 100);
+        const tag = e.decision === "exact"
+          ? "matched"
+          : e.decision === "supplement"
+            ? "partial — supplement"
+            : e.decision === "custom"
+              ? "low — needs custom"
+              : "unsupported";
+        note.textContent = `Detected: ${e.preset} (${pct}% — ${tag})`;
+        note.className = "field-note " + (e.decision === "exact" ? "configured" : "missing");
+      }
+      // Persist so a refresh keeps the inferred value sticky.
+      try {
+        const raw = localStorage.getItem("modpilot.config.v1");
+        const cfg = raw ? JSON.parse(raw) : {};
+        cfg.model_type = e.preset;
+        localStorage.setItem("modpilot.config.v1", JSON.stringify(cfg));
+      } catch (_) { /* ignore */ }
+    },
   };
 
   document.body.addEventListener("htmx:sseMessage", (ev) => {
@@ -288,6 +328,33 @@
   // (a) Rehydrate on page load
   window.addEventListener("DOMContentLoaded", () => {
     if (!configForm()) return;
+    // (a1) Populate the model_type dropdown from the live preset catalog.
+    // Issue #4: the hardcoded MMD/VRChat/Other set is gone — options come
+    // from /app/x_presets so newly-installed (or supplemented) presets are
+    // selectable without a page rebuild.
+    fetch("/app/x_presets", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { presets: [] }))
+      .then(({ presets }) => {
+        const sel = document.getElementById("model-type-select");
+        if (!sel) return;
+        const previous = sel.value;
+        // Preserve the leading Auto-detect <option>; append the rest.
+        for (const p of presets || []) {
+          if (Array.from(sel.options).some((o) => o.value === p.name)) continue;
+          const opt = document.createElement("option");
+          opt.value = p.name;
+          opt.textContent = p.name;
+          if (p.description) opt.title = p.description;
+          sel.appendChild(opt);
+        }
+        // Restore from localStorage if we had a saved value.
+        if (previous && Array.from(sel.options).some((o) => o.value === previous)) {
+          sel.value = previous;
+        }
+        updateStartButtonState();
+      })
+      .catch(() => { /* offline / 503 — Auto-detect option still works */ });
+
     try {
       const raw = localStorage.getItem(CONFIG_STORAGE_KEY);
       if (raw) populateConfigForm(JSON.parse(raw));
