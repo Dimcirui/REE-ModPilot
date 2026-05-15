@@ -1,0 +1,434 @@
+/* ModPilot chat UI — minimal layout. */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; padding: 0;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  color: #1f2933;
+  background: #f5f7fa;
+}
+
+body {
+  display: grid;
+  grid-template-rows: auto auto auto 1fr auto;
+  height: 100vh;
+}
+
+header {
+  display: flex; align-items: baseline; gap: 1rem;
+  padding: 0.6rem 1rem;
+  background: #1f2933; color: #f5f7fa;
+}
+header h1 { margin: 0; font-size: 1.1rem; font-weight: 600; }
+.session-id { font-family: monospace; font-size: 0.75rem; opacity: 0.7; }
+#settings-link {
+  margin-left: auto;
+  color: #cbd2d9; text-decoration: none;
+  font-size: 0.8rem;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid transparent; border-radius: 4px;
+}
+#settings-link:hover { color: #fff; border-color: #4b5563; background: #283340; }
+
+/* Config page (issue #9) ---------------------------------------------------- */
+body.config-page { grid-template-rows: auto 1fr; }
+.config-main {
+  padding: 1.25rem;
+  display: flex; justify-content: center; align-items: flex-start;
+  overflow-y: auto;
+}
+.config-card {
+  background: #fff;
+  border: 1px solid #e4e7eb; border-radius: 8px;
+  padding: 1rem 1.25rem 1.25rem;
+  width: min(640px, 100%);
+}
+.config-card h2 { margin: 0 0 0.25rem; font-size: 1rem; font-weight: 600; }
+.config-card-hint { font-size: 0.8rem; color: #52606d; margin: 0 0 0.85rem; }
+.config-card code {
+  background: #f5f7fa; padding: 0.05rem 0.3rem;
+  border-radius: 3px; font-size: 0.75rem;
+}
+.config-page-title { font-size: 0.85rem; color: #cbd2d9; }
+
+#app-config-form fieldset {
+  border: 1px solid #e4e7eb; border-radius: 6px;
+  padding: 0.5rem 0.75rem 0.75rem;
+  margin: 0 0 0.75rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.5rem 0.75rem;
+}
+#app-config-form legend {
+  font-size: 0.75rem; font-weight: 600; color: #52606d; padding: 0 0.35rem;
+}
+#app-config-form label {
+  display: flex; flex-direction: column; gap: 0.2rem;
+  font-size: 0.78rem; color: #52606d;
+}
+#app-config-form input,
+#app-config-form select {
+  padding: 0.4rem 0.5rem; font-size: 0.85rem;
+  border: 1px solid #cbd2d9; border-radius: 4px;
+  background: #fff; color: #1f2933;
+}
+#app-config-form input:focus,
+#app-config-form select:focus { outline: 2px solid #2c79f0; border-color: transparent; }
+.field-note { font-size: 0.7rem; }
+.field-note.configured { color: #047857; }
+.field-note.missing    { color: #b45309; }
+
+.config-actions {
+  display: flex; align-items: center; gap: 0.75rem;
+}
+#save-btn {
+  padding: 0.4rem 1.1rem; font-size: 0.9rem; font-weight: 500;
+  background: #2c79f0; color: #fff;
+  border: 0; border-radius: 6px; cursor: pointer;
+}
+#save-btn:hover { background: #1c4ea8; }
+#back-link {
+  font-size: 0.85rem; color: #2c79f0; text-decoration: none;
+}
+#back-link:hover { text-decoration: underline; }
+.save-status { font-size: 0.8rem; }
+.save-status.ok       { color: #047857; }
+.save-status.error    { color: #991b1b; }
+.save-status.thinking { color: #2c79f0; }
+
+/* Session config form (issue #3) */
+#config-form-section {
+  padding: 0.6rem 1rem 0.75rem;
+  background: #fff;
+  border-bottom: 1px solid #e4e7eb;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+/* When locked, hide the form + header but keep the section so the saved-badge
+   (a child of the section) still renders. */
+body.config-locked #config-form,
+body.config-locked .config-header { display: none; }
+body.config-locked #config-form-section {
+  max-height: none;
+  padding: 0.5rem 1rem;
+}
+
+.config-header {
+  display: flex; align-items: baseline; gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+.config-header h2 { margin: 0; font-size: 0.95rem; font-weight: 600; }
+.config-hint { font-size: 0.75rem; color: #52606d; }
+
+#config-form fieldset {
+  border: 1px solid #e4e7eb; border-radius: 6px;
+  padding: 0.4rem 0.75rem 0.6rem;
+  margin: 0 0 0.5rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.4rem 0.75rem;
+}
+#config-form fieldset.body-parts {
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+#config-form legend {
+  font-size: 0.75rem; font-weight: 600; color: #52606d;
+  padding: 0 0.35rem;
+}
+#config-form label {
+  display: flex; flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.78rem; color: #52606d;
+}
+#config-form label.inline {
+  flex-direction: row; align-items: center; gap: 0.4rem;
+  font-size: 0.85rem; color: #1f2933;
+}
+#config-form input[type="text"],
+#config-form select {
+  padding: 0.35rem 0.5rem; font-size: 0.85rem;
+  border: 1px solid #cbd2d9; border-radius: 4px;
+  background: #fff; color: #1f2933;
+}
+#config-form input[type="text"]:focus,
+#config-form select:focus { outline: 2px solid #2c79f0; border-color: transparent; }
+#config-form input.invalid { border-color: #ef4444; background: #fef2f2; }
+
+.config-actions {
+  display: flex; align-items: center; gap: 0.75rem;
+}
+#config-start-btn {
+  padding: 0.4rem 1.1rem; font-size: 0.9rem; font-weight: 500;
+  background: #2c79f0; color: #fff;
+  border: 0; border-radius: 6px; cursor: pointer;
+}
+#config-start-btn:hover { background: #1c4ea8; }
+#config-start-btn[disabled] {
+  background: #cbd2d9; color: #f5f7fa; cursor: not-allowed;
+}
+#config-errors:empty { display: none; }
+#config-errors {
+  font-size: 0.8rem; color: #991b1b;
+  background: #fee2e2; border: 1px solid #fca5a5;
+  border-radius: 4px; padding: 0.3rem 0.6rem;
+}
+.field-error { font-size: 0.75rem; color: #991b1b; margin-top: 0.15rem; }
+
+#config-saved-badge {
+  display: none;
+  align-items: center; gap: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  background: #ecfdf5; border: 1px solid #6ee7b7; border-radius: 6px;
+  font-size: 0.85rem; color: #047857;
+}
+body.config-locked #config-saved-badge { display: flex; }
+#config-edit-btn {
+  padding: 0.25rem 0.6rem; font-size: 0.75rem;
+  background: #fff; color: #2c79f0; border: 1px solid #2c79f0;
+  border-radius: 4px; cursor: pointer;
+}
+#config-edit-btn:hover { background: #eef4ff; }
+
+/* Phase stepper */
+.phases {
+  list-style: none; margin: 0; padding: 0.5rem 1rem;
+  display: flex; gap: 0.35rem;
+  background: #fff; border-bottom: 1px solid #e4e7eb;
+  overflow-x: auto;
+}
+.phase {
+  flex: 0 0 auto;
+  width: 2.2rem; height: 2.2rem;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 999px;
+  font-size: 0.75rem; font-weight: 600;
+  background: #e4e7eb; color: #52606d;
+  border: 2px solid transparent;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.phase.active   { background: #2c79f0; color: #fff; border-color: #1c4ea8; }
+.phase.done     { background: #2dd4bf; color: #033f3a; }
+.phase.error    { background: #ef4444; color: #fff; }
+.phase.skipped  { background: #e4e7eb; color: #9aa5b1; text-decoration: line-through; }
+
+/* Main area: split into chat column + viewport side-panel */
+#main-area {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  min-height: 0;
+  overflow: hidden;
+}
+#left-column {
+  display: flex; flex-direction: column;
+  min-width: 0; min-height: 0;
+  overflow: hidden;
+}
+
+/* Log */
+.log {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex; flex-direction: column; gap: 0.5rem;
+}
+.bubble {
+  max-width: 80%;
+  padding: 0.5rem 0.75rem;
+  border-radius: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+}
+.bubble.user      { align-self: flex-end; background: #2c79f0; color: #fff; }
+.bubble.assistant { align-self: flex-start; background: #fff; border: 1px solid #e4e7eb; }
+.bubble.tool      { align-self: flex-start; background: #f5f7fa; border: 1px dashed #cbd2d9; font-family: monospace; font-size: 0.8rem; color: #52606d; }
+.bubble.error     { align-self: flex-start; background: #fee2e2; border: 1px solid #fca5a5; color: #991b1b; }
+
+/* Error-choice three-button group (issue #2). Slot is empty most of the time
+   and renders zero-height; appears only when the SSE error_choice event fires. */
+#error-choice-slot:empty { display: none; }
+#error-choice-slot {
+  padding: 0.5rem 1rem 0.75rem;
+  background: #f5f7fa;
+  border-top: 1px solid #e4e7eb;
+}
+.error-choice-group {
+  display: flex; gap: 0.5rem; flex-wrap: wrap;
+  align-items: center;
+}
+.error-choice-btn {
+  padding: 0.4rem 0.9rem; font-size: 0.9rem; font-weight: 500;
+  border-radius: 6px; cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.error-choice-btn.retry { background: #2c79f0; color: #fff; }
+.error-choice-btn.retry:hover { background: #1c4ea8; }
+.error-choice-btn.skip  { background: #e4e7eb; color: #52606d; }
+.error-choice-btn.skip:hover  { background: #cbd2d9; }
+.error-choice-btn.ask   { background: #fff; color: #2c79f0; border-color: #2c79f0; }
+.error-choice-btn.ask:hover   { background: #eef4ff; }
+
+/* Confirmation widgets (issue #7). Same empty-slot pattern as error-choice:
+   the slot is invisible until SSE pushes a widget_classification or
+   widget_material fragment into it. */
+#widget-slot:empty { display: none; }
+#widget-slot {
+  padding: 0.6rem 1rem 0.75rem;
+  background: #fff;
+  border-top: 1px solid #e4e7eb;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.widget-form { display: flex; flex-direction: column; gap: 0.6rem; }
+.widget-header { display: flex; align-items: baseline; gap: 0.75rem; }
+.widget-header h3 { margin: 0; font-size: 0.95rem; font-weight: 600; }
+.widget-hint { font-size: 0.75rem; color: #52606d; }
+.widget-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.widget-table thead { background: #f5f7fa; }
+.widget-table th,
+.widget-table td {
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid #e4e7eb;
+  vertical-align: middle;
+}
+.widget-table th {
+  font-size: 0.72rem; font-weight: 600; color: #52606d; text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.widget-table tr:last-child td { border-bottom: 0; }
+.widget-table .bone-name,
+.widget-table .slot-name { font-family: monospace; font-size: 0.8rem; color: #1f2933; }
+.widget-table .bone-role,
+.widget-table .bone-depth { font-size: 0.78rem; color: #52606d; }
+.widget-table select {
+  width: 100%; padding: 0.3rem 0.4rem; font-size: 0.85rem;
+  border: 1px solid #cbd2d9; border-radius: 4px; background: #fff;
+}
+.widget-table select:focus { outline: 2px solid #2c79f0; border-color: transparent; }
+
+.material-block {
+  border: 1px solid #e4e7eb; border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  margin-bottom: 0.5rem;
+}
+.material-block summary {
+  font-weight: 600; cursor: pointer; padding: 0.15rem 0; font-size: 0.85rem;
+  color: #1f2933;
+}
+.material-block[open] summary { margin-bottom: 0.35rem; }
+
+.widget-actions { display: flex; justify-content: flex-end; }
+.widget-submit {
+  padding: 0.4rem 1.1rem; font-size: 0.9rem; font-weight: 500;
+  background: #2c79f0; color: #fff;
+  border: 0; border-radius: 6px; cursor: pointer;
+}
+.widget-submit:hover { background: #1c4ea8; }
+.widget-form.pending .widget-submit {
+  background: #9aa5b1; cursor: wait;
+}
+
+/* Viewport side-panel (Stage 5 P0) */
+#viewport-pane {
+  display: flex; flex-direction: column;
+  background: #1f2933; color: #cbd2d9;
+  border-left: 1px solid #283340;
+  min-height: 0;
+}
+.viewport-header {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #283340;
+}
+.viewport-header h3 {
+  margin: 0; font-size: 0.85rem; font-weight: 600;
+  color: #f5f7fa;
+}
+.viewport-auto {
+  margin-left: auto;
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  font-size: 0.75rem; color: #9aa5b1; cursor: pointer;
+}
+.viewport-auto input { accent-color: #2c79f0; }
+#viewport-refresh {
+  background: transparent; color: #cbd2d9;
+  border: 1px solid #4b5563; border-radius: 4px;
+  width: 1.7rem; height: 1.7rem; padding: 0;
+  font-size: 0.9rem; line-height: 1; cursor: pointer;
+}
+#viewport-refresh:hover { background: #283340; color: #fff; }
+#viewport-refresh:disabled { opacity: 0.4; cursor: wait; }
+.viewport-frame {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex; align-items: center; justify-content: center;
+  background: #0f1620;
+  overflow: hidden;
+  min-height: 0;
+}
+#viewport-img {
+  max-width: 100%; max-height: 100%;
+  object-fit: contain;
+  display: none;
+}
+#viewport-img.loaded { display: block; }
+#viewport-placeholder {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.8rem; color: #52606d; text-align: center;
+  padding: 1rem;
+}
+#viewport-img.loaded + #viewport-placeholder { display: none; }
+.viewport-status {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.7rem; font-family: monospace;
+  color: #9aa5b1;
+  border-top: 1px solid #283340;
+}
+.viewport-status.error { color: #fca5a5; }
+.viewport-status.ok    { color: #6ee7b7; }
+
+@media (max-width: 900px) {
+  #main-area {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(120px, 30vh) minmax(0, 1fr);
+  }
+  #viewport-pane { order: -1; border-left: 0; border-bottom: 1px solid #283340; }
+}
+
+/* Footer */
+footer {
+  display: grid; grid-template-rows: auto auto;
+  gap: 0.25rem;
+  padding: 0.6rem 1rem;
+  background: #fff; border-top: 1px solid #e4e7eb;
+}
+#chat-form { display: flex; gap: 0.5rem; }
+#chat-form input[type="text"] {
+  flex: 1; padding: 0.5rem 0.75rem; font-size: 1rem;
+  border: 1px solid #cbd2d9; border-radius: 6px;
+}
+#chat-form input[type="text"]:focus { outline: 2px solid #2c79f0; border-color: transparent; }
+#chat-form button {
+  padding: 0 1rem; font-size: 0.95rem;
+  background: #2c79f0; color: #fff; border: 0; border-radius: 6px; cursor: pointer;
+}
+#chat-form button:hover { background: #1c4ea8; }
+#chat-form button:disabled { background: #9aa5b1; cursor: wait; }
+
+.status {
+  font-size: 0.75rem; font-family: monospace; color: #52606d;
+}
+.status.thinking { color: #2c79f0; }
+.status.error    { color: #991b1b; }
+.status.done     { color: #047857; }

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ModPilot — Settings</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script defer src="/static/config.js"></script>
+</head>
+<body class="config-page">
+  <header>
+    <h1>ModPilot</h1>
+    <span class="config-page-title">Global Settings</span>
+  </header>
+
+  <main class="config-main">
+    <section class="config-card">
+      <h2>LLM &amp; Blender</h2>
+      <p class="config-card-hint">
+        These settings persist across sessions in
+        <code>~/.modpilot/config.json</code>.
+        Per-mod parameters (paths, character name, etc.) live on the chat page.
+      </p>
+
+      <form id="app-config-form">
+        <fieldset>
+          <legend>LLM</legend>
+          <label>Provider
+            <select name="llm_provider" required>
+              <option value="openai_compatible">OpenAI-compatible (DeepSeek / Qwen / …)</option>
+              <option value="anthropic">Anthropic (Claude)</option>
+              <option value="ollama">Ollama (Cloud or local daemon)</option>
+            </select>
+          </label>
+          <label>API key
+            <input type="password" name="llm_api_key" autocomplete="new-password"
+                   placeholder="paste key">
+            <span class="field-note" id="api-key-status"></span>
+          </label>
+          <label>Model
+            <input type="text" name="llm_model" required
+                   placeholder="claude-sonnet-4-5 / deepseek-chat / deepseek-v4-flash / …">
+          </label>
+          <label>Base URL (optional)
+            <input type="text" name="llm_base_url"
+                   placeholder="https://api.deepseek.com/v1  |  https://ollama.com (default for ollama)">
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Blender</legend>
+          <label>Host
+            <input type="text" name="blender_host" required value="127.0.0.1">
+          </label>
+          <label>Port
+            <input type="number" name="blender_port" required min="1" max="65535" value="9876">
+          </label>
+        </fieldset>
+
+        <div class="config-actions">
+          <button type="submit" id="save-btn">Save</button>
+          <a href="/" id="back-link">Back to chat →</a>
+          <div id="save-status" role="status"></div>
+        </div>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

@@ -16,7 +16,8 @@
 | Stage 2 — phase tool layer (videos 1-3) | 🟢 done (PoseCorrection + SkeletonAlign + VertexGroups; 76 unit tests) |
 | Stage 3 — agent loop | 🟢 done (ReAct loop + prompts + error handler + `/agent/chat`; 117 unit tests) |
 | Stage 4 — phase tools (videos 4-7) | 🟢 done: physics_bones + material + batch_export + mesh_cleanup + query tools; E2E verified (Phase 1→6 full run); advanced out of MVP scope |
-| Stage 5+ — frontend, MVP verification | ⚪ pending |
+| Stage 5 — frontend (htmx + SSE chat) | 🟢 done: issue #1 (chat UI + SSE event stream, 9 event types), issue #2 (error-choice three-button UI), issue #3 (session-config form, 8 fields, localStorage rehydrate, prompt injection). 23 unit tests + 36 Playwright e2e checks. Viewport screenshot side-panel still pending. |
+| Stage MVP — verification | ⚪ pending |
 
 All design items in [docs/design.md](docs/design.md) (A/B/C/D/E layers) are 🟢 decided.
 
@@ -92,17 +93,21 @@ REE-ModPilot/
 │   ├── .env.example
 │   ├── app/
 │   │   ├── main.py               # FastAPI app; /health /scene_info /agent/chat
+│   │   │                         #   plus Stage 5: GET / + /agent/messages
+│   │   │                         #   + /agent/stream/{sid} + /agent/config
 │   │   ├── config.py             # Settings (LLM / Blender / vision model)
 │   │   ├── blender/              # BlenderClient (TCP socket) + SceneCache
 │   │   ├── llm/                  # Provider-agnostic LLMClient (Anthropic + OpenAI)
 │   │   ├── agent/                # ReAct loop, prompt builders, error handler
+│   │   ├── templates/            # Jinja2 templates (chat.html — htmx + SSE chat shell)
 │   │   └── phases/               # Phase tools: pose_correction, skeleton_align,
 │   │                             #   vertex_groups (done); physics_bones, material,
 │   │                             #   batch_export, advanced (Stage 4)
 │   ├── tests/
-│   │   ├── unit/                 # 117 tests; mock Blender + mock LLM
-│   │   └── integration/          # real Blender required; marker-gated
-│   └── static/
+│   │   ├── unit/                 # mock Blender + mock LLM
+│   │   ├── integration/          # real Blender required; marker-gated
+│   │   └── e2e/                  # Playwright browser smokes; opt-in install
+│   └── static/                   # app.css, app.js, vendored htmx + sse-ext + json-enc-ext
 ├── docs/
 │   ├── design.md                 # A/B/C/D/E-layer design decisions (🟢 all decided)
 │   ├── backlog.md                # P0-P3 implementation tasks with status badges

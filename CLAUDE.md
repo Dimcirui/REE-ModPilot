@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+**Always read [lesson.md](lesson.md) at the start of every conversation in this project** — it is the orientation primer (layout, current state, run commands, hard rules) and the fix log of past mistakes worth avoiding. Read it before anything else.
+
 Working notes specific to Claude Code / Claude API agents in this repo.
 
 For project overview see [README.md](README.md).
@@ -9,12 +11,13 @@ For agent baseline rules (commands, hard rules, code style, conventions) see [AG
 
 ## Read These First (in order)
 
-1. [README.md](README.md) — Project at a glance, status, architecture, tech stack.
-2. [AGENTS.md](AGENTS.md) — Hard rules + commands + style + workflow.
-3. [docs/design.md](docs/design.md) — All 15 design decisions with rationale (A/B/C/D layers, all 🟢).
-4. [docs/backlog.md](docs/backlog.md) — Current implementation tasks (P0-P3 with status badges).
-5. [docs/plan.md](docs/plan.md) — The 7-video mod-making workflow being automated.
-6. [docs/plugin_api.md](docs/plugin_api.md) — Modding-Toolkit operator reference (the "API" being wrapped).
+1. [lesson.md](lesson.md) — Orientation primer + fix log. Hard requirement: read first, every session.
+2. [README.md](README.md) — Project at a glance, status, architecture, tech stack.
+3. [AGENTS.md](AGENTS.md) — Hard rules + commands + style + workflow.
+4. [docs/design.md](docs/design.md) — All 15 design decisions with rationale (A/B/C/D layers, all 🟢).
+5. [docs/backlog.md](docs/backlog.md) — Current implementation tasks (P0-P3 with status badges).
+6. [docs/plan.md](docs/plan.md) — The 7-video mod-making workflow being automated.
+7. [docs/plugin_api.md](docs/plugin_api.md) — Modding-Toolkit operator reference (the "API" being wrapped).
 
 ---
 

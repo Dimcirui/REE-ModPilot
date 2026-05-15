@@ -14,21 +14,18 @@ Run with: uv run pytest -m unit tests/unit/test_physics_bones.py -v
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from app.phases.physics_bones import (
+    _PRESETS_PATH,
     PhysicsChains,
     PhysicsClassification,
     PhysicsTransplant,
-    _PRESETS_PATH,
     get_physics_params,
     list_inferred_types,
 )
-from app.phases.base import PhaseResult
-
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -461,10 +458,15 @@ class TestPhysicsChains:
         assert result.error.category == "precondition"
 
     def test_bones_to_clear_runs_before_merge_and_creation(self):
-        """bones_to_clear fires first, then merge, then create chains."""
+        """merge fires first, then clear, then create chains.
+
+        Order is deliberate (physics_bones.py:753-762): merge_into_parent's
+        color-refresh would re-mark the just-cleared native bones as physics
+        if clear ran first.
+        """
         new_cs = ["RE_CHAIN_CHAINSETTINGS_0"]
         client = MagicMock()
-        # Responses: validate, clear, merge, create, apply, angle_ramp
+        # Responses: validate, merge, clear, create, apply, angle_ramp
         client.execute_and_extract.side_effect = [
             ["OK"],
             ["{'FINISHED'}"],
@@ -485,13 +487,13 @@ class TestPhysicsChains:
         )
         assert result.success
         assert client.execute_and_extract.call_count == 6
-        # clear call is index 1; verify bone names appear in the code
-        clear_code = client.execute_and_extract.call_args_list[1][0][0]
+        # merge call is index 1; verify bone names appear in the code
+        merge_code = client.execute_and_extract.call_args_list[1][0][0]
+        assert "Ribbon_root" in merge_code
+        # clear call is index 2
+        clear_code = client.execute_and_extract.call_args_list[2][0][0]
         assert "Cage" in clear_code
         assert "clear_chain_role" in clear_code
-        # merge call is index 2
-        merge_code = client.execute_and_extract.call_args_list[2][0][0]
-        assert "Ribbon_root" in merge_code
 
     def test_bones_to_clear_without_merge(self):
         """bones_to_clear works without bones_to_merge."""

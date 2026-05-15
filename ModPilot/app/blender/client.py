@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import json
 import socket
+import tempfile
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Generator
 
 BLENDER_SENTINEL = "===MODPILOT_OUT==="
@@ -179,3 +181,26 @@ class BlenderClient:
     def get_object_info(self, object_name: str) -> dict:
         """Call the built-in get_object_info handler for a named object."""
         return self.call("get_object_info", {"object_name": object_name})
+
+    def get_viewport_screenshot(self, max_size: int = 800, format: str = "png") -> bytes:
+        """Capture the active 3D viewport and return the encoded image bytes.
+
+        The addon writes the image to a filepath we supply, then we read it
+        back and delete the temp file. The handler always responds with
+        status="success" — failures surface as result["error"], so we
+        translate that into BlenderError here to match the rest of the API.
+        """
+        with tempfile.NamedTemporaryFile(suffix=f".{format}", delete=False) as tf:
+            path = Path(tf.name)
+        try:
+            result = self.call(
+                "get_viewport_screenshot",
+                {"filepath": str(path), "max_size": max_size, "format": format},
+            )
+            err = result.get("error")
+            if err:
+                raise BlenderError(err)
+            return path.read_bytes()
+        finally:
+            if path.exists():
+                path.unlink()

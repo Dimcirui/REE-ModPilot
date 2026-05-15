@@ -19,6 +19,29 @@ _WORKFLOW_PATH = (
 )
 _WORKFLOW_TEXT: str = _WORKFLOW_PATH.read_text(encoding="utf-8")
 
+_WIDGET_PROTOCOL: str = (
+    "## Confirmation Widget Protocol (issue #7)\n"
+    "Two inspector tools surface their results to the user via structured UI "
+    "widgets instead of free-text Q&A. After they succeed, the next user message "
+    "arrives with a special prefix carrying the user's confirmed selections as "
+    "JSON. Do NOT re-ask the user for these values — parse the JSON and feed it "
+    "into the next phase tool call directly.\n"
+    "\n"
+    "- After `physics_classification` succeeds, the next user message is prefixed\n"
+    "  `[CONFIRMED_CLASSIFICATIONS]` followed by JSON like\n"
+    "  `{\"hair_001\": \"hair_long_straight\", \"skirt_002\": \"cloth_skirt_waist\"}`.\n"
+    "  Pass that dict as `chain_classifications` to `physics_chains`.\n"
+    "\n"
+    "- After `material_inspect` succeeds, the next user message is prefixed\n"
+    "  `[CONFIRMED_MATERIAL_MAPPING]` followed by JSON like\n"
+    "  `{\"matname\": {\"Base Color\": \"C:/path/to/diffuse.png\", \"Normal\": \"...\"}}`.\n"
+    "  Pass that dict as `texture_mapping` to `material_setup` (skip materials\n"
+    "  whose mapping is empty).\n"
+    "\n"
+    "If the prefix is absent, fall back to the legacy text-based confirmation flow."
+)
+
+
 _PHASE_HEADER_MAP: dict[str, str] = {
     "phase_1": "Phase 1: Pose Correction",
     "phase_2": "Phase 2: Skeleton Alignment",
@@ -71,7 +94,51 @@ def _extract_section(text: str, header_substring: str) -> str:
 # ── public builders ────────────────────────────────────────────────────────
 
 
-def build_system_prompt(physics_presets: dict | None = None) -> str:
+def _render_session_config_block(cfg: dict) -> str:
+    """Format the form-collected session config as a system-prompt section.
+
+    Listed values are the deterministic params the user provided up front via
+    the Stage 5 config form (issue #3). The LLM should pass them through to
+    phase tool calls instead of asking the user mid-run.
+    """
+    model_type = cfg.get("model_type", "")
+    if model_type == "MMD":
+        x_preset_hint = "Use x_preset='MMD' for Phase 1 pose_correction."
+    elif model_type == "VRChat":
+        x_preset_hint = "Use x_preset='VRChat' for Phase 1 pose_correction."
+    else:
+        x_preset_hint = (
+            "model_type is 'Other' — ask the user ONCE for the correct x_preset "
+            "(valid: MMD / VRChat / 终末地) before running Phase 1."
+        )
+
+    author = cfg.get("author", "")
+    character_name = cfg.get("character_name", "")
+    texture_base_path = f"{author}/{character_name}/" if author and character_name else ""
+
+    return (
+        "## Pre-collected session parameters\n"
+        "The user has provided the following deterministic parameters via the "
+        "session-config form. Do NOT ask the user for these values; pass them "
+        "through to phase tools as needed.\n"
+        "\n"
+        f"- model_path: {cfg.get('model_path', '')}\n"
+        f"- model_type: {model_type}  ({x_preset_hint})\n"
+        f"- texture_dir (for material_inspect): {cfg.get('texture_dir', '')}\n"
+        f"- mod_root (= natives_root for batch_export): {cfg.get('mod_root', '')}\n"
+        f"- author: {author}\n"
+        f"- character_name: {character_name}\n"
+        f"- texture_base_path (for material_generate): {texture_base_path}\n"
+        f"- use_bone_system (= mhws_use_bonesystem for batch_export): "
+        f"{cfg.get('use_bone_system', False)}\n"
+        f"- body_parts (= target_parts for batch_export): {cfg.get('body_parts', [])}\n"
+    )
+
+
+def build_system_prompt(
+    physics_presets: dict | None = None,
+    session_config: dict | None = None,
+) -> str:
     """
     Build the session-level system prompt (injected once at AgentLoop init).
 
@@ -84,6 +151,9 @@ def build_system_prompt(physics_presets: dict | None = None) -> str:
     as a reminder but is no longer the primary context source for later phases.
 
     physics_presets are appended inline when provided (E19).
+    session_config (issue #3) is appended as a final "Pre-collected parameters"
+    section so the LLM doesn't need to ask the user for paths / names / toggles
+    already supplied via the config form.
     """
     global_rules = _extract_section(_WORKFLOW_TEXT, "Global Behavior Rules")
     assessment_protocol = _extract_section(_WORKFLOW_TEXT, "Pipeline State Assessment Protocol")
@@ -108,6 +178,8 @@ def build_system_prompt(physics_presets: dict | None = None) -> str:
         # sees it before encountering any object/collection names from phase descriptions
         # that might prime history-based reasoning instead of fresh tool calls.
         assessment_protocol,
+        "",
+        _WIDGET_PROTOCOL,
         "",
         global_rules,
         "",
@@ -135,6 +207,9 @@ def build_system_prompt(physics_presets: dict | None = None) -> str:
             json.dumps(physics_presets, ensure_ascii=False, indent=2),
             "```",
         ]
+
+    if session_config:
+        parts += ["", _render_session_config_block(session_config)]
 
     return "\n".join(parts)
 

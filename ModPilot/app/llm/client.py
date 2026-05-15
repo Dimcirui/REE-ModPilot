@@ -1,9 +1,10 @@
 """
 Provider-agnostic LLM client (design decision C10).
 
-Supports two backends:
-  - "anthropic"        → AnthropicProvider  (Claude Sonnet / Haiku)
-  - "openai_compatible" → OpenAIProvider    (DeepSeek V4, Qwen, etc.)
+Supports three backends:
+  - "anthropic"         → AnthropicProvider  (Claude Sonnet / Haiku)
+  - "openai_compatible" → OpenAIProvider     (DeepSeek V4 direct, Qwen, etc.)
+  - "ollama"            → OllamaProvider     (Ollama Cloud / local Ollama)
 
 Callers import LLMClient and call chat() — provider routing is transparent.
 
@@ -20,7 +21,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Any
-
 
 # ── shared types ───────────────────────────────────────────────────────────
 
@@ -108,7 +108,7 @@ class LLMClient:
         self._provider = provider
 
     @classmethod
-    def from_settings(cls) -> "LLMClient":
+    def from_settings(cls) -> LLMClient:
         """
         Build an LLMClient from app.config.settings.
         Import is deferred so unit tests can construct providers without
@@ -116,6 +116,7 @@ class LLMClient:
         """
         from app.config import settings
         from app.llm.anthropic_provider import AnthropicProvider
+        from app.llm.ollama_provider import OllamaProvider
         from app.llm.openai_provider import OpenAIProvider
 
         if settings.llm_provider == "anthropic":
@@ -132,10 +133,18 @@ class LLMClient:
                 model=settings.llm_model,
                 base_url=settings.llm_base_url,
             )
+        elif settings.llm_provider == "ollama":
+            # base_url is optional — leave empty for Ollama Cloud (https://ollama.com),
+            # or set to http://localhost:11434 for a local Ollama daemon.
+            provider = OllamaProvider(
+                api_key=settings.llm_api_key,
+                model=settings.llm_model,
+                base_url=settings.llm_base_url or None,
+            )
         else:
             raise ValueError(
                 f"Unknown LLM_PROVIDER={settings.llm_provider!r}. "
-                "Expected 'anthropic' or 'openai_compatible'."
+                "Expected 'anthropic', 'openai_compatible', or 'ollama'."
             )
         return cls(provider)
 
