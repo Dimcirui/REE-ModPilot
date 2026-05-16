@@ -1,8 +1,11 @@
 // ModPilot chat — SSE event dispatcher and DOM updater.
 //
-// The htmx sse extension fires `htmx:sseMessage` for every server-sent event,
-// with the SSE `event:` field on `evt.detail.type`. We dispatch by type and
-// mutate the DOM directly — no template fragments come back over the wire.
+// htmx-ext-sse only registers EventSource listeners for event types listed in
+// sse-swap attributes, so `htmx:sseMessage` never fires for custom types like
+// `message`, `state`, `done`, etc. Instead we listen for `htmx:sseOpen` to
+// get the underlying EventSource and register native listeners for each type
+// in `dispatchers`. The sse-swap slots (error_choice, widget_*) still work
+// via htmx as before — we don't add duplicate listeners for those types.
 
 (() => {
   const log     = () => document.getElementById("log");
@@ -130,18 +133,23 @@
     },
   };
 
-  document.body.addEventListener("htmx:sseMessage", (ev) => {
-    const sseType = ev.detail.type;
-    const fn = dispatchers[sseType];
-    if (!fn) return;
-    let payload;
-    try {
-      payload = JSON.parse(ev.detail.data);
-    } catch (err) {
-      console.warn("ModPilot: malformed SSE payload", ev.detail.data, err);
-      return;
+  // When the SSE connection opens, register a native listener for each event
+  // type in dispatchers directly on the EventSource. This bypasses htmx-ext-sse's
+  // limitation of only dispatching events that have sse-swap targets.
+  document.body.addEventListener("htmx:sseOpen", (ev) => {
+    const source = ev.detail.source;
+    for (const [type, fn] of Object.entries(dispatchers)) {
+      source.addEventListener(type, (event) => {
+        let payload;
+        try {
+          payload = JSON.parse(event.data);
+        } catch (err) {
+          console.warn("ModPilot: malformed SSE payload", event.data, err);
+          return;
+        }
+        fn(payload);
+      });
     }
-    fn(payload);
   });
 
   // Optimistic user bubble + disable the input while a turn is in flight.
