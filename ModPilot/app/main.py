@@ -302,8 +302,13 @@ def _get_or_create_session(session_id: str, *, with_sink: bool) -> AgentLoop:
     event_sink = None
     if with_sink:
         streams: dict[str, asyncio.Queue] = app.state.agent_streams
-        queue: asyncio.Queue = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
-        streams[session_id] = queue
+        # Reuse the queue created by GET /agent/stream if SSE connected first;
+        # only allocate a new one when no subscriber exists yet. Creating a new
+        # queue here would overwrite the reference that the SSE generator's
+        # closure already holds, silently dropping all events.
+        if session_id not in streams:
+            streams[session_id] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
+        queue: asyncio.Queue = streams[session_id]
         event_sink = _make_sink(queue, asyncio.get_running_loop())
 
     cfg: SessionConfig | None = app.state.session_configs.get(session_id)
