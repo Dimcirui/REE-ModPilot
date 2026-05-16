@@ -1,11 +1,12 @@
 // ModPilot chat — SSE event dispatcher and DOM updater.
 //
-// htmx-ext-sse only registers EventSource listeners for event types listed in
-// sse-swap attributes, so `htmx:sseMessage` never fires for custom types like
-// `message`, `state`, `done`, etc. Instead we listen for `htmx:sseOpen` to
-// get the underlying EventSource and register native listeners for each type
-// in `dispatchers`. The sse-swap slots (error_choice, widget_*) still work
-// via htmx as before — we don't add duplicate listeners for those types.
+// We open the SSE stream ourselves with a native EventSource rather than
+// htmx-ext-sse. htmx-ext-sse only registers EventSource listeners for event
+// types listed in sse-swap attributes, so custom types (message, state, done,
+// etc.) would never fire. By owning the EventSource directly we register a
+// listener for each type in `dispatchers`, and we inject HTML fragment events
+// (error_choice, widget_*) manually then call htmx.process() to activate any
+// htmx attributes on the new content.
 
 (() => {
   const log     = () => document.getElementById("log");
@@ -133,11 +134,38 @@
     },
   };
 
-  // When the SSE connection opens, register a native listener for each event
-  // type in dispatchers directly on the EventSource. This bypasses htmx-ext-sse's
-  // limitation of only dispatching events that have sse-swap targets.
-  document.body.addEventListener("htmx:sseOpen", (ev) => {
-    const source = ev.detail.source;
+  // HTML-fragment events: server sends raw HTML, not JSON. We inject it into
+  // the appropriate slot and call htmx.process() so that any hx-post / hx-ext
+  // attributes on the new content are activated by htmx's core.
+  const htmlFragmentHandlers = {
+    error_choice: (html) => {
+      const slot = document.getElementById("error-choice-slot");
+      if (!slot) return;
+      slot.innerHTML = html;
+      htmx.process(slot);
+    },
+    widget_classification: (html) => {
+      const slot = document.getElementById("widget-slot");
+      if (!slot) return;
+      slot.innerHTML = html;
+      htmx.process(slot);
+    },
+    widget_material: (html) => {
+      const slot = document.getElementById("widget-slot");
+      if (!slot) return;
+      slot.innerHTML = html;
+      htmx.process(slot);
+    },
+  };
+
+  // Open a native EventSource so we own every event type, not just those
+  // listed in sse-swap attributes. htmx-ext-sse is no longer used.
+  window.addEventListener("DOMContentLoaded", () => {
+    const sessionId = document.body.dataset.sessionId;
+    if (!sessionId) return;
+
+    const source = new EventSource(`/agent/stream/${sessionId}`);
+
     for (const [type, fn] of Object.entries(dispatchers)) {
       source.addEventListener(type, (event) => {
         let payload;
@@ -150,6 +178,15 @@
         fn(payload);
       });
     }
+
+    for (const [type, fn] of Object.entries(htmlFragmentHandlers)) {
+      source.addEventListener(type, (event) => fn(event.data));
+    }
+
+    source.onerror = (ev) => {
+      console.warn("ModPilot: SSE error", ev);
+      setStatus("disconnected", "error");
+    };
   });
 
   // Optimistic user bubble + disable the input while a turn is in flight.
@@ -213,11 +250,8 @@
     }
   });
 
-  // Surface SSE-side connection issues.
-  document.body.addEventListener("htmx:sseError", (ev) => {
-    console.warn("ModPilot: SSE error", ev.detail);
-    setStatus("disconnected", "error");
-  });
+  // SSE error handling is done in source.onerror inside the DOMContentLoaded
+  // handler above — no htmx:sseError listener needed.
 
   // ── Session config form (issue #3) ──────────────────────────────────────
   //
