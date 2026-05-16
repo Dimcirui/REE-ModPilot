@@ -80,11 +80,8 @@ Items here block MVP shipping. All must reach 🟢 before MVP acceptance (L3, [d
 
 ### Stage 5 — frontend (htmx)
 
-- ⚪ Jinja2 base template + static `htmx.min.js`
-- ⚪ Phase progress sidebar (live updates via `hx-swap`)
-- ⚪ Chat UI with SSE streaming
-- ⚪ Error response UI: retry / skip / help buttons (B7)
-- ⚪ Blender viewport screenshot side-panel (`hx-trigger` periodic refresh)
+- ⚪ MVP frontend — htmx chat UI: Jinja2 template + SSE streaming + phase progress indicator ([#1](https://github.com/Dimcirui/REE-ModPilot/issues/1))
+- ⚪ MVP frontend — error handling button group: retry / skip / ask via SSE `error_choice` event ([#2](https://github.com/Dimcirui/REE-ModPilot/issues/2))
 
 ### Stage MVP — verification
 
@@ -96,6 +93,8 @@ Items here block MVP shipping. All must reach 🟢 before MVP acceptance (L3, [d
 
 ## P1 — Important but not MVP-blocking
 
+- ⚪ Full frontend — session config form: pre-run parameter collection (source model, mod root, author/character name, export settings) ([#3](https://github.com/Dimcirui/REE-ModPilot/issues/3))
+- ⚪ Full frontend — interactive confirmation widgets: Phase 4A bone classification table + Phase 5 material mapping table ([#7](https://github.com/Dimcirui/REE-ModPilot/issues/7))
 - ⚪ DeepSeek V4 vs Sonnet 4.6 small A/B eval on key phase classifications (X preset choice, physics route, PBR mapping)
 - ⚪ Prompt-cache hit-rate observability (log + simple endpoint)
 - ⚪ Single-page user-facing landing copy (avoid listing prereqs explicitly per A2)
@@ -111,6 +110,9 @@ Items here block MVP shipping. All must reach 🟢 before MVP acceptance (L3, [d
 - ⚪ RE9 game support (sync child orientation phase, test pipeline)
 - ⚪ Per-game advanced tools from video 7
 - ⚪ Additional source-model presets (Unity Humanoid generic, more VRC variants)
+- ⚪ Source model type auto-detection via toolkit preset bone mapping coverage ([#4](https://github.com/Dimcirui/REE-ModPilot/issues/4))
+- ⚪ Auto-supplement existing preset for low-coverage models (MMD variants, Humanoid) ([#5](https://github.com/Dimcirui/REE-ModPilot/issues/5))
+- ⚪ Create new input preset via toolkit preset editor when no match found ([#6](https://github.com/Dimcirui/REE-ModPilot/issues/6))
 - ⚪ **Phase transition protocol** — add explicit inter-phase consultation behavior.
   Current gap: after a phase tool returns success, the loop immediately re-enters
   `RUNNING_PHASE` with no architectural guarantee of a pause. The LLM may call the
