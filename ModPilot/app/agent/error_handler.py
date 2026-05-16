@@ -125,6 +125,7 @@ def _keyword_fallback(reply: str) -> Choice:
         return "skip"
     if any(kw in lower for kw in ("ask", "explain", "why", "为什么", "问", "help",
                                    "detail", "具体", "告诉我", "详细", "错误",
-                                   "出错", "失败", "原因", "哪里", "怎么", "什么情况")):
+                                   "出错", "失败", "原因", "哪里", "怎么", "什么情况",
+                                   "查看详情", "详情")):
         return "ask"
     return "unknown"

@@ -44,6 +44,13 @@ uv run pytest -m integration                         # integration tests (Blende
 uv run pytest tests/unit/test_blender_client.py -v   # single file
 uv run pytest -k "test_recv_response"                # match by name
 
+# Playwright browser smokes (opt-in — not pytest-collected; standalone scripts)
+# One-time: uv add --dev playwright && uv run playwright install chromium
+# Server must be running on 8000 first (LLM_API_KEY=dummy LLM_BASE_URL=... uv run uvicorn ...)
+uv run python tests/e2e/error_choice_ui.py           # issue #2 — 3-button error-choice UI
+uv run python tests/e2e/session_config_form.py       # issue #3 — session-config form
+uv run python tests/e2e/widget_classification_ui.py  # issue #7 — physics classification widget
+
 # Stage scripts (top-level, not inside pytest)
 uv run python ../verify_blender_mcp.py
 uv run python ../verify_mvp.py

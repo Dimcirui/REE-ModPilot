@@ -1,0 +1,40 @@
+<form class="widget-form classification"
+      hx-ext="json-enc"
+      hx-post="/agent/widget/classification"
+      hx-swap="none">
+  <header class="widget-header">
+    <h3>Confirm physics chain classifications</h3>
+    <span class="widget-hint">Pick the closest physics preset for each chain head. Submission feeds Phase 4B parameters.</span>
+  </header>
+  <table class="widget-table">
+    <thead>
+      <tr>
+        <th>Chain head</th>
+        <th>Role</th>
+        <th>Depth</th>
+        <th>Inferred type</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for ch in chains %}
+      <tr>
+        <td class="bone-name">{{ ch.name }}</td>
+        <td class="bone-role">{{ ch.role }}</td>
+        <td class="bone-depth">{{ ch.depth }}</td>
+        <td>
+          <select name="type__{{ ch.name }}" required>
+            <option value="">—</option>
+            {% for t in inferred_types %}
+            <option value="{{ t }}">{{ t }}</option>
+            {% endfor %}
+          </select>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <input type="hidden" name="session_id" value="{{ session_id }}">
+  <div class="widget-actions">
+    <button type="submit" class="widget-submit">Confirm classifications</button>
+  </div>
+</form>

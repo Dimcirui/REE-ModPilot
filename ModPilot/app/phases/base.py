@@ -21,6 +21,7 @@ exec receives the decoded Unicode string unchanged.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,10 +30,52 @@ from app.blender.state import SceneCache, SceneState
 
 # ── valid preset identifiers ───────────────────────────────────────────────
 
-#: Source-model X presets available in assets/presets/import/
-X_PRESETS: frozenset[str] = frozenset({"MMD", "VRChat", "终末地"})
+#: Source-model X presets currently available in the toolkit's
+#: `assets/presets/import/` folder. Mutable so the FastAPI lifespan
+#: handler can replace the contents with the actual enumeration at
+#: startup, and so Waves 3-4 (issues #5 / #6) can add user-supplemented
+#: or user-created presets without a server restart.
+#:
+#: Default contents are the 13 X-preset names shipped with Modding-Toolkit
+#: so unit tests that don't go through the lifespan still see a populated
+#: set, and so server boot is non-fatal when Blender isn't reachable.
+#:
+#: Phase tools should `from app.phases.base import X_PRESETS` and read it
+#: as a set. Do not rebind — mutate in place via `update_x_presets()` so
+#: existing module-level references stay valid.
+X_PRESETS: set[str] = {
+    "MMD",
+    "VRChat",
+    "Valve社",
+    "怪猎世界",
+    "怪猎崛起",
+    "怪猎荒野",
+    "生化危机4",
+    "生化危机9",
+    "碧蓝幻想",
+    "终末地",
+    "绝地潜兵2",
+    "赛马娘",
+    "鬼泣5",
+}
 
-#: Target-game Y presets available in assets/presets/bone/ (MVP: MHWs only)
+
+def update_x_presets(names: Iterable[str]) -> None:
+    """Replace X_PRESETS contents in place. Used by the FastAPI lifespan
+    handler to seed the runtime set from the live toolkit folder, and by
+    Waves 3 / 4 to register newly-created presets."""
+    X_PRESETS.clear()
+    X_PRESETS.update(names)
+
+
+def add_x_preset(name: str) -> None:
+    """Register one newly-created preset (Waves 3 / 4)."""
+    X_PRESETS.add(name)
+
+
+#: Target-game Y presets available in assets/presets/bone/ (MVP: MHWs only).
+#: Kept frozen for now — issues #4/#5/#6 are X-preset-only; Y is single-target
+#: until post-MVP per design.md A4.
 Y_PRESETS: frozenset[str] = frozenset({"怪猎荒野"})
 
 #: Default Y preset for MHWs — the only MVP target game

@@ -26,10 +26,10 @@ from app.phases.query_tools import (
     ListCollections,
     ListMdfPresets,
     ListObjects,
+    PhysicsRead,
     QueryTool,
     SceneInfo,
 )
-
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -52,13 +52,13 @@ def _make_scene_client(info: dict) -> MagicMock:
 _ALL_TOOLS = [
     SceneInfo(), ListObjects(), GetBoneInfo(), ListCollections(),
     GetMeshInfo(), GetMaterialInfo(), GetObjectProps(), InspectMaterialNodes(),
-    ListMdfPresets(),
+    ListMdfPresets(), PhysicsRead(),
 ]
 
 _ALL_TOOL_NAMES = {
     "scene_info", "list_objects", "get_bone_info", "list_collections",
     "get_mesh_info", "get_material_info", "get_object_props",
-    "inspect_material_nodes", "list_mdf_presets",
+    "inspect_material_nodes", "list_mdf_presets", "physics_read",
 }
 
 

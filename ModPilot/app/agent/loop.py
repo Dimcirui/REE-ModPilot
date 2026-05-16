@@ -34,6 +34,8 @@ import asyncio
 import enum
 import json
 import re
+import time
+from collections.abc import Callable
 from typing import Any
 
 # DeepSeek-specific markup patterns.
@@ -127,6 +129,7 @@ from app.phases.query_tools import QueryTool
 
 _PHASE_SEQUENCE: list[str] = [
     "setup_validate",   # SetupValidateScene
+    "setup_infer",      # InferModelType (issue #4 — auto-detect source model preset)
     "setup_import",     # SetupImportMHWilds
     "phase_1",
     "phase_2",
@@ -178,11 +181,15 @@ class AgentLoop:
         llm: LLMClient,
         blender: BlenderClient,
         physics_presets: dict | None = None,
+        event_sink: Callable[[dict], None] | None = None,
+        session_config: dict | None = None,
     ) -> None:
         self._llm = llm
         self._blender = blender
         self._cache = SceneCache(blender)
         self._error_handler = ErrorHandler()
+        self._event_sink = event_sink
+        self._session_config = session_config or {}
 
         self._phase_tools: dict[str, PhaseTool] = {}
         self._register_available_phases()
@@ -198,7 +205,25 @@ class AgentLoop:
         self._global_history: list[Message] = []
         self._phase_history: list[Message] = []
 
-        self._system_prompt = build_system_prompt(physics_presets)
+        self._system_prompt = build_system_prompt(physics_presets, session_config)
+
+    def _emit(self, event_type: str, **payload: Any) -> None:
+        """Publish one structured event to the sink, if any.
+
+        The sink must be thread-safe — emits may originate from threadpool
+        workers when tools run via asyncio.to_thread. Sink installers in the
+        route layer wrap a queue.put with loop.call_soon_threadsafe.
+        """
+        if self._event_sink is None:
+            return
+        evt: dict[str, Any] = {
+            "type": event_type,
+            "ts": time.time(),
+            "phase": self.current_phase,
+            "state": self.state.value,
+            **payload,
+        }
+        self._event_sink(evt)
 
     # ── public ────────────────────────────────────────────────────────────
 
@@ -211,8 +236,10 @@ class AgentLoop:
     async def step(self, user_message: str) -> str:
         """Process one user turn. Returns the agent reply string."""
         self._global_history.append({"role": "user", "content": user_message})
+        self._emit("message", role="user", content=user_message)
         reply = await self._dispatch(user_message)
         self._global_history.append({"role": "assistant", "content": reply})
+        self._emit("message", role="assistant", content=reply)
         return reply
 
     # ── dispatch ──────────────────────────────────────────────────────────
@@ -221,6 +248,14 @@ class AgentLoop:
         match self.state:
             case LoopState.IDLE:
                 self.state = LoopState.RUNNING_PHASE
+                self._emit("state", state=self.state.value)
+                if self.current_phase is not None:
+                    self._emit(
+                        "phase_started",
+                        phase=self.current_phase,
+                        index=self._phase_idx,
+                        total=len(_PHASE_SEQUENCE),
+                    )
                 return await self._run_react_turn()
             case LoopState.RUNNING_PHASE:
                 return await self._run_react_turn()
@@ -307,6 +342,7 @@ class AgentLoop:
                     or '"requires_user_review":true' in content
                 ):
                     self.state = LoopState.AWAIT_CONFIRM
+                    self._emit("state", state=self.state.value)
                 return content
 
             # Append assistant message with tool_use blocks
@@ -378,13 +414,29 @@ class AgentLoop:
         tool_name = tc["name"]
         params = tc.get("input", {})
 
+        self._emit("tool_call", id=tc.get("id"), name=tool_name, input=params)
+
         tool = self._phase_tools.get(tool_name)
         if tool is None:
+            self._emit(
+                "tool_result",
+                id=tc.get("id"),
+                name=tool_name,
+                success=False,
+                summary=f"Tool '{tool_name}' is not available.",
+            )
             return f"Tool '{tool_name}' is not available.", None
 
         # Query tools: read-only, no phase advancement
         if isinstance(tool, QueryTool):
             result_str = await asyncio.to_thread(tool.run, self._blender, params)
+            self._emit(
+                "tool_result",
+                id=tc.get("id"),
+                name=tool_name,
+                success=True,
+                summary=result_str[:500],
+            )
             return result_str, None
 
         # Phase tools: execute, advance state on success
@@ -401,26 +453,116 @@ class AgentLoop:
             if tool.advances_phase:
                 completed = _PHASE_SEQUENCE[self._phase_idx]
                 self._phase_idx += 1
-                self._on_phase_advance()
+                self._emit(
+                    "tool_result",
+                    id=tc.get("id"),
+                    name=tool_name,
+                    success=True,
+                    summary=f"Phase {completed} completed. {diff}",
+                )
+                self._emit_widget_if_inspector(tool_name, result.state_diff)
+                self._on_phase_advance(completed_phase=completed)
                 return f"Phase {completed} completed. Scene diff: {diff}", None
             else:
+                self._emit(
+                    "tool_result",
+                    id=tc.get("id"),
+                    name=tool_name,
+                    success=True,
+                    summary=f"sub-step ok: {diff}",
+                )
+                self._emit_widget_if_inspector(tool_name, result.state_diff)
                 return f"Tool {tool_name} succeeded (sub-step, phase not advanced). Result: {diff}", None
         else:
             self._pending_error = result.error
             self.state = LoopState.ERROR_HANDLING
+            self._emit("state", state=self.state.value)
+            self._emit(
+                "tool_result",
+                id=tc.get("id"),
+                name=tool_name,
+                success=False,
+                summary=result.error.message,
+            )
+            self._emit(
+                "error_choice",
+                operator=result.error.operator,
+                category=result.error.category,
+                message=result.error.message,
+                summary=result.error.message[:120],
+            )
             error_reply = await asyncio.to_thread(
                 self._error_handler.format, result.error, self._llm
             )
             return f"Phase failed: {result.error.message}", error_reply
 
-    def _on_phase_advance(self) -> None:
+    def _emit_widget_if_inspector(self, tool_name: str, state_diff: dict | None) -> None:
+        """Emit a widget event for tools whose result needs user confirmation.
+
+        Issue #7: physics_classification's chain_topology and material_inspect's
+        materials+texture_files+existing_connections feed structured editable
+        UI widgets instead of free-text Q&A. The next user message arrives
+        prefixed `[CONFIRMED_CLASSIFICATIONS]` / `[CONFIRMED_MATERIAL_MAPPING]`
+        carrying the user's selections as JSON.
+        """
+        if not state_diff:
+            return
+        if tool_name == "physics_classification":
+            chain_topology = state_diff.get("chain_topology") or {}
+            chains = chain_topology.get("chain_heads") or []
+            if chains:
+                self._emit("widget_classification", chains=chains)
+        elif tool_name == "material_inspect":
+            materials = state_diff.get("materials") or []
+            if materials:
+                self._emit(
+                    "widget_material",
+                    materials=materials,
+                    existing_connections=state_diff.get("existing_connections") or {},
+                    texture_files=state_diff.get("texture_files") or [],
+                )
+        elif tool_name == "setup_infer_model_type":
+            # Issue #4: surface the inference outcome to the form's
+            # `model_type` dropdown via SSE so the user can either accept the
+            # auto-pick or override before the pipeline continues. Waves 3/4
+            # (issues #5/#6) hook the non-exact decisions into widget flows;
+            # for now we emit the same event for every decision and let the
+            # frontend / LLM handle the next step.
+            preset = state_diff.get("inferred_preset")
+            decision = state_diff.get("decision")
+            if preset and decision:
+                self._emit(
+                    "model_type_inferred",
+                    preset=preset,
+                    coverage=state_diff.get("coverage", 0.0),
+                    decision=decision,
+                    candidates=state_diff.get("candidates") or [],
+                    uncovered_slots=state_diff.get("uncovered_slots") or [],
+                )
+
+    def _on_phase_advance(self, completed_phase: str | None = None) -> None:
         """Update state after a phase completes successfully."""
+        if completed_phase is not None:
+            self._emit(
+                "phase_completed",
+                phase=completed_phase,
+                index=self._phase_idx - 1,
+                total=len(_PHASE_SEQUENCE),
+            )
         if self._phase_idx >= len(_PHASE_SEQUENCE):
             self.state = LoopState.DONE
+            self._emit("state", state=self.state.value)
             return
         next_phase = _PHASE_SEQUENCE[self._phase_idx]
+        self._emit(
+            "phase_started",
+            phase=next_phase,
+            index=self._phase_idx,
+            total=len(_PHASE_SEQUENCE),
+        )
         if next_phase in _NEGOTIATING_PHASES:
             self.state = LoopState.NEGOTIATING
+            self._emit("state", state=self.state.value)
             self._phase_history = []
 
     # ── NEGOTIATING turn (phases 4+) ──────────────────────────────────────
@@ -461,6 +603,7 @@ class AgentLoop:
         # Detect structured proposal from LLM (propose_and_confirm protocol)
         if '"requires_user_review": true' in reply or '"requires_user_review":true' in reply:
             self.state = LoopState.AWAIT_CONFIRM
+            self._emit("state", state=self.state.value)
 
         return reply
 
@@ -644,6 +787,8 @@ class AgentLoop:
             PhysicsRead,
             SceneInfo,
         )
+        from app.phases.infer_model_type import InferModelType
+        from app.phases.preset_write import PresetCustomWrite, PresetSupplementWrite
         from app.phases.setup import SetupImportMHWilds, SetupValidateScene
         from app.phases.skeleton_align import SkeletonAlign
         from app.phases.vertex_groups import VertexGroups
@@ -651,6 +796,9 @@ class AgentLoop:
         for tool in (
             # Phase tools (advance _phase_idx on success)
             SetupValidateScene(),
+            InferModelType(),
+            PresetSupplementWrite(),  # issue #5 — write _extended.json after user confirm
+            PresetCustomWrite(),      # issue #6 — write _custom.json after user confirm
             SetupImportMHWilds(),
             PoseCorrection(),
             SkeletonAlign(),

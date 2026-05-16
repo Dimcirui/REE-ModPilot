@@ -18,13 +18,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.phases.base import PhaseResult
 from app.phases.batch_export import (
     DEFAULT_ARMOR_SCHEME,
     PART_NAMES,
     BatchExport,
 )
-from app.phases.base import PhaseResult
-
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -41,6 +40,28 @@ def _make_cache() -> MagicMock:
     state.diff.return_value = {}
     cache.refresh.return_value = state
     return cache
+
+
+# Step order inside BatchExport.run is:
+#   1. _validate_scene       → expects ["OK"]
+#   2. _run_mesh_cleanup     → expects ["<json>"] (non-fatal; try/except)
+#   3. _configure_scene      → expects ["CONFIGURED"]
+#   4. _run_export           → expects ["{'FINISHED'}"] (or CANCELLED / EXCEPTION:)
+#
+# CONFIGURE_CALL_INDEX is the position of the configure_scene call in
+# client.execute_and_extract.call_args_list — 0-indexed, after validate (0)
+# and mesh_cleanup (1).
+CONFIGURE_CALL_INDEX = 2
+
+
+def _full_flow_side_effect(*, export_line: str = "{'FINISHED'}") -> list[list[str]]:
+    """Mock side_effect for the full success flow (4 sequential calls)."""
+    return [
+        ["OK"],                       # _validate_scene
+        ['{"warnings": {}}'],         # _run_mesh_cleanup (non-fatal try/except)
+        ["CONFIGURED"],               # _configure_scene
+        [export_line],                # _run_export
+    ]
 
 
 def _valid_params(**overrides) -> dict:
@@ -174,11 +195,7 @@ class TestParamValidation:
     def test_all_valid_variants_accepted(self):
         for variant in ("ff", "fm", "mf", "mm"):
             client = MagicMock()
-            client.execute_and_extract.side_effect = [
-                ["OK"],
-                ["CONFIGURED"],
-                ["{'FINISHED'}"],
-            ]
+            client.execute_and_extract.side_effect = _full_flow_side_effect()
             result = self.tool.run(
                 client,
                 _make_cache(),
@@ -189,11 +206,7 @@ class TestParamValidation:
     def test_all_valid_parts_accepted_individually(self):
         for part in ("1", "2", "3", "4", "5"):
             client = MagicMock()
-            client.execute_and_extract.side_effect = [
-                ["OK"],
-                ["CONFIGURED"],
-                ["{'FINISHED'}"],
-            ]
+            client.execute_and_extract.side_effect = _full_flow_side_effect()
             result = self.tool.run(
                 client,
                 _make_cache(),
@@ -211,11 +224,7 @@ class TestValidateScene:
 
     def test_ok_response_continues(self):
         client = MagicMock()
-        client.execute_and_extract.side_effect = [
-            ["OK"],
-            ["CONFIGURED"],
-            ["{'FINISHED'}"],
-        ]
+        client.execute_and_extract.side_effect = _full_flow_side_effect()
         result = self.tool.run(client, _make_cache(), _valid_params())
         assert result.success
 
@@ -248,19 +257,16 @@ class TestConfigureScene:
 
     def test_configured_response_continues(self):
         client = MagicMock()
-        client.execute_and_extract.side_effect = [
-            ["OK"],
-            ["CONFIGURED"],
-            ["{'FINISHED'}"],
-        ]
+        client.execute_and_extract.side_effect = _full_flow_side_effect()
         result = self.tool.run(client, _make_cache(), _valid_params())
         assert result.success
 
     def test_unexpected_configure_output_fails(self):
         client = MagicMock()
         client.execute_and_extract.side_effect = [
-            ["OK"],
-            [],  # empty configure response
+            ["OK"],                       # validate
+            ['{"warnings": {}}'],         # mesh_cleanup
+            [],                           # configure: empty response
         ]
         result = self.tool.run(client, _make_cache(), _valid_params())
         assert not result.success
@@ -268,71 +274,47 @@ class TestConfigureScene:
 
     def test_configure_code_contains_binding_keys(self):
         client = MagicMock()
-        client.execute_and_extract.side_effect = [
-            ["OK"],
-            ["CONFIGURED"],
-            ["{'FINISHED'}"],
-        ]
+        client.execute_and_extract.side_effect = _full_flow_side_effect()
         self.tool.run(client, _make_cache(), _valid_params(armor_id="pl001", target_parts=["2"]))
-        configure_call = client.execute_and_extract.call_args_list[1][0][0]
+        configure_call = client.execute_and_extract.call_args_list[CONFIGURE_CALL_INDEX][0][0]
         assert "mhws_pl001_2_mesh" in configure_call
         assert "mhws_pl001_2_mdf2" in configure_call
         assert "mhws_pl001_2_chain2" in configure_call
 
     def test_configure_code_clears_all_5_parts(self):
         client = MagicMock()
-        client.execute_and_extract.side_effect = [
-            ["OK"],
-            ["CONFIGURED"],
-            ["{'FINISHED'}"],
-        ]
+        client.execute_and_extract.side_effect = _full_flow_side_effect()
         self.tool.run(client, _make_cache(), _valid_params(armor_id="pl001", target_parts=["1"]))
-        configure_call = client.execute_and_extract.call_args_list[1][0][0]
+        configure_call = client.execute_and_extract.call_args_list[CONFIGURE_CALL_INDEX][0][0]
         for part in ("1", "2", "3", "4", "5"):
             assert f"mhws_pl001_{part}_mesh" in configure_call
 
     def test_configure_uses_default_armor_scheme_when_not_specified(self):
         client = MagicMock()
-        client.execute_and_extract.side_effect = [
-            ["OK"],
-            ["CONFIGURED"],
-            ["{'FINISHED'}"],
-        ]
+        client.execute_and_extract.side_effect = _full_flow_side_effect()
         self.tool.run(client, _make_cache(), _valid_params())
-        configure_call = client.execute_and_extract.call_args_list[1][0][0]
+        configure_call = client.execute_and_extract.call_args_list[CONFIGURE_CALL_INDEX][0][0]
         assert DEFAULT_ARMOR_SCHEME in configure_call
 
     def test_configure_sets_bonesystem_true(self):
         client = MagicMock()
-        client.execute_and_extract.side_effect = [
-            ["OK"],
-            ["CONFIGURED"],
-            ["{'FINISHED'}"],
-        ]
+        client.execute_and_extract.side_effect = _full_flow_side_effect()
         self.tool.run(client, _make_cache(), _valid_params())
-        configure_call = client.execute_and_extract.call_args_list[1][0][0]
+        configure_call = client.execute_and_extract.call_args_list[CONFIGURE_CALL_INDEX][0][0]
         assert "mhws_use_bonesystem = True" in configure_call
 
     def test_configure_sets_fbxskel_name(self):
         client = MagicMock()
-        client.execute_and_extract.side_effect = [
-            ["OK"],
-            ["CONFIGURED"],
-            ["{'FINISHED'}"],
-        ]
+        client.execute_and_extract.side_effect = _full_flow_side_effect()
         self.tool.run(client, _make_cache(), _valid_params(fbxskel_name="ch03_000_9000"))
-        configure_call = client.execute_and_extract.call_args_list[1][0][0]
+        configure_call = client.execute_and_extract.call_args_list[CONFIGURE_CALL_INDEX][0][0]
         assert "ch03_000_9000" in configure_call
 
     def test_configure_does_not_bind_unselected_parts(self):
         client = MagicMock()
-        client.execute_and_extract.side_effect = [
-            ["OK"],
-            ["CONFIGURED"],
-            ["{'FINISHED'}"],
-        ]
+        client.execute_and_extract.side_effect = _full_flow_side_effect()
         self.tool.run(client, _make_cache(), _valid_params(target_parts=["2"]))
-        configure_call = client.execute_and_extract.call_args_list[1][0][0]
+        configure_call = client.execute_and_extract.call_args_list[CONFIGURE_CALL_INDEX][0][0]
         # Part 1 (Arms) should not be bound, only cleared
         # A binding assignment looks like: scene['mhws_pl001_1_mesh'] = '...'
         # We just verify part 2 IS bound and the logic is consistent
@@ -350,21 +332,15 @@ class TestRunExport:
 
     def test_finished_returns_ok(self):
         client = MagicMock()
-        client.execute_and_extract.side_effect = [
-            ["OK"],
-            ["CONFIGURED"],
-            ["{'FINISHED'}"],
-        ]
+        client.execute_and_extract.side_effect = _full_flow_side_effect()
         result = self.tool.run(client, _make_cache(), _valid_params())
         assert result.success
 
     def test_exception_in_export_fails(self):
         client = MagicMock()
-        client.execute_and_extract.side_effect = [
-            ["OK"],
-            ["CONFIGURED"],
-            ["EXCEPTION:missing RE Mesh Editor"],
-        ]
+        client.execute_and_extract.side_effect = _full_flow_side_effect(
+            export_line="EXCEPTION:missing RE Mesh Editor",
+        )
         result = self.tool.run(client, _make_cache(), _valid_params())
         assert not result.success
         assert result.error.category == "unexpected"
@@ -372,11 +348,9 @@ class TestRunExport:
 
     def test_cancelled_export_fails(self):
         client = MagicMock()
-        client.execute_and_extract.side_effect = [
-            ["OK"],
-            ["CONFIGURED"],
-            ["{'CANCELLED'}"],
-        ]
+        client.execute_and_extract.side_effect = _full_flow_side_effect(
+            export_line="{'CANCELLED'}",
+        )
         result = self.tool.run(client, _make_cache(), _valid_params())
         assert not result.success
         assert result.error.category == "operator_failed"
@@ -384,9 +358,10 @@ class TestRunExport:
     def test_empty_export_output_fails(self):
         client = MagicMock()
         client.execute_and_extract.side_effect = [
-            ["OK"],
-            ["CONFIGURED"],
-            [],
+            ["OK"],                       # validate
+            ['{"warnings": {}}'],         # mesh_cleanup
+            ["CONFIGURED"],               # configure
+            [],                           # export: empty
         ]
         result = self.tool.run(client, _make_cache(), _valid_params())
         assert not result.success
@@ -402,12 +377,9 @@ class TestStateDiff:
 
     def _run_success(self, **overrides) -> PhaseResult:
         client = MagicMock()
-        client.execute_and_extract.side_effect = [
-            ["OK"],
-            ["CONFIGURED"],
-            ["{'FINISHED'}"],
-        ]
+        client.execute_and_extract.side_effect = _full_flow_side_effect()
         return self.tool.run(client, _make_cache(), _valid_params(**overrides))
+
 
     def test_state_diff_contains_exported_parts(self):
         result = self._run_success(target_parts=["1", "3"])

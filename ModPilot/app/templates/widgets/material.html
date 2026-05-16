@@ -1,0 +1,40 @@
+<form class="widget-form material"
+      hx-ext="json-enc"
+      hx-post="/agent/widget/material"
+      hx-swap="none">
+  <header class="widget-header">
+    <h3>Confirm texture mapping</h3>
+    <span class="widget-hint">Pick the correct texture file for each Principled BSDF slot per material. Leave a slot blank to skip it.</span>
+  </header>
+  {% for mat in materials %}
+  <details class="material-block" open>
+    <summary>{{ mat }}</summary>
+    <table class="widget-table">
+      <thead>
+        <tr><th>Slot</th><th>Texture</th></tr>
+      </thead>
+      <tbody>
+        {% for slot_idx in range(slot_names|length) %}
+        {% set slot = slot_names[slot_idx] %}
+        {% set existing = existing_connections.get(mat, {}).get(slot) %}
+        <tr>
+          <td class="slot-name">{{ slot }}</td>
+          <td>
+            <select name="texmap__{{ slot_idx }}__{{ mat }}">
+              <option value=""{% if not existing or existing == "connected_no_image" %} selected{% endif %}>(none)</option>
+              {% for tex in texture_files %}
+              <option value="{{ tex }}"{% if existing == tex %} selected{% endif %}>{{ tex_basename(tex) }}</option>
+              {% endfor %}
+            </select>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+  {% endfor %}
+  <input type="hidden" name="session_id" value="{{ session_id }}">
+  <div class="widget-actions">
+    <button type="submit" class="widget-submit">Confirm material mapping</button>
+  </div>
+</form>

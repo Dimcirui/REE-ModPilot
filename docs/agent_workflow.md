@@ -136,11 +136,80 @@ The tool checks (after excluding objects inside `MHWilds_Female.mesh` if present
 **On failure**: Report the specific errors to the user; ask them to fix the scene and
 say "ready" to re-validate. Do NOT proceed to Step 2 until validation passes.
 
-**On success**: Report scene state and ask for confirmation before importing:
-> "Found source model: armature **[name]**, **[N]** mesh(es): [list].
-> Shall I now import the MHWilds Female reference skeleton? [Yes / Not yet]"
+**On success**: Report scene state and continue to Step 1.5 (model-type inference).
+Do NOT prompt the user for confirmation between Step 1 and Step 1.5 — they run
+back-to-back as a single setup turn. The user-facing confirmation gate sits
+AFTER Step 1.5 reports the inferred preset, before Step 2 imports MHWilds.
 
-**Do NOT call `setup_import_mhwilds` in the same response.** Wait for the user's reply.
+### Step 1.5: Infer Source Model Type (`setup_infer_model_type`)
+
+**Issues #4 / #5 / #6** — replaces the legacy "model_type" dropdown with an
+automatic detection step that compares the source rig's bone names against
+every X-preset shipped with (or supplemented by) Modding-Toolkit.
+
+**Inputs**: `source_armature` = the armature name reported by
+`setup_validate_scene`'s `source_armature` field.
+
+**Outputs (state_diff)**:
+- `inferred_preset` — name of the best-matching preset (e.g. `"MMD"`)
+- `coverage` — fraction in `[0.0, 1.0]`
+- `decision` — one of `"exact"` / `"supplement"` / `"custom"` / `"unsupported"`
+- `uncovered_slots` — slot keys the matched preset failed to map for this rig
+- `rig_bone_count` — number of bones on the source armature
+- `candidates` — top 3 presets by coverage, each `{preset, coverage}`
+
+**Decision branches**:
+
+| Decision | Coverage | Action |
+|---|---|---|
+| `exact` | 100 % | Report `"已识别为 <preset> (100% 匹配)"`, ask user to confirm and proceed to Step 2. |
+| `supplement` | 80 % ≤ × < 100 % | Trigger the **issue #5 supplement flow** (see below). |
+| `custom` | 0 % < × < 80 % | Trigger the **issue #6 custom flow** (see below). |
+| `unsupported` | 0 % | Tool fails with `PhaseError(category="unsupported_rig")`. Error_choice widget shows a 4th `[强制自定义]` button — if the user clicks it, re-run `setup_infer_model_type` with `force_custom=true` and proceed into the issue #6 custom flow. |
+
+**Issue #5 — supplement flow** (`decision == "supplement"`):
+
+1. Take the `uncovered_slots` list from the tool result. For each uncovered slot, look at its slot key (e.g. `"upperarm_L"`, `"finger_L_01"`) and pick the best matching bone from the source rig's bone list.
+2. The source rig's bone list isn't returned directly — call the `get_bone_info` query tool with `armature_name=<source_armature>` to fetch it.
+3. Present the draft mappings to the user as a JSON block in chat: `{slot_key: bone_name}`. Ask them to confirm or specify corrections.
+4. Apply any corrections, then call `setup_preset_supplement_write` with `base_preset_name=<inferred_preset>` and the confirmed `mappings` dict.
+5. The tool writes `<base>_extended.json` next to the original (additive merge if it already exists; never overwrites the shipped preset).
+6. After supplement_write succeeds, ask the user to confirm proceeding to Step 2.
+
+**Issue #6 — custom flow** (`decision == "custom"`, or `force_custom=true`):
+
+1. Get the source rig's bone list via `get_bone_info`.
+2. For each canonical standard slot key (see Standard Slot Keys below), pick the best matching source rig bone. Slots with no plausible match are simply omitted from the mapping — downstream phases will flag any critical missing slots.
+3. Present the draft in chat for user review.
+4. Call `setup_preset_custom_write` with `character_name=<session_config.character_name>` and the confirmed `mappings` dict.
+5. The tool writes `<character_name>_custom.json`.
+
+**Standard Slot Keys** (the 51-slot canonical set used by Modding-Toolkit's X-presets):
+
+```
+pelvis spine_01 spine_02 neck head
+clavicle_L upperarm_L forearm_L hand_L
+clavicle_R upperarm_R forearm_R hand_R
+thigh_L shin_L foot_L toe_L
+thigh_R shin_R foot_R toe_R
+thumb_L_01 thumb_L_02 thumb_L_03
+index_L_01 index_L_02 index_L_03
+middle_L_01 middle_L_02 middle_L_03
+ring_L_01 ring_L_02 ring_L_03
+pinky_L_01 pinky_L_02 pinky_L_03
+thumb_R_01 thumb_R_02 thumb_R_03
+index_R_01 index_R_02 index_R_03
+middle_R_01 middle_R_02 middle_R_03
+ring_R_01 ring_R_02 ring_R_03
+pinky_R_01 pinky_R_02 pinky_R_03
+```
+
+**User confirmation gate**: After Step 1.5 reports its outcome (and, for
+supplement / custom, the user has accepted the draft mappings), ask:
+> "推断结果: **[preset_name]** (覆盖率 N%). 是否继续导入 MHWilds 骨架?
+> [是 / 暂缓]"
+
+Do NOT call `setup_import_mhwilds` until the user confirms.
 
 ### Step 2: Import MHWilds Armature (`setup_import_mhwilds`)
 
