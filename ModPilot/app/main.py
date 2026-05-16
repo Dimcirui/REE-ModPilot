@@ -23,7 +23,10 @@ import asyncio
 import contextlib
 import html
 import json
+import logging
 import uuid
+
+logger = logging.getLogger(__name__)
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, Literal
@@ -464,10 +467,11 @@ async def agent_messages(body: ChatRequest) -> ChatResponse:
     try:
         reply = await loop.step(body.message)
     except Exception as exc:
+        logger.exception("Unhandled exception in loop.step() for session %s", body.session_id)
         queue = streams.get(body.session_id)
         if queue is not None:
             err_evt = {
-                "type": "error",
+                "type": "agent_error",
                 "ts": 0.0,
                 "phase": loop.current_phase,
                 "state": loop.state.value,

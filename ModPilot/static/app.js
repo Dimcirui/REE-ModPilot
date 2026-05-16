@@ -83,7 +83,7 @@
       const tag = e.success ? "ok" : "FAIL";
       appendBubble("tool", `< [${tag}] ${e.name}: ${(e.summary || "").slice(0, 300)}`);
     },
-    error: (e) => {
+    agent_error: (e) => {
       appendBubble("error", `Error (${e.where || "?"}): ${e.message}`);
       setStatus("error", "error");
       btn().disabled = false;
@@ -183,10 +183,11 @@
       source.addEventListener(type, (event) => fn(event.data));
     }
 
-    source.onerror = (ev) => {
-      console.warn("ModPilot: SSE error", ev);
+    // Native EventSource connection error — distinct from the server-sent
+    // "agent_error" event type (renamed to avoid the "error" name clash).
+    source.addEventListener("error", () => {
       setStatus("disconnected", "error");
-    };
+    });
   });
 
   // Optimistic user bubble + disable the input while a turn is in flight.
