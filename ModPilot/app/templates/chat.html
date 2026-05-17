@@ -6,14 +6,14 @@
   <title>ModPilot</title>
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/vendor/htmx.min.js" defer></script>
-  <script src="/static/vendor/htmx-ext-sse.js" defer></script>
   <script src="/static/vendor/htmx-ext-json-enc.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
-<body data-session-id="{{ session_id }}" hx-ext="sse" sse-connect="/agent/stream/{{ session_id }}">
+<body data-session-id="{{ session_id }}">
   <header>
     <h1>ModPilot</h1>
     <span class="session-id" title="Session ID">{{ session_id }}</span>
+    <button type="button" id="debug-toggle" title="Show/hide tool call details">Debug</button>
     <a href="/config" id="settings-link" title="Global settings">⚙ Settings</a>
   </header>
 
@@ -106,8 +106,8 @@
   <div id="main-area">
     <div id="left-column">
       <main id="log" class="log"></main>
-      <div id="error-choice-slot" sse-swap="error_choice"></div>
-      <div id="widget-slot" sse-swap="widget_classification widget_material"></div>
+      <div id="error-choice-slot"></div>
+      <div id="widget-slot"></div>
     </div>
 
     <aside id="viewport-pane" aria-label="Blender viewport preview">

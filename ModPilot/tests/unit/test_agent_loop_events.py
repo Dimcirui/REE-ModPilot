@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.agent.loop import _PHASE_SEQUENCE, AgentLoop, LoopState
+from app.agent.loop import _PHASE_SEQUENCE, AgentLoop, LoopState, _heal_history
 from app.phases.base import PhaseError, PhaseResult
 
 
@@ -410,16 +410,143 @@ async def test_physics_classification_success_emits_widget_classification():
     loop.state = LoopState.RUNNING_PHASE
     loop._phase_idx = _PHASE_SEQUENCE.index("phase_4a")
 
+    annotated_heads = [
+        {**ch, "guessed_nature": "头发", "group": "hair", "suggested_type": "light_hair", "suggest_merge": False}
+        for ch in chain_heads
+    ]
+
+    async def _fake_annotate(chains):
+        return annotated_heads
+
     from app.phases.physics_bones import PhysicsClassification
-    with patch.object(
-        PhysicsClassification, "run",
-        return_value=PhaseResult.ok({"chain_topology": {"chain_heads": chain_heads}}),
+    with (
+        patch.object(
+            PhysicsClassification, "run",
+            return_value=PhaseResult.ok({"chain_topology": {"chain_heads": chain_heads}}),
+        ),
+        patch.object(loop, "_annotate_chains", side_effect=_fake_annotate),
     ):
         await loop.step("classify physics bones")
 
     widget_evts = [e for e in events if e["type"] == "widget_classification"]
     assert len(widget_evts) == 1
-    assert widget_evts[0]["chains"] == chain_heads
+    emitted_names = {ch["name"] for ch in widget_evts[0]["chains"]}
+    assert emitted_names == {"hair_001", "skirt_002"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_widget_classification_emits_after_assistant_message():
+    """Issue 3 — widget_classification must arrive AFTER the LLM has had a
+    chance to comment on the inspection in chat.  Emitting at tool-return
+    time (the old behaviour) surfaced an empty-looking table before any
+    proposal text landed, which confused users into either submitting blank
+    or chatting in parallel.  Deferred emit fixes this.
+    """
+    chain_heads = [{"name": "hair_001", "role": "head", "depth": 5, "parent": "head"}]
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        MagicMock(
+            content="",
+            has_tool_calls=True,
+            tool_calls=[{"id": "t1", "name": "physics_classification", "input": {}}],
+            content_blocks=[],
+        ),
+        MagicMock(
+            content="我建议把 hair_001 设为 hair_long_straight，请确认。",
+            has_tool_calls=False,
+            tool_calls=[],
+        ),
+    ]
+    blender = MagicMock()
+    blender.get_scene_info.return_value = {"name": "Scene", "object_count": 1}
+
+    events: list[dict] = []
+    loop = _make_loop(sink=events, llm=llm, blender=blender)
+    loop.state = LoopState.RUNNING_PHASE
+    loop._phase_idx = _PHASE_SEQUENCE.index("phase_4a")
+
+    async def _fake_annotate(chains):
+        return [{**c, "suggested_type": "hair_long_straight", "group": "hair",
+                 "guessed_nature": "头发", "suggest_merge": False} for c in chains]
+
+    from app.phases.physics_bones import PhysicsClassification
+    with (
+        patch.object(
+            PhysicsClassification, "run",
+            return_value=PhaseResult.ok({"chain_topology": {"chain_heads": chain_heads}}),
+        ),
+        patch.object(loop, "_annotate_chains", side_effect=_fake_annotate),
+    ):
+        await loop.step("分类一下")
+
+    types_order = [e["type"] for e in events]
+    widget_idx = types_order.index("widget_classification")
+    # The assistant message containing the proposal text MUST appear before
+    # the widget so the user sees the chat-side proposal first.
+    assistant_msg_indices = [
+        i for i, e in enumerate(events)
+        if e["type"] == "message" and e.get("role") == "assistant"
+    ]
+    assert assistant_msg_indices, "no assistant message emitted"
+    assert max(assistant_msg_indices) < widget_idx, (
+        f"widget emitted at index {widget_idx} BEFORE final assistant message at "
+        f"{max(assistant_msg_indices)} — regression: widget should land AFTER "
+        f"LLM commentary, not before. Order: {types_order}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_widget_safety_net_emits_even_without_text_commentary():
+    """If the LLM skips text commentary entirely and jumps straight from
+    inspector tool to the next tool (or hits an error), the deferred-emit
+    safety net in `_run_react_turn`'s finally clause must still surface the
+    widget — otherwise the user has no way to confirm and the pipeline
+    silently stalls.
+    """
+    chain_heads = [{"name": "hair_001", "role": "head", "depth": 5, "parent": "head"}]
+    llm = MagicMock()
+    # Round 1: inspector tool call.
+    # Round 2: LLM jumps straight to physics_chains with no commentary text.
+    #          We make this 2nd call fail so the loop returns; this exercises
+    #          the safety-net path that doesn't go through the text-only branch.
+    llm.chat.side_effect = [
+        MagicMock(
+            content="",
+            has_tool_calls=True,
+            tool_calls=[{"id": "t1", "name": "physics_classification", "input": {}}],
+            content_blocks=[],
+        ),
+        MagicMock(
+            content="",
+            has_tool_calls=False,
+            tool_calls=[],
+        ),
+    ]
+    blender = MagicMock()
+    blender.get_scene_info.return_value = {"name": "Scene", "object_count": 1}
+
+    events: list[dict] = []
+    loop = _make_loop(sink=events, llm=llm, blender=blender)
+    loop.state = LoopState.RUNNING_PHASE
+    loop._phase_idx = _PHASE_SEQUENCE.index("phase_4a")
+
+    async def _fake_annotate(chains):
+        return [{**c, "suggested_type": "hair_long_straight"} for c in chains]
+
+    from app.phases.physics_bones import PhysicsClassification
+    with (
+        patch.object(
+            PhysicsClassification, "run",
+            return_value=PhaseResult.ok({"chain_topology": {"chain_heads": chain_heads}}),
+        ),
+        patch.object(loop, "_annotate_chains", side_effect=_fake_annotate),
+    ):
+        await loop.step("classify")
+
+    widget_evts = [e for e in events if e["type"] == "widget_classification"]
+    assert widget_evts, "safety-net should emit widget even without text commentary"
 
 
 @pytest.mark.unit
@@ -469,3 +596,287 @@ async def test_material_inspect_success_emits_widget_material():
     assert widget_evts[0]["materials"] == materials
     assert widget_evts[0]["existing_connections"] == connections
     assert widget_evts[0]["texture_files"] == texture_files
+
+
+# ── _annotate_chains base-name propagation ────────────────────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_annotate_chains_propagates_to_complex_variant_names():
+    """The LLM often groups numbered + lateral siblings under one representative
+    entry (e.g. annotates "Shoes ribbon" but not each "Shoes ribbon_L.001.L"
+    variant).  _annotate_chains must strip combined .NNN/.L/.R/_L/_R/_End
+    suffixes to derive a common base name, then copy the annotation to all
+    unannotated siblings — otherwise the widget renders "—" for each variant
+    even though the chat-side analysis correctly classified the group.
+
+    Regression test for the Shoes ribbon / Skirt empty-inferred-type bug.
+    """
+    import json as _json
+
+    # Chain heads pulled from a real-world MMD model: every common suffix
+    # combination that the original `\.\d+$`-only regex failed on.
+    chain_heads = [
+        {"name": "Skirt_L.001", "role": "head", "depth": 3, "parent": "Hips_L"},
+        {"name": "Skirt_L.006", "role": "head", "depth": 3, "parent": "Hips_L"},
+        {"name": "Shoes ribbon_L.001.L", "role": "branch_head", "depth": 2, "parent": "x"},
+        {"name": "Shoes ribbon_L.002.L", "role": "branch_head", "depth": 2, "parent": "x"},
+        {"name": "Shoes ribbon.L_End", "role": "branch_head", "depth": 1, "parent": "y"},
+        {"name": "Half twin tail_R.007", "role": "head", "depth": 5, "parent": "Head"},
+    ]
+
+    # Simulate the LLM grouping variants — it annotates ONE representative per
+    # base, leaves all others with empty fields.  The fallback propagation must
+    # fill them in.
+    llm_response = [
+        {"name": "Skirt_L.001", "guessed_nature": "裙子",
+         "group": "cloth", "suggested_type": "cloth_skirt_waist"},
+        {"name": "Skirt_L.006"},                       # unannotated sibling
+        {"name": "Shoes ribbon_L.001.L", "guessed_nature": "鞋带",
+         "group": "ribbon", "suggested_type": "accessory_ribbon"},
+        {"name": "Shoes ribbon_L.002.L"},              # unannotated sibling
+        {"name": "Shoes ribbon.L_End"},                # unannotated sibling, diff suffix shape
+        {"name": "Half twin tail_R.007", "guessed_nature": "双马尾",
+         "group": "hair", "suggested_type": "hair_twintail"},
+    ]
+
+    llm = MagicMock()
+    llm.chat.return_value = MagicMock(
+        content=_json.dumps(llm_response, ensure_ascii=False),
+        has_tool_calls=False,
+        tool_calls=[],
+    )
+    loop = _make_loop(sink=[], llm=llm)
+
+    annotated = await loop._annotate_chains(chain_heads)
+    by_name = {c["name"]: c for c in annotated}
+
+    # All variants — even those the LLM left blank — must receive the
+    # propagated suggested_type / group / guessed_nature.
+    assert by_name["Skirt_L.001"]["suggested_type"] == "cloth_skirt_waist"
+    assert by_name["Skirt_L.006"]["suggested_type"] == "cloth_skirt_waist"
+    assert by_name["Skirt_L.006"]["group"] == "cloth"
+    assert by_name["Shoes ribbon_L.001.L"]["suggested_type"] == "accessory_ribbon"
+    assert by_name["Shoes ribbon_L.002.L"]["suggested_type"] == "accessory_ribbon"
+    assert by_name["Shoes ribbon.L_End"]["suggested_type"] == "accessory_ribbon"
+    assert by_name["Half twin tail_R.007"]["suggested_type"] == "hair_twintail"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_annotate_chains_fallback_recovers_dropped_lone_chain():
+    """Single-chain bones with no sibling (e.g. Tail.001 — only tail in the
+    whole rig) can't benefit from base-name propagation because there's no
+    annotated sibling to copy from.  If the main pass drops them entirely
+    (LLM returned shorter array, name match misses), the fallback retry
+    must single-shot annotate the leftover and merge it back.
+
+    Regression test for the Tail.001 empty-inferred-type bug.
+    """
+    import json as _json
+
+    chain_heads = [
+        {"name": "Back Hair.001", "role": "head", "depth": 5, "parent": "Head"},
+        {"name": "Tail.001", "role": "head", "depth": 13, "parent": "Hips"},
+    ]
+
+    main_pass_response = [
+        {"name": "Back Hair.001", "guessed_nature": "头发",
+         "group": "hair", "suggested_type": "hair_long_straight"},
+        # Note: Tail.001 deliberately ABSENT — LLM dropped it.
+    ]
+    fallback_pass_response = [
+        {"name": "Tail.001", "guessed_nature": "尾巴",
+         "group": "tail", "suggested_type": "fur_tail"},
+    ]
+
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        MagicMock(content=_json.dumps(main_pass_response, ensure_ascii=False),
+                  has_tool_calls=False, tool_calls=[]),
+        MagicMock(content=_json.dumps(fallback_pass_response, ensure_ascii=False),
+                  has_tool_calls=False, tool_calls=[]),
+    ]
+    loop = _make_loop(sink=[], llm=llm)
+
+    annotated = await loop._annotate_chains(chain_heads)
+    by_name = {c["name"]: c for c in annotated}
+
+    assert by_name["Back Hair.001"]["suggested_type"] == "hair_long_straight"
+    # The whole point of this fix: Tail.001 must NOT be left with empty
+    # suggested_type even though the main LLM pass dropped it entirely.
+    assert by_name["Tail.001"]["suggested_type"] == "fur_tail"
+    assert by_name["Tail.001"]["group"] == "tail"
+    # The fallback should have run exactly once (two total LLM calls).
+    assert llm.chat.call_count == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_annotate_chains_skips_fallback_when_all_annotated():
+    """If the main pass annotated everything, no fallback LLM call is made."""
+    import json as _json
+
+    chain_heads = [
+        {"name": "Hair.001", "role": "head", "depth": 3, "parent": "Head"},
+    ]
+    response = [
+        {"name": "Hair.001", "guessed_nature": "头发",
+         "group": "hair", "suggested_type": "hair_long_straight"},
+    ]
+    llm = MagicMock()
+    llm.chat.return_value = MagicMock(
+        content=_json.dumps(response, ensure_ascii=False),
+        has_tool_calls=False, tool_calls=[],
+    )
+    loop = _make_loop(sink=[], llm=llm)
+    await loop._annotate_chains(chain_heads)
+    # Exactly one LLM call — no fallback triggered.
+    assert llm.chat.call_count == 1
+
+
+# ── _heal_history defensive self-heal ─────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestHealHistory:
+    """Regression tests for the Anthropic 400 'tool_use without tool_result'
+    backstop.  _heal_history must inject placeholder tool_results for any
+    orphan tool_use blocks before the history is sent to the LLM."""
+
+    def test_clean_history_unchanged(self):
+        history = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "calling tool"},
+                    {"type": "tool_use", "id": "t1", "name": "x", "input": {}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}],
+            },
+        ]
+        snapshot = [dict(m) for m in history]
+        injected = _heal_history(history)
+        assert injected == 0
+        assert history == snapshot
+
+    def test_missing_tool_result_user_message_inserted(self):
+        """Assistant tool_use with NO following user message at all."""
+        history = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "orphan-1", "name": "x", "input": {}},
+                ],
+            },
+        ]
+        injected = _heal_history(history)
+        assert injected == 1
+        assert len(history) == 3
+        assert history[2]["role"] == "user"
+        result_blocks = history[2]["content"]
+        assert any(
+            b.get("type") == "tool_result" and b.get("tool_use_id") == "orphan-1"
+            for b in result_blocks
+        )
+
+    def test_partial_tool_result_filled(self):
+        """Two tool_use blocks but only one tool_result — fill the missing one."""
+        history = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "a", "name": "x", "input": {}},
+                    {"type": "tool_use", "id": "b", "name": "x", "input": {}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "a", "content": "ok"}],
+            },
+        ]
+        injected = _heal_history(history)
+        assert injected == 1
+        ids = {
+            b["tool_use_id"]
+            for b in history[1]["content"]
+            if b.get("type") == "tool_result"
+        }
+        assert ids == {"a", "b"}
+
+    def test_next_message_is_plain_user_text_then_insert_before(self):
+        """Assistant tool_use followed by plain-text user message — insert a
+        synthetic tool_result message between them (otherwise the plain user
+        message is misinterpreted by Anthropic as the tool_result slot)."""
+        history = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "z", "name": "x", "input": {}},
+                ],
+            },
+            {"role": "user", "content": "retry please"},
+        ]
+        injected = _heal_history(history)
+        assert injected == 1
+        # The synthetic user message gets inserted at index 1; the original
+        # plain-text user message slides to index 2.
+        assert isinstance(history[1]["content"], list)
+        assert history[1]["content"][0]["tool_use_id"] == "z"
+        assert history[2]["content"] == "retry please"
+
+    def test_orphan_tool_result_with_unknown_id_dropped(self):
+        """Reverse failure mode: tool_result with id that doesn't match any
+        preceding tool_use must be dropped, otherwise Anthropic 400s with
+        "unexpected `tool_use_id` found in tool_result blocks".
+
+        Real-world trigger: provider's `content_blocks` and `tool_calls` ids
+        get desynchronised (e.g. OpenAI-compat / Ollama synthesizing call ids
+        client-side), so the assistant message has one id and the loop's
+        tool_result building uses another.
+        """
+        history = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "valid-a", "name": "scene_info", "input": {}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "valid-a", "content": "ok"},
+                    {"type": "tool_result", "tool_use_id": "unknown-b", "content": "orphan"},
+                ],
+            },
+        ]
+        injected = _heal_history(history)
+        assert injected == 1
+        remaining_ids = [
+            b["tool_use_id"] for b in history[1]["content"] if b.get("type") == "tool_result"
+        ]
+        assert remaining_ids == ["valid-a"]
+
+    def test_orphan_tool_result_after_text_only_assistant_dropped(self):
+        """Assistant text-only message followed by user message containing
+        tool_result blocks — drop the orphan tool_result blocks entirely."""
+        history = [
+            {"role": "assistant", "content": [{"type": "text", "text": "Just a note."}]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "leaked", "content": "stale"},
+                ],
+            },
+        ]
+        injected = _heal_history(history)
+        assert injected == 1
+        # Empty content list would itself be a 400 — must leave a marker block.
+        assert history[1]["content"]
+        assert all(b.get("type") != "tool_result" for b in history[1]["content"])

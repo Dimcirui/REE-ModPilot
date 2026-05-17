@@ -112,6 +112,13 @@ class ListObjects(QueryTool):
 
     def run(self, client: BlenderClient, params: dict) -> str:
         type_filter = params.get("type_filter", "")
+        # Visibility model in Blender:
+        #   o.hide_viewport  — global "disable in viewports" (outliner camera icon)
+        #   o.hide_get()     — per-view-layer H-key hide (outliner eye icon)
+        #   o.visible_get()  — composite of above plus collection hide etc.
+        # Operators like modder.universal_snap need to SELECT the object;
+        # H-hidden objects cannot be selected even though hide_viewport=False.
+        # Report all three so the LLM can diagnose "why won't this select".
         code = (
             f"import bpy, json\n"
             f"type_filter = {type_filter!r}\n"
@@ -119,7 +126,10 @@ class ListObjects(QueryTool):
             f"if type_filter:\n"
             f"    objs = [o for o in objs if o.type == type_filter.upper()]\n"
             f"result = [\n"
-            f"    {{'name': o.name, 'type': o.type, 'visible': not o.hide_viewport}}\n"
+            f"    {{'name': o.name, 'type': o.type,\n"
+            f"     'visible': o.visible_get(),\n"
+            f"     'hide_viewport': o.hide_viewport,\n"
+            f"     'hide_get': o.hide_get()}}\n"
             f"    for o in objs\n"
             f"]\n"
             f"print({BLENDER_SENTINEL!r})\n"
@@ -182,7 +192,11 @@ class GetBoneInfo(QueryTool):
             f"else:\n"
             f"    bones = []\n"
             f"    for pb in arm_obj.pose.bones:\n"
-            f"        custom = {{k: v for k, v in pb.items() if not k.startswith('_')}}\n"
+            f"        custom = {{}}\n"
+            f"        for k, v in pb.items():\n"
+            f"            if k.startswith('_'): continue\n"
+            f"            try: custom[k] = v if isinstance(v, (str, int, float, bool, type(None))) else str(v)\n"
+            f"            except Exception: custom[k] = '<unserializable>'\n"
             f"        if filter_prop and filter_prop not in custom:\n"
             f"            continue\n"
             f"        bones.append({{\n"

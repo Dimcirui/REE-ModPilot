@@ -23,7 +23,10 @@ import asyncio
 import contextlib
 import html
 import json
+import logging
 import uuid
+
+logger = logging.getLogger(__name__)
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, Literal
@@ -36,7 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sse_starlette.sse import EventSourceResponse
 
 from app.agent.loop import AgentLoop
-from app.blender.client import BlenderClient, BlenderError
+from app.blender.client import BlenderBusyError, BlenderClient, BlenderError
 from app.blender.preset_catalog import (
     SHIPPED_X_PRESETS,
     PresetMeta,
@@ -249,6 +252,66 @@ def _is_llm_configured() -> bool:
     return bool(settings.llm_api_key) and getattr(app.state, "llm", None) is not None
 
 
+async def _run_step_with_done_emit(
+    loop: "AgentLoop",
+    session_id: str,
+    message: str,
+) -> str:
+    """Call loop.step() and ALWAYS emit a final `done` SSE event afterwards.
+
+    Used by every route that drives the loop (/agent/messages and both widget
+    submission routes).  The done event is what unsticks the frontend's
+    "thinking" status — missing it makes the chat input look frozen.
+
+    Three failure modes are all handled by the finally block:
+      1. step() raises  → emit agent_error, then done, then re-raise as 500.
+      2. step() returns normally → emit done.
+      3. The session's queue was garbage-collected mid-flight (suspected) →
+         re-create it in streams dict so done has somewhere to land.
+
+    Returns the reply string from step (or "" on failure).
+    """
+    streams: dict[str, asyncio.Queue] = app.state.agent_streams
+    reply: str = ""
+    failed: Exception | None = None
+    try:
+        reply = await loop.step(message)
+    except Exception as exc:
+        failed = exc
+        logger.exception("Unhandled exception in loop.step() for session %s", session_id)
+    finally:
+        queue = streams.get(session_id)
+        if queue is None:
+            queue = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
+            streams[session_id] = queue
+        if failed is not None:
+            err_evt = {
+                "type": "agent_error",
+                "ts": 0.0,
+                "phase": loop.current_phase,
+                "state": loop.state.value,
+                "message": str(failed),
+                "where": "step",
+                "recoverable": False,
+            }
+            with contextlib.suppress(asyncio.QueueFull):
+                queue.put_nowait(err_evt)
+        done_evt = {
+            "type": "done",
+            "ts": 0.0,
+            "phase": loop.current_phase,
+            "state": loop.state.value,
+            "reply": reply,
+            "session_id": session_id,
+        }
+        with contextlib.suppress(asyncio.QueueFull):
+            queue.put_nowait(done_evt)
+
+    if failed is not None:
+        raise HTTPException(status_code=500, detail=str(failed)) from failed
+    return reply
+
+
 def _make_sink(queue: asyncio.Queue, event_loop: asyncio.AbstractEventLoop):
     """
     Build an event sink that pushes into `queue`.
@@ -302,8 +365,13 @@ def _get_or_create_session(session_id: str, *, with_sink: bool) -> AgentLoop:
     event_sink = None
     if with_sink:
         streams: dict[str, asyncio.Queue] = app.state.agent_streams
-        queue: asyncio.Queue = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
-        streams[session_id] = queue
+        # Reuse the queue created by GET /agent/stream if SSE connected first;
+        # only allocate a new one when no subscriber exists yet. Creating a new
+        # queue here would overwrite the reference that the SSE generator's
+        # closure already holds, silently dropping all events.
+        if session_id not in streams:
+            streams[session_id] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
+        queue: asyncio.Queue = streams[session_id]
         event_sink = _make_sink(queue, asyncio.get_running_loop())
 
     cfg: SessionConfig | None = app.state.session_configs.get(session_id)
@@ -378,6 +446,10 @@ async def viewport_screenshot(
     client = _get_client()
     try:
         png = client.get_viewport_screenshot(max_size=max_size)
+    except BlenderBusyError as exc:
+        # Transient — another caller (long phase tool) holds the socket lock.
+        # Do NOT close the client; just signal the frontend to skip this tick.
+        raise HTTPException(status_code=503, detail=f"busy: {exc}") from exc
     except (BlenderError, OSError) as exc:
         client.close()
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -453,42 +525,8 @@ async def agent_messages(body: ChatRequest) -> ChatResponse:
     so SSE subscribers on /agent/stream/{session_id} see live progress. On
     completion, a final `done` event is emitted to close the SSE turn.
     """
-    streams: dict[str, asyncio.Queue] = app.state.agent_streams
     loop = _get_or_create_session(body.session_id, with_sink=True)
-
-    try:
-        reply = await loop.step(body.message)
-    except Exception as exc:
-        queue = streams.get(body.session_id)
-        if queue is not None:
-            err_evt = {
-                "type": "error",
-                "ts": 0.0,
-                "phase": loop.current_phase,
-                "state": loop.state.value,
-                "message": str(exc),
-                "where": "step",
-                "recoverable": False,
-            }
-            with contextlib.suppress(asyncio.QueueFull):
-                queue.put_nowait(err_evt)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    # Emit final `done` event so the SSE consumer can close its "thinking"
-    # state. Put directly — we are on the event-loop thread here.
-    queue = streams.get(body.session_id)
-    if queue is not None:
-        done_evt = {
-            "type": "done",
-            "ts": 0.0,
-            "phase": loop.current_phase,
-            "state": loop.state.value,
-            "reply": reply,
-            "session_id": body.session_id,
-        }
-        with contextlib.suppress(asyncio.QueueFull):
-            queue.put_nowait(done_evt)
-
+    reply = await _run_step_with_done_emit(loop, body.session_id, body.message)
     return ChatResponse(reply=reply, state=loop.state.value, session_id=body.session_id)
 
 
@@ -631,25 +669,41 @@ async def submit_classification_widget(body: WidgetSubmission) -> JSONResponse:
     LLM can call physics_chains with chain_classifications directly.
     """
     extras = body.model_extra or {}
-    pairs: dict[str, str] = {}
+    preset_candidates: dict[str, str] = {}
+    type_overrides: dict[str, str] = {}
+    descriptions: dict[str, str] = {}
+    merges: list[str] = []
     for k, v in extras.items():
-        if not k.startswith("type__"):
-            continue
-        chain = k[len("type__") :]
-        value = _normalize_value(v).strip()
-        if not value:
-            continue
-        pairs[chain] = value
-    if not pairs:
+        if k.startswith("preset__"):
+            chain = k[len("preset__"):]
+            value = _normalize_value(v).strip()
+            if value:
+                preset_candidates[chain] = value
+        elif k.startswith("type__"):
+            chain = k[len("type__"):]
+            value = _normalize_value(v).strip()
+            if value:
+                type_overrides[chain] = value
+        elif k.startswith("desc__"):
+            chain = k[len("desc__"):]
+            value = _normalize_value(v).strip()
+            if value:
+                descriptions[chain] = value
+        elif k.startswith("merge__"):
+            chain = k[len("merge__"):]
+            # json-enc sends checked checkboxes as boolean true
+            if v is True or (isinstance(v, str) and v.lower() in ("true", "on", "1", "yes")):
+                merges.append(chain)
+    # type__ (explicit override) wins over preset__ (agent accept) for the same chain
+    inferred_types = {**preset_candidates, **type_overrides}
+    if not inferred_types:
         raise HTTPException(status_code=422, detail="No classification rows submitted.")
 
-    formatted = "[CONFIRMED_CLASSIFICATIONS] " + json.dumps(pairs, ensure_ascii=False)
+    data = {"inferred_types": inferred_types, "descriptions": descriptions, "bones_to_merge": merges}
+    formatted = "[CONFIRMED_CLASSIFICATIONS] " + json.dumps(data, ensure_ascii=False)
     loop = _get_or_create_session(body.session_id, with_sink=True)
-    try:
-        await loop.step(formatted)
-    except Exception as exc:  # pragma: no cover — surfaced via SSE error event
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return JSONResponse({"saved": True, "count": len(pairs)})
+    await _run_step_with_done_emit(loop, body.session_id, formatted)
+    return JSONResponse({"saved": True, "count": len(inferred_types)})
 
 
 @app.post("/agent/widget/material")
@@ -684,10 +738,7 @@ async def submit_material_widget(body: WidgetSubmission) -> JSONResponse:
 
     formatted = "[CONFIRMED_MATERIAL_MAPPING] " + json.dumps(mapping, ensure_ascii=False)
     loop = _get_or_create_session(body.session_id, with_sink=True)
-    try:
-        await loop.step(formatted)
-    except Exception as exc:  # pragma: no cover — surfaced via SSE error event
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    await _run_step_with_done_emit(loop, body.session_id, formatted)
     return JSONResponse({"saved": True, "materials": len(mapping)})
 
 
@@ -815,6 +866,14 @@ async def agent_stream(session_id: str, request: Request):
     if queue is None:
         queue = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
         streams[session_id] = queue
+
+    # On reconnect, if a loop already exists for this session, re-wire its
+    # event_sink to the (possibly new) queue and replay phase progress so the
+    # frontend's phase bubbles catch up without requiring a tool call.
+    existing_loop = app.state.agent_sessions.get(session_id)
+    if existing_loop is not None:
+        existing_loop._event_sink = _make_sink(queue, asyncio.get_running_loop())
+        existing_loop.emit_phase_sync()
 
     async def event_generator():
         while True:

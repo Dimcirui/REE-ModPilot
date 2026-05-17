@@ -466,9 +466,10 @@ class TestPhysicsChains:
         """
         new_cs = ["RE_CHAIN_CHAINSETTINGS_0"]
         client = MagicMock()
-        # Responses: validate, merge, clear, create, apply, angle_ramp
+        # Responses: validate, expand_end_children, merge, clear, create, apply, angle_ramp
         client.execute_and_extract.side_effect = [
             ["OK"],
+            ["EXTRAS:[]"],          # no _End children to cascade
             ["{'FINISHED'}"],
             ["{'FINISHED'}"],
             [f"NEW_CS:{json.dumps({'new_cs': new_cs, 'col': 'MHWilds_Female.chain2'})}"],
@@ -486,12 +487,12 @@ class TestPhysicsChains:
             },
         )
         assert result.success
-        assert client.execute_and_extract.call_count == 6
-        # merge call is index 1; verify bone names appear in the code
-        merge_code = client.execute_and_extract.call_args_list[1][0][0]
+        assert client.execute_and_extract.call_count == 7
+        # merge call is now index 2 (after validate + expand_end_children)
+        merge_code = client.execute_and_extract.call_args_list[2][0][0]
         assert "Ribbon_root" in merge_code
-        # clear call is index 2
-        clear_code = client.execute_and_extract.call_args_list[2][0][0]
+        # clear call is index 3
+        clear_code = client.execute_and_extract.call_args_list[3][0][0]
         assert "Cage" in clear_code
         assert "clear_chain_role" in clear_code
 
@@ -542,9 +543,11 @@ class TestPhysicsChains:
         """bones_to_merge step fires before _create_chains."""
         new_cs = ["RE_CHAIN_CHAINSETTINGS_0"]
         client = MagicMock()
-        # Responses (SEPARATE mode): validate, merge, create, apply, angle_ramp
+        # Responses (SEPARATE mode):
+        #   validate, expand_end_children, merge, create, apply, angle_ramp
         client.execute_and_extract.side_effect = [
             ["OK"],
+            ["EXTRAS:[]"],
             ["{'FINISHED'}"],
             [f"NEW_CS:{json.dumps({'new_cs': new_cs, 'col': 'MHWilds_Female.chain2'})}"],
             [f"APPLIED:{json.dumps([])}"],
@@ -560,17 +563,82 @@ class TestPhysicsChains:
             },
         )
         assert result.success
-        assert client.execute_and_extract.call_count == 5
-        # Merge call is the 2nd call (index 1); verify bone name appears in code
-        merge_code = client.execute_and_extract.call_args_list[1][0][0]
+        assert client.execute_and_extract.call_count == 6
+        # Merge call is now index 2 (after validate + expand_end_children).
+        merge_code = client.execute_and_extract.call_args_list[2][0][0]
         assert "Ribbon_root" in merge_code
         assert "merge_into_parent" in merge_code
+
+    def test_end_child_cascade_into_merge(self):
+        """When bones_to_merge contains an auxiliary bone with a `*_End`
+        child carrying chain_role (typical Phase-3.5 smart_graft output),
+        the cascade helper appends that child so it's also merged — otherwise
+        physics_chains would build a degenerate chain on the leftover leaf.
+        """
+        new_cs = ["RE_CHAIN_CHAINSETTINGS_0"]
+        client = MagicMock()
+        # validate → expand returns one extra _End child → merge → create → apply → ramp
+        client.execute_and_extract.side_effect = [
+            ["OK"],
+            ['EXTRAS:["Twist wrist_L_End"]'],
+            ["{'FINISHED'}"],
+            [f"NEW_CS:{json.dumps({'new_cs': new_cs, 'col': 'MHWilds_Female.chain2'})}"],
+            [f"APPLIED:{json.dumps([])}"],
+            ["RAMP:{'FINISHED'}"],
+        ]
+        result = self.tool.run(
+            client,
+            _make_cache(),
+            {
+                "target_armature": "MHWs",
+                "bones_to_merge": ["Twist wrist_L"],
+                "inferred_types": {"hair_001": "hair_short"},
+            },
+        )
+        assert result.success
+        # The merge call (index 2) must contain BOTH the user-specified bone
+        # AND the cascaded _End leaf.
+        merge_code = client.execute_and_extract.call_args_list[2][0][0]
+        assert "Twist wrist_L" in merge_code
+        assert "Twist wrist_L_End" in merge_code
+
+    def test_end_cascade_failure_is_non_fatal(self):
+        """If the expand_end_children scan errors out (Blender-side glitch),
+        the pipeline falls back to the original bones_to_merge list and
+        continues — non-fatal."""
+        from app.blender.client import BlenderError
+        new_cs = ["RE_CHAIN_CHAINSETTINGS_0"]
+        client = MagicMock()
+        client.execute_and_extract.side_effect = [
+            ["OK"],
+            BlenderError("blender went bonk"),  # expand step throws
+            ["{'FINISHED'}"],
+            [f"NEW_CS:{json.dumps({'new_cs': new_cs, 'col': 'MHWilds_Female.chain2'})}"],
+            [f"APPLIED:{json.dumps([])}"],
+            ["RAMP:{'FINISHED'}"],
+        ]
+        result = self.tool.run(
+            client,
+            _make_cache(),
+            {
+                "target_armature": "MHWs",
+                "bones_to_merge": ["Ribbon_root"],
+                "inferred_types": {"hair_001": "hair_short"},
+            },
+        )
+        # Merge proceeds with the original (unexpanded) list — pipeline still
+        # completes successfully.
+        assert result.success
+        merge_code = client.execute_and_extract.call_args_list[2][0][0]
+        assert "Ribbon_root" in merge_code
 
     def test_merge_failure_stops_pipeline(self):
         """If merge_into_parent fails, phase fails without calling _create_chains."""
         client = MagicMock()
+        # validate, expand_end_children, merge (fails)
         client.execute_and_extract.side_effect = [
             ["OK"],
+            ["EXTRAS:[]"],
             ["PRECONDITION:armature_not_found"],
         ]
         result = self.tool.run(
@@ -583,7 +651,8 @@ class TestPhysicsChains:
             },
         )
         assert not result.success
-        assert client.execute_and_extract.call_count == 2
+        # validate + expand_end_children + merge (failing) = 3
+        assert client.execute_and_extract.call_count == 3
 
     def test_skipped_params_recorded_in_state_diff(self):
         skipped = ["RE_CHAIN_CHAINSETTINGS_0.motionForce"]

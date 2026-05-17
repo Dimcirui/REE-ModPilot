@@ -68,6 +68,11 @@ On `PhaseError`, always:
 3. `scene_info()` — active object, mode, object count
 4. If evaluating Phase 4A/4B: `get_bone_info(armature_name="MHWilds_Female Armature", filter_custom_prop="chain_role")`
 
+**After determining the current phase, always call `sync_phase_state(current_phase=<phase_name>)`.**
+This updates the frontend phase progress bubbles to reflect reality.
+Example: if you determine Phase 3 is done and Phase 3.5 is next, call `sync_phase_state(current_phase="phase_35")`.
+Do NOT skip this call when resuming a session — the UI depends on it.
+
 **Interpretation rules — apply ONLY to fresh tool results, never to history:**
 
 | What you see in tool output | What it means |
@@ -166,6 +171,8 @@ every X-preset shipped with (or supplemented by) Modding-Toolkit.
 | `supplement` | 80 % ≤ × < 100 % | Trigger the **issue #5 supplement flow** (see below). |
 | `custom` | 0 % < × < 80 % | Trigger the **issue #6 custom flow** (see below). |
 | `unsupported` | 0 % | Tool fails with `PhaseError(category="unsupported_rig")`. Error_choice widget shows a 4th `[强制自定义]` button — if the user clicks it, re-run `setup_infer_model_type` with `force_custom=true` and proceed into the issue #6 custom flow. |
+
+**Optional slots**: `optional_skipped_slots` in the result lists slot keys that are known to be absent from REE target game skeletons (currently: `spine_03`). These are excluded from the coverage denominator and do **not** require supplement. Do not attempt to fill them — if the user asks, explain that this bone is not present in the target game skeleton and can be safely ignored.
 
 **Issue #5 — supplement flow** (`decision == "supplement"`):
 
@@ -565,6 +572,24 @@ Passed directly to Phase 4B as structured data. Conversation history is NOT carr
   ]
 }
 ```
+
+### Classification Widget (frontend)
+
+After `physics_classification` succeeds, the agent loop calls the LLM to annotate each chain head with `guessed_nature`, `group`, and `suggested_type`, then emits a `widget_classification` SSE event. The frontend renders an interactive table grouped by `group`, with the agent's `suggested_type` shown as a read-only chip per row.
+
+**UX**: Each row shows the agent's inferred type as a chip (accepted by default). The ✏ button opens an override panel with a dropdown and optional description textarea. A "合并到父级" checkbox marks chains for parent-merge (pre-checked deterministically: `non_physics` group or `depth ≤ 1`).
+
+When the user submits, the route `/agent/widget/classification` packages the selections and injects them into the loop as:
+
+```
+[CONFIRMED_CLASSIFICATIONS] {"inferred_types": {"<chain>": "<type>", ...}, "descriptions": {"<chain>": "<text>", ...}, "bones_to_merge": ["<chain>", ...]}
+```
+
+- `inferred_types` maps each chain head bone name to the confirmed physics preset key. Agent-accepted chips submit via `preset__<chain>`; manual overrides submit via `type__<chain>` (which wins if both are present for the same chain).
+- `descriptions` maps chain names to free-text override descriptions (only present when the user typed something in the override panel).
+- `bones_to_merge` lists chain heads the user chose to merge into their parent instead of receiving independent physics chains.
+
+The LLM must read this message, pass `inferred_types` as `chain_classifications` to `physics_chains`, and pass `bones_to_merge` as `bones_to_merge` to handle pre-merge before chain creation.
 
 ### Exit Conditions
 - All unlisted auxiliary bones have been merged into body bones.
