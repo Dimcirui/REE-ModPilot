@@ -856,6 +856,40 @@ socket connectivity, and (for Principled BSDF materials only) classify and wire 
 texture slots. Emission and MMDShaderDev materials need no wiring — they pass directly
 to Phase 5B.
 
+**Issue #16 architecture (small loop)**: Phase 5A is no longer linear. After consolidation
+we inspect once, branch on whether the rig is already fully wired, then enter a
+**classify → confirm → wire → verify** loop that can iterate on user-specified materials
+without restarting from scratch.
+
+```
+Step 1 (Consolidate)  →  Step 2 (Inspect)  →  Step 3 (Already-connected branch)
+                                                       │
+                                ┌──────────────────────┴─ all wired? ── yes ──► skip to Phase 5B
+                                │
+                              empty / partial slots
+                                │
+                                ▼
+                      ┌─► Step 4 (Classify + confirm via widget)
+                      │              │
+                      │              ▼
+                      │       Step 5 (Wire — material_setup)
+                      │              │
+                      │              ▼
+                      │       Step 6 (Verify — re-inspect + ask)
+                      │              │
+                      └── needs fix──┤  scope = user-named materials only
+                                     │
+                                  satisfied
+                                     │
+                                     ▼
+                                Phase 5B
+```
+
+The loop's scope-narrowing rule is the key change: when the user says "fix material X",
+re-classify and re-wire ONLY X (and whatever else they name), not every Principled BSDF
+material. Pass the narrowed material list as `materials_filter` to the next
+`material_setup` call.
+
 #### Step 1: Material Consolidation
 
 Some models — especially VRChat community bases — split one logical material into many
@@ -865,14 +899,42 @@ downstream step repeats work for each duplicate.
 Call `material_consolidate(dry_run=True)` first to see a grouping proposal, confirm with
 the user, then call `material_consolidate(dry_run=False, groups=...)` to apply.
 
-#### Step 2: Texture Classification (Principled BSDF only, 4-layer priority)
+#### Step 2: Inspect
 
-Run layers in order. Stop at first successful classification for each texture.
+Call `material_inspect` to obtain the current node-tree snapshot. The result carries:
+- `materials`: list of Principled BSDF material names (Emission / MMDShaderDev skip).
+- `existing_connections`: `{material: {slot: file_path | "connected_no_image"}}`.
+- `texture_files`: candidate texture files in `texture_dir` (recursive scan).
+
+Do NOT immediately proceed to classification — branch on Step 3 first.
+
+#### Step 3: Already-Connected Branch
+
+Inspect `existing_connections` from Step 2. Define a material as **fully connected** when
+both `Base Color` AND `Normal` slots resolve to a real file path (NOT empty,
+NOT the `"connected_no_image"` sentinel).
+
+- **Every Principled BSDF material is fully connected** → ask the user:
+  > "检测到所有材质的 Base Color 和 Normal 都已连接，是否跳过 Phase 5A 连接步骤直接进 Phase 5B？[Skip / Re-wire]"
+  - **Skip** → jump straight to Phase 5B with the existing wiring intact.
+  - **Re-wire** → continue to Step 4 with `materials_filter = all Principled BSDF mats`.
+
+- **Some / all materials have empty key slots** → continue to Step 4 with
+  `materials_filter = materials whose Base Color OR Normal is empty`.
+
+The point of this branch is to protect manual wiring done by the user before invoking
+ModPilot — overwriting a hand-tuned material setup is a one-way data loss.
+
+#### Step 4: Classify + Confirm (loop entry)
+
+For materials in `materials_filter`, classify empty texture slots using the 4-layer
+priority rules below. Present the resulting `{material: {slot: file_path}}` mapping in the
+confirmation widget so the user can review and override per cell before wiring.
 
 **Layer 1 — Read existing nodes** (highest priority):
 Inspect each material's node tree for already-connected Image Texture nodes.
 If an Image Texture node is connected to a known Principled BSDF input socket,
-treat its image as classified (high confidence). Skip to Step 3 for those textures.
+treat its image as classified (high confidence). Carry that mapping forward unchanged.
 
 **Layer 2 — Name-based rules** (high confidence, auto-apply):
 | Filename pattern | Channel |
@@ -893,33 +955,24 @@ treat its image as classified (high confidence). Skip to Step 3 for those textur
 - If result is not `unknown`: treat as mid confidence.
 
 **Layer 4 — User confirmation** (for remaining `unknown` textures):
-Surface via propose_and_confirm. Show texture thumbnail and ask user to assign channel.
+The confirmation widget (issue #7 + #11 LLM pre-fill) already surfaces every slot for
+every material; rows the LLM couldn't classify simply arrive un-prefilled and the user
+picks from the texture-file dropdown.
 
 **Material assignment** (after channel is known):
 - 1 material: assign all textures to it.
 - Multiple materials, texture filename contains material or mesh name: auto-assign (high).
-- Ambiguous: surface via propose_and_confirm.
+- Ambiguous: surface to the widget so the user resolves.
 
-##### Propose-and-Confirm: Texture Assignment
-```json
-{
-  "proposals": [
-    {
-      "texture_file": "<filename>",
-      "proposed_channel": "base_color|normal|roughness|metallic|ao|emission|packed_orm",
-      "proposed_material": "<material name>",
-      "detection_method": "existing_node|name_rule|vision_model|user",
-      "confidence": "high|mid|low"
-    }
-  ],
-  "requires_user_review": true
-}
-```
+The widget submission lands as a `[CONFIRMED_MATERIAL_MAPPING]`-prefixed message;
+parse the JSON and feed it directly to Step 5 as `texture_mapping`.
 
-#### Step 3: Node Connection (Principled BSDF only)
+#### Step 5: Wire
 
-After texture assignment is confirmed, build the Principled BSDF node graph per material.
-Connection patterns (create nodes in this order):
+Call `material_setup(texture_mapping=<from Step 4>, ...)`. The tool builds Principled BSDF
+node graphs per material; emission and MMDShaderDev materials are untouched.
+
+Connection patterns (created by `material_setup` internally — listed here for reference):
 
 | Channel | Node graph |
 |---|---|
@@ -936,9 +989,24 @@ Notes:
 - If both `ao` and `base_color` exist: chain them (base_color → MixRGB Color1, ao → Color2).
 - NormalMap node strength: default 1.0.
 
+#### Step 6: Verify
+
+Call `material_inspect` again immediately after Step 5 succeeds. Render a compact summary
+of the resulting `existing_connections` (one row per material, one column per slot,
+"✓" for wired-to-file, "○" for empty, "?" for `connected_no_image`) and ask:
+
+> "连接结果如上，是否满意？[Yes — proceed to Phase 5B / No — list materials to re-do]"
+
+- **Yes** → proceed to Phase 5B.
+- **No, with materials list** → set `materials_filter = <user-named materials>` and jump
+  back to **Step 4**. The loop runs again only for those materials; everything else stays
+  as-is. Keep iterating until the user says yes.
+
 #### Phase 5A Exit Conditions
 - All materials consolidated (duplicates merged).
-- All Principled BSDF materials: texture slots classified and wired.
+- All Principled BSDF materials: texture slots classified and wired (or explicitly skipped
+  via Step 3 when the user confirms the existing wiring).
+- User has explicitly confirmed the final wiring via Step 6's "satisfied?" prompt.
 - Emission and MMDShaderDev materials: no wiring needed; confirmed via `material_inspect`.
 
 ---
