@@ -63,6 +63,9 @@ VALID_CONFIG = {
     "character_name": "Hero",
     "use_bone_system": True,
     "body_parts": ["1", "2"],
+    # Issue #10: hunter type + equipment now part of the global config.
+    "armor_variant": "ff",
+    "armor_id": "pl001",
 }
 
 
@@ -77,6 +80,10 @@ def _fill_form(page, cfg: dict) -> None:
         page.check('input[name="config.use_bone_system"]')
     for v in cfg.get("body_parts", []):
         page.check(f'input[name="config.body_parts"][value="{v}"]')
+    if cfg.get("armor_variant"):
+        page.check(f'input[name="config.armor_variant"][value="{cfg["armor_variant"]}"]')
+    if cfg.get("armor_id"):
+        page.select_option('select[name="config.armor_id"]', cfg["armor_id"])
 
 
 def run() -> int:

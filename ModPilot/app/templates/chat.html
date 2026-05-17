@@ -77,6 +77,18 @@
           <label class="inline"><input type="checkbox" name="config.body_parts" value="4"> Legs (4)</label>
           <label class="inline"><input type="checkbox" name="config.body_parts" value="5"> Waist (5)</label>
         </fieldset>
+        <fieldset class="armor-variant">
+          <legend>Hunter type</legend>
+          <label class="inline"><input type="radio" name="config.armor_variant" value="ff" checked> Female / Female armor (default)</label>
+          <label class="inline"><input type="radio" name="config.armor_variant" value="fm"> Female / Male armor</label>
+          <label class="inline"><input type="radio" name="config.armor_variant" value="mf"> Male / Female armor</label>
+          <label class="inline"><input type="radio" name="config.armor_variant" value="mm"> Male / Male armor</label>
+        </fieldset>
+        <label>Equipment (armor id)
+          <select name="config.armor_id" id="armor-id-select" required>
+            <!-- Options populated by app.js from GET /app/armor_sets on page load. -->
+          </select>
+        </label>
       </fieldset>
 
       <div class="config-actions">

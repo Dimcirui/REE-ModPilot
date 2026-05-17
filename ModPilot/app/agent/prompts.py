@@ -144,6 +144,11 @@ def _render_session_config_block(cfg: dict) -> str:
         f"- use_bone_system (= mhws_use_bonesystem for batch_export): "
         f"{cfg.get('use_bone_system', False)}\n"
         f"- body_parts (= target_parts for batch_export): {cfg.get('body_parts', [])}\n"
+        # Issue #10: hunter type + equipment selection are now pre-collected.
+        # Phase 6 must read these from this block instead of asking the user
+        # or scanning an armor table inline.
+        f"- armor_variant (= batch_export armor_variant): {cfg.get('armor_variant', 'ff')}\n"
+        f"- armor_id (= batch_export armor_id): {cfg.get('armor_id', '')}\n"
     )
 
 

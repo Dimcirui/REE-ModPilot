@@ -119,6 +119,9 @@ def _post_config(client, *, session_id: str, paths, model_type: str):
                 "character_name": "Demo",
                 "use_bone_system": False,
                 "body_parts": ["1"],
+                # Issue #10: required fields now part of SessionConfig.
+                "armor_variant": "ff",
+                "armor_id": "pl001",
             },
         },
     )

@@ -1044,40 +1044,29 @@ then run BoneSystem export for the MHWs armature.
 > in `state_diff["mesh_cleanup_warnings"]` but do NOT block the export.
 > You do NOT need to call any separate cleanup tool before `batch_export`.
 
-### Step 1: Hunter Type Selection
+### Step 1: Hunter Type + Equipment (from session config)
 
-Ask the user to choose ONE export target (4 options):
+> **Issue #10**: hunter type (`armor_variant`) and equipment id (`armor_id`)
+> are now collected by the session-config form before the run starts. They
+> arrive in the system prompt under the pre-collected parameters block. Do
+> **NOT** prompt the user for these mid-run, and do **NOT** scan the armor
+> catalog inline — the catalog lives at `assets/mhws/armor_sets/mhws_armor_sets.json`
+> (mirrored at `ModPilot/app/data/armor_sets.json`) and validation already
+> happened at form submit. Pass the pre-collected values straight through to
+> `batch_export` as `armor_variant` and `armor_id`.
+>
+> **Variant key reference** (for the form / debugging only):
+> `ff` = Female hunter / Female armor (default) · `fm` = Female / Male ·
+> `mf` = Male / Female · `mm` = Male / Male.
+>
+> **Part keys**: `1`=Arm  `2`=Body  `3`=Helmet  `4`=Leg  `5`=Waist
+> (set in session config as `body_parts` → `target_parts`).
 
-| Option | Description |
-|---|---|
-| Female hunter / Female armor set | Default — recommend this unless user specifies |
-| Female hunter / Male armor set | |
-| Male hunter / Female armor set | |
-| Male hunter / Male armor set | |
+<!-- Phase 6 Step 2 (the 122-row armor table) was removed in issue #10.
+     The catalog lives in app/data/armor_sets.json and is exposed to the
+     form via GET /app/armor_sets. -->
 
-Present as a simple choice before opening the exporter.
-
-### Step 2: Equipment Selection
-
-Ask the user to name the target armor set (e.g. "煌雷龙 β 胸甲"). Match the description
-against the table below to find the `id`. The `id` is passed to the batch export operator
-as `mhws_armor_scheme`.
-
-**If multiple candidates match** (e.g. α and β share the same `id`): present via
-`propose_and_confirm` and wait for user to confirm.
-
-**Variant key** (determined by Hunter Type from Step 1):
-| Variant | Meaning |
-|---|---|
-| `ff` | Female hunter / Female armor set — **default** |
-| `fm` | Female hunter / Male armor set |
-| `mf` | Male hunter / Female armor set |
-| `mm` | Male hunter / Male armor set |
-
-**Part keys**: `1`=手臂(Arm)  `2`=身体(Body)  `3`=头盔(Helmet)  `4`=腿(Leg)  `5`=腰(Waist)
-
-**Full armor set table** (source: `assets/mhws/armor_sets/mhws_armor_sets.json`):
-
+<!-- (former armor catalog, removed in issue #10)
 | ID | Name |
 |---|---|
 | pl001 | 希望 α (Hope α) |
@@ -1202,8 +1191,9 @@ as `mhws_armor_scheme`.
 | pl103 | 女王 α (Sororal α) |
 | pl104 | 苍世武士 α (Azure Age Haori) |
 | pl105 | 沼喷龙头套 α (Rompomask α) |
+-->
 
-### Step 3: Collection Assignment
+### Step 2: Collection Assignment
 
 **Before assigning, verify all three collection names exist:**
 Call `list_collections()` and confirm the three names appear in the result:
@@ -1229,13 +1219,13 @@ Assignment rules:
 
 Present the final assignment table for user confirmation before proceeding.
 
-### Step 4: Batch Export
+### Step 3: Batch Export
 
 After user confirms collection assignments:
 1. Run the MHWs Batch Exporter for all confirmed slots.
 2. Unselected / empty slots automatically write empty placeholder files.
 
-### Step 5: BoneSystem Export
+### Step 4: BoneSystem Export
 
 Always required. Run after batch export completes.
 - **Armature**: select the MHWs armature.
@@ -1243,7 +1233,7 @@ Always required. Run after batch export completes.
   (same string used for the `natives/stm/...` path).
 - Run BoneSystem export.
 
-### Step 6: Export Log Analysis
+### Step 5: Export Log Analysis
 
 After all exports finish, the exporter may produce a warning/error log.
 This log aggregates errors from all preceding phases — many issues in Phases 1-5
@@ -1264,10 +1254,11 @@ If warnings or errors appear in the log:
 | Material slot mismatch | Phase 3 merge issue | Check merged mesh material slots |
 
 ### User Interaction Points
-- **Before Step 4**: Confirm hunter type + equipment + collection assignment in one summary.
-  "Ready to export. Hunter: [type], Equipment: [name], Body slot → [collection].
+- **Before Step 3**: Confirm collection assignment in one summary (hunter type +
+  equipment already came from the session config).
+  "Ready to export. Hunter: [armor_variant], Equipment: [armor_id], Body slot → [collection].
   All other slots → empty model. [Confirm / Edit]"
-- **After Step 6**: If log is clean, report success + file paths.
+- **After Step 5**: If log is clean, report success + file paths.
   If log has warnings, walk through them before asking "Done".
 
 ### Exit Conditions

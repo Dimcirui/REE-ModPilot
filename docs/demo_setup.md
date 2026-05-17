@@ -178,6 +178,8 @@ Most fields are self-explanatory. The non-obvious ones:
 | `texture_mapping` | Only required for non-MMD sources. `{mat_name: {slot: filepath}}`, slot keys = Base Color / Alpha / Roughness / Metallic / Emission / Normal. MMD wires this automatically. |
 | `preset_mapping` | `{mat_name: preset_display_name}` — preset names come from RE Mesh Editor's `Presets/MHWILDS/*.json` (e.g. `Hair`, `Skin`, `Character`, `cloth`) |
 | `inferred_types` | `{chain_head_bone_name: physics_preset_key}` — keys from `ModPilot/app/data/physics_presets.json` (e.g. `hair_long_straight`, `cloth_skirt_waist`). Run an interactive agent session once to discover the right keys for your model, then paste them here. |
+| `armor_id` | Player-equip slot id from `ModPilot/app/data/armor_sets.json` (e.g. `pl001` = 希望 α). Issue #10: also collected by the interactive UI's session-config form so phase 6 never asks at runtime. |
+| `armor_variant` | Hunter gender + armor gender: `ff` female/female (default for char mods), `fm` / `mf` / `mm`. Same source as above; pre-collected via the form. |
 | `expected_files` | Relative paths under `natives_root` you expect to exist after Phase 6. The example file lists the canonical set for `armor_id=pl001`, `armor_variant=ff`, `target_parts=["2"]`. |
 
 ---

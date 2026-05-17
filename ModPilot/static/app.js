@@ -398,6 +398,9 @@
     "config.mod_root",
     "config.author",
     "config.character_name",
+    // Issue #10: hunter type + equipment id are pre-collected here so phase 6
+    // doesn't have to prompt for them.
+    "config.armor_id",
   ];
 
   const configForm    = () => document.getElementById("config-form");
@@ -410,6 +413,7 @@
   const readConfigForm = () => {
     const form = configForm();
     if (!form) return null;
+    const variantEl = form.querySelector('input[name="config.armor_variant"]:checked');
     const cfg = {
       model_path:      form.elements["config.model_path"].value.trim(),
       model_type:      form.elements["config.model_type"].value,
@@ -421,6 +425,11 @@
       body_parts: Array.from(form.querySelectorAll(
         'input[name="config.body_parts"]:checked'
       )).map((el) => el.value),
+      // Issue #10: hoisted from phase 6.
+      armor_variant: variantEl ? variantEl.value : "ff",
+      armor_id:      form.elements["config.armor_id"]
+        ? form.elements["config.armor_id"].value.trim()
+        : "",
     };
     return cfg;
   };
@@ -445,6 +454,13 @@
     form.querySelectorAll('input[name="config.body_parts"]').forEach((el) => {
       el.checked = wanted.has(el.value);
     });
+    if (cfg.armor_variant) {
+      const r = form.querySelector(
+        `input[name="config.armor_variant"][value="${cfg.armor_variant}"]`
+      );
+      if (r) r.checked = true;
+    }
+    setVal("config.armor_id", cfg.armor_id);
   };
 
   const isConfigComplete = () => {
@@ -521,6 +537,28 @@
         updateStartButtonState();
       })
       .catch(() => { /* offline / 503 — Auto-detect option still works */ });
+
+    // (a2) Populate the armor-id dropdown (issue #10). Static catalog from
+    // /app/armor_sets; no Blender round-trip needed.
+    fetch("/app/armor_sets", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { armor_sets: [] }))
+      .then(({ armor_sets }) => {
+        const sel = document.getElementById("armor-id-select");
+        if (!sel) return;
+        const previous = sel.value;
+        for (const entry of armor_sets || []) {
+          if (Array.from(sel.options).some((o) => o.value === entry.id)) continue;
+          const opt = document.createElement("option");
+          opt.value = entry.id;
+          opt.textContent = `${entry.id} — ${entry.name}`;
+          sel.appendChild(opt);
+        }
+        if (previous && Array.from(sel.options).some((o) => o.value === previous)) {
+          sel.value = previous;
+        }
+        updateStartButtonState();
+      })
+      .catch(() => { /* offline — user must hand-type via localStorage rehydrate */ });
 
     try {
       const raw = localStorage.getItem(CONFIG_STORAGE_KEY);

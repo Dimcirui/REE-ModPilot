@@ -1,0 +1,493 @@
+{
+  "schema_note": "MHWilds armor sets; mirrors assets/mhws/armor_sets/mhws_armor_sets.json. Source: agent_workflow.md Phase 6 table.",
+  "sets": [
+    {
+      "id": "pl001",
+      "name": "希望 α (Hope α)"
+    },
+    {
+      "id": "pl003",
+      "name": "辟兽 α/β (Doshaguma α/β)"
+    },
+    {
+      "id": "pl003_500",
+      "name": "护辟兽 α/β (Guardian Doshaguma α/β)"
+    },
+    {
+      "id": "pl004",
+      "name": "骨制 α (Bone α)"
+    },
+    {
+      "id": "pl005",
+      "name": "皮制 α (Leather α)"
+    },
+    {
+      "id": "pl006",
+      "name": "锁甲 α (Chainmail α)"
+    },
+    {
+      "id": "pl007",
+      "name": "钳速龙 α/β (Talioth α/β)"
+    },
+    {
+      "id": "pl008",
+      "name": "缠蛙 α/β (Chatacabra α/β)"
+    },
+    {
+      "id": "pl009",
+      "name": "炎尾龙 α/β (Quematrice α/β)"
+    },
+    {
+      "id": "pl010",
+      "name": "合金 α (Alloy α)"
+    },
+    {
+      "id": "pl011",
+      "name": "锯带龙 α/β (Piragill α/β)"
+    },
+    {
+      "id": "pl012",
+      "name": "刺花蜘蛛 α/β (Lala Barina α/β)"
+    },
+    {
+      "id": "pl013",
+      "name": "桃毛兽王 α/β (Conga α/β)"
+    },
+    {
+      "id": "pl014",
+      "name": "沙海龙 α/β (Balahara α/β)"
+    },
+    {
+      "id": "pl015",
+      "name": "铸铁 α (Ingot α)"
+    },
+    {
+      "id": "pl016",
+      "name": "血盗虫 α/β (Bulaqchi α/β)"
+    },
+    {
+      "id": "pl017",
+      "name": "波衣龙 α/β (Uth Duna α/β)"
+    },
+    {
+      "id": "pl017_300",
+      "name": "波衣龙 γ (Uth Duna γ)"
+    },
+    {
+      "id": "pl018",
+      "name": "沼喷龙 α/β (Rompopolo α/β)"
+    },
+    {
+      "id": "pl019",
+      "name": "杜宾 α/β (Dober α/β)"
+    },
+    {
+      "id": "pl020",
+      "name": "盔速龙 α/β (Kranodath α/β)"
+    },
+    {
+      "id": "pl021",
+      "name": "煌雷龙 α/β (Rey Dau α/β)"
+    },
+    {
+      "id": "pl021_300",
+      "name": "煌雷龙 γ (Rey Dau γ)"
+    },
+    {
+      "id": "pl022",
+      "name": "影蜘蛛 α/β (Nerscylla α/β)"
+    },
+    {
+      "id": "pl023",
+      "name": "风铗龙 α/β (Hirabami α/β)"
+    },
+    {
+      "id": "pl024",
+      "name": "赫猿兽 α/β (Ajarakan α/β)"
+    },
+    {
+      "id": "pl025",
+      "name": "花纹钢 α/β (Damascus α/β)"
+    },
+    {
+      "id": "pl026",
+      "name": "血眠虫 α/β (Comaqchi α/β)"
+    },
+    {
+      "id": "pl027",
+      "name": "狱焰蛸 α/β (Nu Udra α/β)"
+    },
+    {
+      "id": "pl027_300",
+      "name": "狱焰蛸 γ (Nu Udra γ)"
+    },
+    {
+      "id": "pl028",
+      "name": "巨蜂 α/β (Vespoid α/β)"
+    },
+    {
+      "id": "pl029",
+      "name": "冻峰龙 α/β (Dahaad α/β)"
+    },
+    {
+      "id": "pl029_300",
+      "name": "冻峰龙 γ (Dahaad γ)"
+    },
+    {
+      "id": "pl030_600",
+      "name": "护凶爪龙 α/β (Guardian Ebony α/β)"
+    },
+    {
+      "id": "pl031",
+      "name": "暗器蛸 α/β (Xu Wu α/β)"
+    },
+    {
+      "id": "pl032",
+      "name": "锁刃龙 α/β (Arkveld α/β)"
+    },
+    {
+      "id": "pl032_300",
+      "name": "锁刃龙 γ (Arkveld γ)"
+    },
+    {
+      "id": "pl032_500",
+      "name": "护锁刃龙 α/β (Guardian Arkveld α/β)"
+    },
+    {
+      "id": "pl033",
+      "name": "护鹭鹰龙 α/β (Guardian Seikret α/β)"
+    },
+    {
+      "id": "pl034",
+      "name": "怪鸟 α/β (Kut-Ku α/β)"
+    },
+    {
+      "id": "pl035",
+      "name": "雌火龙 α/β (Rathian α/β)"
+    },
+    {
+      "id": "pl036",
+      "name": "火龙 α/β (Rathalos α/β)"
+    },
+    {
+      "id": "pl036_500",
+      "name": "护火龙 α/β (Guardian Rathalos α/β)"
+    },
+    {
+      "id": "pl037",
+      "name": "毒怪鸟 α/β (Gypceros α/β)"
+    },
+    {
+      "id": "pl038",
+      "name": "千刃龙 α/β (Seregios α/β)"
+    },
+    {
+      "id": "pl039",
+      "name": "海龙 α/β (Lagiacrus α/β)"
+    },
+    {
+      "id": "pl040",
+      "name": "铠龙 α/β (Gravios α/β)"
+    },
+    {
+      "id": "pl041",
+      "name": "雪狮子王 α/β (Blango α/β)"
+    },
+    {
+      "id": "pl042",
+      "name": "黑蚀龙 α/β (Gore α/β)"
+    },
+    {
+      "id": "pl043_600",
+      "name": "护雷颚龙 α/β (Guardian Fulgur α/β)"
+    },
+    {
+      "id": "pl044",
+      "name": "龙王的独眼 α (Dragonking α)"
+    },
+    {
+      "id": "pl045",
+      "name": "封印的龙骸布 α (Sealed Dragon Cloth α)"
+    },
+    {
+      "id": "pl046",
+      "name": "库纳法 α (Kunafa α)"
+    },
+    {
+      "id": "pl047",
+      "name": "阿孜兹 α (Azuz α)"
+    },
+    {
+      "id": "pl048",
+      "name": "西尔德 α (Sild α)"
+    },
+    {
+      "id": "pl049",
+      "name": "酥加 α (Suja α)"
+    },
+    {
+      "id": "pl050",
+      "name": "调查团 α (Commission α)"
+    },
+    {
+      "id": "pl051",
+      "name": "机械 α (Artian α)"
+    },
+    {
+      "id": "pl052",
+      "name": "咬鱼 α (Gajau α)"
+    },
+    {
+      "id": "pl053",
+      "name": "死神 α (Death Stench α)"
+    },
+    {
+      "id": "pl054",
+      "name": "燕尾蝶 α (Butterfly α)"
+    },
+    {
+      "id": "pl055",
+      "name": "独角仙 α (King Beetle α)"
+    },
+    {
+      "id": "pl056",
+      "name": "矿石 α (High Metal α)"
+    },
+    {
+      "id": "pl057",
+      "name": "战斗 α (Battle α)"
+    },
+    {
+      "id": "pl058",
+      "name": "花瓣 α (Melahoa α)"
+    },
+    {
+      "id": "pl059",
+      "name": "纯洁龙 α/β (Numinous α/β)"
+    },
+    {
+      "id": "pl060",
+      "name": "公会骑士 (Guild Knight)"
+    },
+    {
+      "id": "pl061",
+      "name": "兵之甲冑 (Feudal Soldier)"
+    },
+    {
+      "id": "pl062",
+      "name": "公会王牌 α (Guild Ace α)"
+    },
+    {
+      "id": "pl063",
+      "name": "花妖猩 α (Mimiphyta α)"
+    },
+    {
+      "id": "pl064",
+      "name": "鬼角假发 (Oni Horns Wig)"
+    },
+    {
+      "id": "pl065",
+      "name": "剑豪独眼罩 (Fencer's Eyepatch)"
+    },
+    {
+      "id": "pl066",
+      "name": "泡狐龙 α/β (Mizutsune α/β)"
+    },
+    {
+      "id": "pl067",
+      "name": "贵族 (Noblesse)"
+    },
+    {
+      "id": "pl068",
+      "name": "萌芽头冠 (Florescent Circlet)"
+    },
+    {
+      "id": "pl069",
+      "name": "落樱缤纷 α (Sakuratide α)"
+    },
+    {
+      "id": "pl070",
+      "name": "恶魔 α (Demon)"
+    },
+    {
+      "id": "pl071",
+      "name": "潜水员 α (Diver α)"
+    },
+    {
+      "id": "pl072",
+      "name": "龙人族之耳 (Wyverian Ears)"
+    },
+    {
+      "id": "pl073",
+      "name": "公会十字 α (Guild Cross α)"
+    },
+    {
+      "id": "pl074",
+      "name": "职员 α (Clerk α)"
+    },
+    {
+      "id": "pl075",
+      "name": "盛开 α (Blossom α)"
+    },
+    {
+      "id": "pl076",
+      "name": "奉献耳饰 α (Earrings of Dedication α)"
+    },
+    {
+      "id": "pl076_100",
+      "name": "大胃王耳饰 α (Gourmand's Earring α)"
+    },
+    {
+      "id": "pl077",
+      "name": "艾露猫头套 α (Faux Felyne α)"
+    },
+    {
+      "id": "pl078",
+      "name": "泡歌鸮 α (Amstrigian α)"
+    },
+    {
+      "id": "pl079",
+      "name": "封印的龙骸布 (Sealed Dragon Cloth)"
+    },
+    {
+      "id": "pl080",
+      "name": "霹雳舞猫 (Cypurrpunk)"
+    },
+    {
+      "id": "pl081",
+      "name": "踊火 α (Afi α)"
+    },
+    {
+      "id": "pl083",
+      "name": "毛茸茸兽耳 (Fluffy Ears)"
+    },
+    {
+      "id": "pl084",
+      "name": "毛茸茸兽尾 (Fluffy Tail)"
+    },
+    {
+      "id": "pl085",
+      "name": "哥特幽魂 α (Dreamwalker α)"
+    },
+    {
+      "id": "pl086",
+      "name": "收获 α (Harvest α)"
+    },
+    {
+      "id": "pl087",
+      "name": "调查队耳饰 α (Expedition Headgear α)"
+    },
+    {
+      "id": "pl088",
+      "name": "知性眼镜 α (Strategist Spectacles α)"
+    },
+    {
+      "id": "pl088_100",
+      "name": "方形眼镜 α (Square Glasses α)"
+    },
+    {
+      "id": "pl088_200",
+      "name": "墨镜 α (Shadow Shades α)"
+    },
+    {
+      "id": "pl088_300",
+      "name": "圆框眼镜 α (Round Glasses α)"
+    },
+    {
+      "id": "pl088_400",
+      "name": "心形眼镜 α (Lovely Shades α)"
+    },
+    {
+      "id": "pl088_500",
+      "name": "下半框眼镜 α (Half Rim Glasses α)"
+    },
+    {
+      "id": "pl088_600",
+      "name": "泪滴墨镜 α (Aviator Shades α)"
+    },
+    {
+      "id": "pl088_700",
+      "name": "猫眼眼镜 α (Kitten Frames α)"
+    },
+    {
+      "id": "pl088_800",
+      "name": "炫光护目镜 α (Mirror Visor α)"
+    },
+    {
+      "id": "pl088_900",
+      "name": "分析之眼 α (Analytic E.Y.E. α)"
+    },
+    {
+      "id": "pl089",
+      "name": "单羽项链 α (Pinion Necklace α)"
+    },
+    {
+      "id": "pl090",
+      "name": "启程的鹰之心 α (Hawkheart Jacket α)"
+    },
+    {
+      "id": "pl091",
+      "name": "宇宙机装 (Cosmoloid)"
+    },
+    {
+      "id": "pl092",
+      "name": "巨戟龙 α/β (Gogmazios α/β)"
+    },
+    {
+      "id": "pl093",
+      "name": "祭典 α (Ceremonial α)"
+    },
+    {
+      "id": "pl094",
+      "name": "Gala Suit Slacks α"
+    },
+    {
+      "id": "pl095",
+      "name": "辟兽头套 α (Doshagumask α)"
+    },
+    {
+      "id": "pl096",
+      "name": "胶鲵 α (Gelidron α)"
+    },
+    {
+      "id": "pl097",
+      "name": "肉垫手套 α (Toe Bean Mittens α)"
+    },
+    {
+      "id": "pl098",
+      "name": "骷髅面罩 α (Skull Mask α)"
+    },
+    {
+      "id": "pl099",
+      "name": "猎户星 α (Orion α)"
+    },
+    {
+      "id": "pl100",
+      "name": "欧米茄服装 α (Omega Attire α)"
+    },
+    {
+      "id": "pl100_100",
+      "name": "凶恶套装 α (Bale Armor α)"
+    },
+    {
+      "id": "pl101",
+      "name": "精力充沛森狸人 α (Eager Wudwud α)"
+    },
+    {
+      "id": "pl102",
+      "name": "祝福腰饰 α (Blessed Waistchain α)"
+    },
+    {
+      "id": "pl103",
+      "name": "女王 α (Sororal α)"
+    },
+    {
+      "id": "pl104",
+      "name": "苍世武士 α (Azure Age Haori)"
+    },
+    {
+      "id": "pl105",
+      "name": "沼喷龙头套 α (Rompomask α)"
+    }
+  ]
+}

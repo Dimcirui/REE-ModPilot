@@ -39,6 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sse_starlette.sse import EventSourceResponse
 
 from app.agent.loop import AgentLoop
+from app.armor_catalog import is_valid_armor_id, list_armor_sets
 from app.blender.client import BlenderBusyError, BlenderClient, BlenderError
 from app.blender.preset_catalog import (
     SHIPPED_X_PRESETS,
@@ -565,6 +566,16 @@ class SessionConfig(BaseModel):
     use_bone_system: bool = False
     body_parts: list[Literal["1", "2", "3", "4", "5"]] = Field(..., min_length=1)
 
+    # Issue #10: hunter type + equipment selection. Hoisted from Phase 6
+    # judgement into the session config so the agent no longer has to prompt
+    # for them mid-run (and the workflow doc can drop its 122-row armor table).
+    # armor_variant: first letter = hunter gender (f/m), second = armor gender.
+    # armor_id: catalog id like "pl001"; validated against shipped catalog in
+    # the route handler, not here, so a future catalog update doesn't bump
+    # the SessionConfig schema.
+    armor_variant: Literal["ff", "fm", "mf", "mm"] = "ff"
+    armor_id: str
+
 
 class SessionConfigRequest(BaseModel):
     session_id: str
@@ -595,6 +606,13 @@ async def save_session_config(request: Request, body: SessionConfigRequest) -> J
         errors["model_type"] = (
             f"Unknown preset {cfg.model_type!r}. "
             f"Pick one of: Auto-detect, {', '.join(sorted(X_PRESETS))}."
+        )
+    # Issue #10: validate armor_id against the shipped catalog so a typo can't
+    # silently sail through into batch_export.
+    if not is_valid_armor_id(cfg.armor_id):
+        errors["armor_id"] = (
+            f"Unknown armor id {cfg.armor_id!r}. "
+            "Pick one from the dropdown (see GET /app/armor_sets)."
         )
     if errors:
         raise HTTPException(status_code=422, detail={"field_errors": errors})
@@ -634,6 +652,20 @@ async def get_x_presets() -> JSONResponse:
         ]
     presets.sort(key=lambda p: p["name"])
     return JSONResponse({"presets": presets})
+
+
+# ── /app/armor_sets (issue #10) ────────────────────────────────────────────
+
+
+@app.get("/app/armor_sets")
+async def get_armor_sets() -> JSONResponse:
+    """Return the MHWilds armor-set catalog for the session-config dropdown.
+
+    Static list sourced from app/data/armor_sets.json. Phase 6's hunter-type +
+    equipment selection are now collected via the session-config form instead
+    of inline workflow prompts (issue #10).
+    """
+    return JSONResponse({"armor_sets": list_armor_sets()})
 
 
 # ── /agent/widget (Stage 5 issue #7) ───────────────────────────────────────

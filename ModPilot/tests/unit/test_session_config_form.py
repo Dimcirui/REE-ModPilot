@@ -84,6 +84,9 @@ def _valid_config_payload(tmp_path) -> dict:
             "character_name": "Hero",
             "use_bone_system": True,
             "body_parts": ["1", "2"],
+            # Issue #10: hunter type + equipment now part of the global config.
+            "armor_variant": "ff",
+            "armor_id": "pl001",
         },
     }
 
@@ -111,6 +114,9 @@ def test_post_config_stores_in_app_state(monkeypatch, tmp_path):
         assert stored.model_type == "MMD"
         assert stored.use_bone_system is True
         assert stored.body_parts == ["1", "2"]
+        # Issue #10: hunter type + equipment now live here.
+        assert stored.armor_variant == "ff"
+        assert stored.armor_id == "pl001"
 
 
 @pytest.mark.unit
@@ -198,3 +204,61 @@ def test_session_config_passed_to_agent_loop(monkeypatch, tmp_path):
         assert "Pre-collected session parameters" in loop._system_prompt
         assert payload["config"]["author"] in loop._system_prompt
         assert payload["config"]["character_name"] in loop._system_prompt
+        # Issue #10: hunter type + equipment must appear in the system prompt
+        # so phase 6 can read them instead of asking the user.
+        assert "armor_variant" in loop._system_prompt
+        assert "ff" in loop._system_prompt
+        assert "pl001" in loop._system_prompt
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
+def test_post_config_rejects_unknown_armor_id(monkeypatch, tmp_path):
+    """Issue #10: an armor_id not in the shipped catalog returns 422."""
+    _patch_blender(monkeypatch)
+    _patch_llm_factory(monkeypatch)
+    from app.main import app
+
+    payload = _valid_config_payload(tmp_path)
+    payload["config"]["armor_id"] = "pl9999_does_not_exist"
+    with TestClient(app) as client:
+        r = client.post("/agent/config", json=payload)
+        assert r.status_code == 422
+        detail = r.json()["detail"]
+        assert "field_errors" in detail
+        assert "armor_id" in detail["field_errors"]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
+def test_post_config_rejects_invalid_armor_variant(monkeypatch, tmp_path):
+    """Issue #10: armor_variant outside {ff,fm,mf,mm} fails Pydantic validation."""
+    _patch_blender(monkeypatch)
+    _patch_llm_factory(monkeypatch)
+    from app.main import app
+
+    payload = _valid_config_payload(tmp_path)
+    payload["config"]["armor_variant"] = "xx"
+    with TestClient(app) as client:
+        r = client.post("/agent/config", json=payload)
+        assert r.status_code == 422
+        assert "armor_variant" in str(r.json())
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
+def test_armor_sets_endpoint_returns_catalog(monkeypatch):
+    """GET /app/armor_sets returns the shipped armor catalog."""
+    _patch_blender(monkeypatch)
+    _patch_llm_factory(monkeypatch)
+    from app.main import app
+
+    with TestClient(app) as client:
+        r = client.get("/app/armor_sets")
+        assert r.status_code == 200
+        body = r.json()
+        assert "armor_sets" in body
+        ids = {entry["id"] for entry in body["armor_sets"]}
+        # Sanity: at least the default pl001 ("希望 α") and a known late-set are present.
+        assert "pl001" in ids
+        assert "pl105" in ids
