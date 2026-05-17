@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import socket
 import tempfile
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
@@ -29,6 +30,19 @@ _RECV_CHUNK = 8192
 
 class BlenderError(RuntimeError):
     """Raised when blender-mcp responds with status='error'."""
+
+
+class BlenderBusyError(BlenderError):
+    """Raised by non-blocking callers (e.g. viewport screenshot) when the
+    BlenderClient lock is held by a long-running phase tool call.
+
+    The underlying TCP socket is single-stream — two concurrent send/recv pairs
+    on the same socket cause byte-level interleaving and indefinite recv hangs
+    (observed in the agent loop's parallel-ish tool execution + the side-panel
+    auto-refresh racing physics_chains).  Long-running phase tools take the
+    lock blocking; opportunistic callers (viewport screenshot) take it with a
+    short timeout and surface BlenderBusyError → HTTP 503 instead of deadlocking.
+    """
 
 
 class BlenderClient:
@@ -51,6 +65,10 @@ class BlenderClient:
         self.port = port
         self.timeout = timeout
         self._sock: socket.socket | None = None
+        # RLock so internal helpers (e.g. get_viewport_screenshot acquires the
+        # lock with timeout, then calls self.call() which would re-acquire).
+        # Plain Lock would self-deadlock on the second acquire.
+        self._lock = threading.RLock()
 
     # ── connection management ──────────────────────────────────────────────
 
@@ -63,11 +81,31 @@ class BlenderClient:
         self._sock = sock
         return self
 
+    def reconnect(self) -> "BlenderClient":
+        """Force-close any existing socket and open a fresh connection."""
+        self._invalidate()
+        return self.connect()
+
     def close(self) -> None:
         """Close the TCP connection if open."""
         if self._sock is not None:
             try:
                 self._sock.close()
+            finally:
+                self._sock = None
+
+    def _invalidate(self) -> None:
+        """Close the socket and mark this client as disconnected.
+
+        Called automatically after any OS-level socket error so that the next
+        operation triggers a clean reconnect instead of hitting WinError 10038
+        (WSAENOTSOCK — operation attempted on a dead/invalid socket handle).
+        """
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
             finally:
                 self._sock = None
 
@@ -119,14 +157,42 @@ class BlenderClient:
         Send one blender-mcp command and return the unwrapped result payload.
 
         Raises BlenderError on status='error'.
+        On any OS-level socket error, invalidates the socket before re-raising
+        so the next call can reconnect cleanly (avoids WinError 10038).
+
+        Thread-safe: serialises send/recv pairs via self._lock so concurrent
+        callers (agent loop tool calls + viewport screenshot side-panel pull)
+        cannot interleave bytes on the shared TCP stream.
         """
-        sock = self._require_connected()
-        payload = json.dumps({"type": cmd_type, "params": params or {}}).encode("utf-8")
-        sock.sendall(payload)
-        response = self._recv_response(sock)
-        if response.get("status") != "success":
-            raise BlenderError(response.get("message", "unknown error"))
-        return response.get("result", {})
+        with self._lock:
+            sock = self._require_connected()
+            payload = json.dumps({"type": cmd_type, "params": params or {}}).encode("utf-8")
+            try:
+                sock.sendall(payload)
+                response = self._recv_response(sock)
+            except OSError:
+                self._invalidate()
+                raise
+            if response.get("status") != "success":
+                raise BlenderError(response.get("message", "unknown error"))
+            return response.get("result", {})
+
+    def try_call(
+        self, cmd_type: str, params: dict | None = None, lock_timeout: float = 0.5
+    ) -> dict:
+        """Non-blocking variant: raises BlenderBusyError if the lock can't be
+        acquired within lock_timeout seconds.  Use from side-panel pulls / health
+        checks / any caller that prefers to fail fast rather than queue behind a
+        long phase tool call.
+        """
+        if not self._lock.acquire(timeout=lock_timeout):
+            raise BlenderBusyError(
+                f"Blender client is busy with another call; gave up after {lock_timeout}s."
+            )
+        try:
+            return self.call(cmd_type, params)
+        finally:
+            self._lock.release()
 
     # ── high-level helpers ─────────────────────────────────────────────────
 
@@ -182,20 +248,28 @@ class BlenderClient:
         """Call the built-in get_object_info handler for a named object."""
         return self.call("get_object_info", {"object_name": object_name})
 
-    def get_viewport_screenshot(self, max_size: int = 800, format: str = "png") -> bytes:
+    def get_viewport_screenshot(
+        self, max_size: int = 800, format: str = "png", busy_timeout: float = 0.5
+    ) -> bytes:
         """Capture the active 3D viewport and return the encoded image bytes.
 
         The addon writes the image to a filepath we supply, then we read it
         back and delete the temp file. The handler always responds with
         status="success" — failures surface as result["error"], so we
         translate that into BlenderError here to match the rest of the API.
+
+        Uses try_call() — raises BlenderBusyError instead of blocking when a
+        long phase tool call (e.g. physics_chains) holds the lock.  The route
+        handler in main.py maps this to HTTP 503 so the side-panel auto-pull
+        skips this refresh and tries again on the next tick.
         """
         with tempfile.NamedTemporaryFile(suffix=f".{format}", delete=False) as tf:
             path = Path(tf.name)
         try:
-            result = self.call(
+            result = self.try_call(
                 "get_viewport_screenshot",
                 {"filepath": str(path), "max_size": max_size, "format": format},
+                lock_timeout=busy_timeout,
             )
             err = result.get("error")
             if err:

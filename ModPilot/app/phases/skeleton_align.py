@@ -174,6 +174,13 @@ class SkeletonAlign(PhaseTool):
         Selection order matters: source first, Ctrl+click target, target is active.
         Bones with skip_snap:true in Y preset are automatically skipped by the operator.
         """
+        # NOTE on hidden armatures:
+        #   modder.universal_snap requires both armatures SELECTED.  Hidden objects
+        #   (either o.hide_viewport=True [outliner camera-off] or o.hide_get()=True
+        #   [viewport H-key]) cannot be selected — select_set(True) is a silent
+        #   no-op for hide_get()=True, and the operator then fails with a confusing
+        #   generic error.  Auto-unhide both armatures before selecting; user can
+        #   re-hide manually after.
         code = (
             f"import bpy\n"
             # Object existence checks
@@ -190,19 +197,38 @@ class SkeletonAlign(PhaseTool):
             f"    settings = bpy.context.scene.mhw_suite_settings\n"
             f"    settings.import_preset_enum = {(x_preset + '.json')!r}\n"
             f"    settings.target_preset_enum = {(y_preset + '.json')!r}\n"
+            # Auto-unhide both armatures (and their containing collections) so
+            # select_set + active assignment actually take effect.
+            f"    unhidden = []\n"
+            f"    for o in (src, tgt):\n"
+            f"        if o.hide_viewport:\n"
+            f"            o.hide_viewport = False\n"
+            f"            unhidden.append(o.name + ':hide_viewport')\n"
+            f"        if o.hide_get():\n"
+            f"            o.hide_set(False)\n"
+            f"            unhidden.append(o.name + ':hide_get')\n"
             # Select: source first, then target (active)
             f"    bpy.ops.object.mode_set(mode='OBJECT')\n"
             f"    bpy.ops.object.select_all(action='DESELECT')\n"
             f"    src.select_set(True)\n"
             f"    tgt.select_set(True)\n"
             f"    bpy.context.view_layer.objects.active = tgt\n"
+            # Defensive post-select assertion — if select_set silently failed
+            # (e.g. armature in a hidden collection), fail with an actionable
+            # message rather than letting the operator produce a generic error.
+            f"    not_selected = [o.name for o in (src, tgt) if not o.select_get()]\n"
+            f"    if not_selected:\n"
+            f"        print({BLENDER_SENTINEL!r})\n"
+            f"        print('PRECONDITION:not_selectable:' + ','.join(not_selected))\n"
+            f"    else:\n"
             # Run
-            f"    ret = bpy.ops.{_OP}()\n"
-            f"    print({BLENDER_SENTINEL!r})\n"
-            f"    print(ret)\n"
+            f"        ret = bpy.ops.{_OP}()\n"
+            f"        print({BLENDER_SENTINEL!r})\n"
+            f"        print('UNHIDDEN:' + (','.join(unhidden) if unhidden else 'none'))\n"
+            f"        print(ret)\n"
         )
         lines = client.execute_and_extract(code)
-        if lines and lines[0].startswith("PRECONDITION:"):
+        if lines and lines[0].startswith("PRECONDITION:objects_not_found:"):
             missing = lines[0].split(":", 2)[-1] if ":" in lines[0] else "unknown"
             return PhaseError(
                 category="precondition",
@@ -213,4 +239,27 @@ class SkeletonAlign(PhaseTool):
                     "The target game skeleton must be imported into the scene first."
                 ),
             )
-        return require_finished(lines, _OP)
+        if lines and lines[0].startswith("PRECONDITION:not_selectable:"):
+            names = lines[0].split(":", 2)[-1] if ":" in lines[0] else "unknown"
+            return PhaseError(
+                category="precondition",
+                operator=_OP,
+                message=f"Armature(s) not selectable even after auto-unhide: {names}",
+                suggestion=(
+                    "The armature is likely inside a hidden / excluded Collection, "
+                    "or has hide_select=True.  In Blender Outliner: ensure both "
+                    "armatures' containing collections are enabled (not greyed out), "
+                    "and remove any selection-disable arrow icon on the armature."
+                ),
+            )
+        # Strip the UNHIDDEN trace line before passing to require_finished()
+        # so operator success detection isn't thrown off by the diagnostic note.
+        unhidden_note = next((line for line in lines if line.startswith("UNHIDDEN:")), None)
+        operator_lines = [line for line in lines if not line.startswith("UNHIDDEN:")]
+        result = require_finished(operator_lines, _OP)
+        if result is None and unhidden_note and unhidden_note != "UNHIDDEN:none":
+            # Operator succeeded; surface the auto-unhide as a debug note via
+            # logging.  Not a failure — phase still returns ok.  TODO: wire to
+            # state_diff if we add a "warnings" field.
+            pass
+        return result

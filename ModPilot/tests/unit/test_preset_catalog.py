@@ -251,10 +251,11 @@ def test_discover_preset_dir_success() -> None:
     client.execute_and_extract.return_value = ["C:\\fake\\path\\import"]
     path = discover_preset_dir(client)
     assert path == Path("C:\\fake\\path\\import")
-    # Verify the code we sent references user_resource (so a real Blender
-    # would actually probe its install path, not a hardcoded one).
+    # Verify the code uses the two-strategy approach: module scan primary,
+    # script_paths fallback with candidate names.
     sent_code = client.execute_and_extract.call_args[0][0]
-    assert "bpy.utils.user_resource" in sent_code
+    assert "sys.modules" in sent_code
+    assert "bpy.utils.script_paths" in sent_code
     assert "Modding-Toolkit" in sent_code
 
 

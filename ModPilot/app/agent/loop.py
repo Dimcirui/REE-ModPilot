@@ -117,12 +117,58 @@ def _parse_dsml_tool_calls(content: str) -> list[dict]:
         calls.append({"id": f"dsml_{i}_{tool_name}", "name": tool_name, "input": params})
     return calls
 
+_GROUP_FALLBACK_NATURE: dict[str, str] = {
+    "hair":        "头发",
+    "cloth":       "布料",
+    "ribbon":      "飘带",
+    "tail":        "尾巴",
+    "non_physics": "辅助骨",
+}
+
+
+def _apply_merge_rules(chain: dict) -> dict:
+    """Apply deterministic post-processing after LLM annotation.
+
+    1. suggest_merge: derived from group and depth — not left to the LLM.
+    2. guessed_nature fallback: if the LLM omitted it but group is known,
+       substitute a generic label so the UI never shows a bare dash.
+    """
+    grp = chain.get("group", "other")
+    should_merge = grp == "non_physics" or int(chain.get("depth", 0)) <= 1
+    nature = chain.get("guessed_nature") or _GROUP_FALLBACK_NATURE.get(grp, "")
+    return {**chain, "suggest_merge": should_merge, "guessed_nature": nature}
+
+
+def _extract_partial_json_objects(text: str) -> list[dict]:
+    """Extract all complete JSON objects from potentially truncated or malformed text.
+
+    Uses JSONDecoder.raw_decode to scan forward from each '{', collecting every
+    successfully-parsed object.  Objects after the truncation point are silently
+    skipped, so callers get the best partial result available.
+    """
+    results: list[dict] = []
+    decoder = json.JSONDecoder()
+    idx = 0
+    while idx < len(text):
+        start = text.find("{", idx)
+        if start == -1:
+            break
+        try:
+            obj, end_idx = decoder.raw_decode(text, start)
+            if isinstance(obj, dict):
+                results.append(obj)
+            idx = end_idx
+        except json.JSONDecodeError:
+            idx = start + 1
+    return results
+
+
 from app.agent.error_handler import ErrorHandler
 from app.agent.prompts import build_phase_prompt, build_system_prompt
 from app.blender.client import BlenderClient
 from app.blender.state import SceneCache
 from app.llm.client import LLMClient, LLMResponse, Message
-from app.phases.base import PhaseError, PhaseTool
+from app.phases.base import PhaseError, PhaseResult, PhaseTool
 from app.phases.query_tools import QueryTool
 
 # ── constants ──────────────────────────────────────────────────────────────
@@ -146,9 +192,170 @@ _NEGOTIATING_PHASES: frozenset[str] = frozenset()
 # NEGOTIATING gives the LLM zero tools, causing it to ask users to operate
 # Blender manually instead of calling the registered tools.
 
+# Meta-tool: no Blender call; updates _phase_idx and emits phase sync events.
+_SYNC_PHASE_TOOL_SCHEMA: dict = {
+    "name": "sync_phase_state",
+    "description": (
+        "Sync the frontend phase progress tracker after a session resume or browser reload. "
+        "Call this once you have determined the current phase from scene inspection. "
+        "It marks all preceding phases as completed and the given phase as active. "
+        "Do NOT call this when advancing phases normally — use phase tools for that."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "current_phase": {
+                "type": "string",
+                "description": (
+                    "The phase currently in progress. "
+                    f"Valid values: {_PHASE_SEQUENCE}"
+                ),
+            },
+        },
+        "required": ["current_phase"],
+    },
+}
+
 _MAX_TOOL_ROUNDS = 15
-_MAX_ASK_ROUNDS = 3
+_MAX_ASK_ROUNDS = 6  # raised from 3: user-facing ASK_MODE often needs 4-5 queries
+                     # for a thorough diagnosis (list_objects + scene_info +
+                     # get_mesh_info + get_material_info + a follow-up call).
 _MAX_QUERY_ONLY_ROUNDS = 2  # after this many consecutive query-only rounds, drop query tools
+
+
+# ── history self-heal ──────────────────────────────────────────────────────
+
+
+def _heal_history(history: list[dict]) -> int:
+    """Defensive: ensure assistant `tool_use` blocks and the user `tool_result`
+    blocks immediately after them are id-consistent.  Anthropic rejects
+    requests violating EITHER direction with a 400:
+
+      - "tool_use ids were found without `tool_result` blocks immediately after"
+        — orphan tool_use (no following tool_result for some id)
+      - "unexpected `tool_use_id` found in `tool_result` blocks: ... Each
+        `tool_result` block must have a corresponding `tool_use` block in the
+        previous message"
+        — orphan tool_result (id doesn't match any preceding tool_use)
+
+    The exact code path that produces orphan blocks has not been pinned down
+    (suspected provider-side `response.content_blocks` vs `response.tool_calls`
+    id mismatch when ids are synthesized client-side).  This runs as a backstop
+    before every LLM call so the API never sees a malformed history regardless
+    of how it got that way.
+
+    Returns the total number of repairs performed (0 = clean history).
+    Idempotent and in-place.
+
+    Heuristics:
+      - Missing tool_result for a tool_use_id → inject a placeholder.
+      - tool_result for an id with no matching tool_use → DROP that block (the
+        alternative — synthesize a fake tool_use — would corrupt the LLM's
+        view of what it actually called).
+      - tool_use with no following user message at all → insert a synthetic
+        user message with placeholder tool_results.
+      - Plain-text user message immediately after tool_use → insert synthetic
+        tool_result message in between (the plain text otherwise gets parsed
+        as the "next message" slot that Anthropic checks against tool_use).
+    """
+    healed = 0
+    i = 0
+    while i < len(history):
+        msg = history[i]
+        if msg.get("role") != "assistant":
+            i += 1
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            i += 1
+            continue
+        tool_use_ids = [
+            blk.get("id")
+            for blk in content
+            if isinstance(blk, dict) and blk.get("type") == "tool_use" and blk.get("id")
+        ]
+
+        next_msg = history[i + 1] if i + 1 < len(history) else None
+        next_is_user_blocks = (
+            next_msg is not None
+            and next_msg.get("role") == "user"
+            and isinstance(next_msg.get("content"), list)
+        )
+
+        if not tool_use_ids:
+            # Assistant message without tool_use — but next user message might
+            # still carry orphan tool_result blocks (e.g. leaked from a prior
+            # round when provider ids got desynced).  Drop them.
+            if next_is_user_blocks:
+                kept = [
+                    blk
+                    for blk in next_msg["content"]
+                    if not (
+                        isinstance(blk, dict)
+                        and blk.get("type") == "tool_result"
+                    )
+                ]
+                if len(kept) != len(next_msg["content"]):
+                    healed += len(next_msg["content"]) - len(kept)
+                    # Preserve a non-empty content list so Anthropic doesn't
+                    # reject "empty content"; if everything was orphan
+                    # tool_results, leave a marker text block.
+                    next_msg["content"] = kept or [
+                        {"type": "text", "text": "[orphan tool_results dropped by _heal_history]"}
+                    ]
+            i += 1
+            continue
+
+        # Assistant message HAS tool_use blocks — next user message must have
+        # exactly-matching tool_result blocks (and nothing else of the type).
+        if next_is_user_blocks:
+            assert next_msg is not None
+            valid_blocks: list[dict] = []
+            present_ids: set[str] = set()
+            for blk in next_msg["content"]:
+                if isinstance(blk, dict) and blk.get("type") == "tool_result":
+                    tid = blk.get("tool_use_id")
+                    if tid in tool_use_ids:
+                        valid_blocks.append(blk)
+                        present_ids.add(tid)
+                    else:
+                        # Orphan tool_result — drop it (would trip the
+                        # "unexpected tool_use_id" 400).
+                        healed += 1
+                else:
+                    valid_blocks.append(blk)
+            # Inject placeholders for any tool_use_ids without a result.
+            missing = [tid for tid in tool_use_ids if tid not in present_ids]
+            for tid in missing:
+                valid_blocks.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tid,
+                        "content": "[orphaned tool_use — placeholder result injected by _heal_history]",
+                    }
+                )
+                healed += 1
+            next_msg["content"] = valid_blocks
+        else:
+            # No following user-tool_result message at all (next is either
+            # missing, plain-text user, or assistant) — insert one.
+            history.insert(
+                i + 1,
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tid,
+                            "content": "[orphaned tool_use — placeholder result injected by _heal_history]",
+                        }
+                        for tid in tool_use_ids
+                    ],
+                },
+            )
+            healed += len(tool_use_ids)
+        i += 1
+    return healed
 
 
 # ── state enum ─────────────────────────────────────────────────────────────
@@ -199,6 +406,14 @@ class AgentLoop:
         self._phase_idx: int = 0
         self._pending_error: PhaseError | None = None
         self._skipped_phases: set[str] = set()
+        # Issue 3 — deferred widget emit.  Inspector tools (physics_classification,
+        # material_inspect) used to emit their confirmation widget right when the
+        # tool returned, which surfaced an empty-looking table to the user BEFORE
+        # the LLM had a chance to comment on the result in chat.  We now stash the
+        # widget payload here on tool return and emit only after the LLM's next
+        # text-only response — so the chat-side analysis lands first, then the
+        # widget appears alongside the proposal.
+        self._pending_widget: tuple[str, dict] | None = None
 
         # global_history: full conversation (all turns).
         # phase_history:  isolated per NEGOTIATING phase; reset at each phase boundary.
@@ -237,10 +452,20 @@ class AgentLoop:
         """Process one user turn. Returns the agent reply string."""
         self._global_history.append({"role": "user", "content": user_message})
         self._emit("message", role="user", content=user_message)
-        reply = await self._dispatch(user_message)
-        self._global_history.append({"role": "assistant", "content": reply})
-        self._emit("message", role="assistant", content=reply)
-        return reply
+        try:
+            reply = await self._dispatch(user_message)
+            self._global_history.append({"role": "assistant", "content": reply})
+            self._emit("message", role="assistant", content=reply)
+            return reply
+        finally:
+            # Issue 3: deferred widget emit.  Inspector tools stash their
+            # widget payload on self._pending_widget during _dispatch; emit
+            # it HERE so the SSE order is:
+            #   user msg → tool_call → tool_result → assistant msg → widget
+            # Putting the emit in step's finally guarantees that the assistant
+            # message bubble lands BEFORE the table, and that the widget still
+            # surfaces even if _dispatch raises mid-flight.
+            self._flush_pending_widget()
 
     # ── dispatch ──────────────────────────────────────────────────────────
 
@@ -295,6 +520,10 @@ class AgentLoop:
                 tools = self._build_phase_only_tool_list()
             else:
                 tools = self._build_tool_list()
+
+            # Defensive: backstop any unmatched assistant tool_use blocks
+            # before sending to the LLM API (Anthropic 400 on mismatched ids).
+            _heal_history(history)
 
             response = await asyncio.to_thread(
                 self._llm.chat,
@@ -352,38 +581,45 @@ class AgentLoop:
             all_query = all(tc["name"] in query_tool_names for tc in response.tool_calls)
             query_only_rounds = query_only_rounds + 1 if all_query else 0
 
-            # Execute each tool call; collect results
+            # Execute each tool call; collect results.
+            # try/finally guarantees tool_results are ALWAYS appended to history,
+            # even if _execute_tool_call raises (e.g. error_handler LLM call fails).
+            # An unmatched tool_use in history causes a 400 on the next API call.
             tool_results: list[dict[str, Any]] = []
             error_reply: str | None = None
 
-            for tc in response.tool_calls:
-                result_text, error_reply = await self._execute_tool_call(tc)
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tc["id"],
-                        "content": result_text,
-                    }
-                )
-                if error_reply or self.state != LoopState.RUNNING_PHASE:
-                    break
-
-            # Fill placeholder tool_results for any tool_use IDs not yet executed.
-            # The Anthropic API requires every tool_use block in an assistant message
-            # to have a matching tool_result in the immediately following user message.
-            # When a tool failure triggers `break`, remaining IDs would be left unmatched.
-            executed_ids = {tr["tool_use_id"] for tr in tool_results}
-            for tc in response.tool_calls:
-                if tc["id"] not in executed_ids:
+            try:
+                for tc in response.tool_calls:
+                    try:
+                        result_text, error_reply = await self._execute_tool_call(tc)
+                    except Exception as exc:
+                        result_text = f"Tool execution raised unexpectedly: {exc}"
+                        error_reply = f"Unexpected error during {tc.get('name', '?')}: {exc}"
                     tool_results.append(
                         {
                             "type": "tool_result",
                             "tool_use_id": tc["id"],
-                            "content": "Skipped — a preceding tool call in this round failed.",
+                            "content": result_text,
                         }
                     )
-
-            history.append({"role": "user", "content": tool_results})
+                    if error_reply or self.state != LoopState.RUNNING_PHASE:
+                        break
+            finally:
+                # Fill placeholder tool_results for any tool_use IDs not yet executed.
+                # The Anthropic API requires every tool_use block in an assistant message
+                # to have a matching tool_result in the immediately following user message.
+                # When a tool failure triggers `break`, remaining IDs would be left unmatched.
+                executed_ids = {tr["tool_use_id"] for tr in tool_results}
+                for tc in response.tool_calls:
+                    if tc["id"] not in executed_ids:
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tc["id"],
+                                "content": "Skipped — a preceding tool call in this round failed.",
+                            }
+                        )
+                history.append({"role": "user", "content": tool_results})
 
             if error_reply:
                 return error_reply
@@ -391,6 +627,7 @@ class AgentLoop:
             if self.state != LoopState.RUNNING_PHASE:
                 # State changed (e.g., DONE or NEGOTIATING). Let LLM produce a
                 # transition summary without tool calls.
+                _heal_history(history)
                 final = await asyncio.to_thread(
                     self._llm.chat,
                     history,
@@ -416,6 +653,19 @@ class AgentLoop:
 
         self._emit("tool_call", id=tc.get("id"), name=tool_name, input=params)
 
+        # Meta-tool: sync phase bubbles to the given phase without touching Blender.
+        if tool_name == "sync_phase_state":
+            phase_name = params.get("current_phase", "")
+            self._sync_to_phase(phase_name)
+            self._emit(
+                "tool_result",
+                id=tc.get("id"),
+                name=tool_name,
+                success=True,
+                summary=f"Phase synced to: {phase_name}",
+            )
+            return f"Frontend phase state synced to '{phase_name}'.", None
+
         tool = self._phase_tools.get(tool_name)
         if tool is None:
             self._emit(
@@ -439,10 +689,25 @@ class AgentLoop:
             )
             return result_str, None
 
-        # Phase tools: execute, advance state on success
-        result = await asyncio.to_thread(
-            tool.run, self._blender, self._cache, params
-        )
+        # Phase tools: execute, advance state on success.
+        # Wrap in try/except so unexpected runtime errors (e.g. Blender
+        # disconnecting mid-tool) are converted to PhaseResult.fail instead
+        # of propagating as unhandled exceptions. An unhandled exception here
+        # would leave the assistant's tool_use blocks in history without a
+        # matching tool_result, causing a 400 on the next API call.
+        try:
+            result = await asyncio.to_thread(
+                tool.run, self._blender, self._cache, params
+            )
+        except Exception as exc:
+            result = PhaseResult.fail(
+                PhaseError(
+                    category="unexpected",
+                    operator=tool_name,
+                    message=f"Unexpected error in {tool_name}: {exc}",
+                    raw=type(exc).__name__,
+                )
+            )
 
         if result.success:
             diff = (
@@ -460,7 +725,7 @@ class AgentLoop:
                     success=True,
                     summary=f"Phase {completed} completed. {diff}",
                 )
-                self._emit_widget_if_inspector(tool_name, result.state_diff)
+                await self._emit_widget_if_inspector(tool_name, result.state_diff)
                 self._on_phase_advance(completed_phase=completed)
                 return f"Phase {completed} completed. Scene diff: {diff}", None
             else:
@@ -471,7 +736,7 @@ class AgentLoop:
                     success=True,
                     summary=f"sub-step ok: {diff}",
                 )
-                self._emit_widget_if_inspector(tool_name, result.state_diff)
+                await self._emit_widget_if_inspector(tool_name, result.state_diff)
                 return f"Tool {tool_name} succeeded (sub-step, phase not advanced). Result: {diff}", None
         else:
             self._pending_error = result.error
@@ -491,19 +756,290 @@ class AgentLoop:
                 message=result.error.message,
                 summary=result.error.message[:120],
             )
-            error_reply = await asyncio.to_thread(
-                self._error_handler.format, result.error, self._llm
-            )
+            try:
+                error_reply = await asyncio.to_thread(
+                    self._error_handler.format, result.error, self._llm
+                )
+            except Exception as exc:
+                error_reply = (
+                    f"[FAIL] {tool_name}: {result.error.message}\n"
+                    f"（错误格式化失败: {exc}）\n"
+                    "[Retry] — 重新执行  |  [Skip] — 跳过继续  |  [Ask] — 查看详情"
+                )
             return f"Phase failed: {result.error.message}", error_reply
 
-    def _emit_widget_if_inspector(self, tool_name: str, state_diff: dict | None) -> None:
-        """Emit a widget event for tools whose result needs user confirmation.
+    async def _annotate_chains(self, chains: list[dict]) -> list[dict]:
+        """Call LLM to add guessed_category, suggested_type, suggest_merge to each chain.
+
+        Falls back to original chains (with safe defaults applied) on any error.
+        """
+        from app.phases.physics_bones import list_inferred_types  # local import avoids cycle
+        known_types = list_inferred_types()
+        _defaults: dict = {
+            "guessed_nature": "",
+            "group": "other",
+            "suggested_type": "",
+            "suggest_merge": False,
+        }
+
+        if not chains:
+            return chains
+
+        chain_summary = json.dumps(chains, ensure_ascii=False, indent=2)
+        prompt = (
+            "You are annotating physics chain heads for a character mod.\n"
+            "For each chain, infer the following THREE fields in ORDER:\n\n"
+            '1. "guessed_nature": What this chain physically IS (specific, Chinese or English).\n'
+            "   Examples: '头发' for hair, '眼睛' for eye, '带子' for belt/ribbon, '裙子' for skirt,\n"
+            "   '布料' for generic cloth, '尾巴' for tail, '袖子' for sleeve.\n"
+            "   Base this on the bone name, depth, parent, and role — be specific to each chain.\n\n"
+            '2. "group": The physics simulation category (for UI grouping). '
+            "Use EXACTLY one of:\n"
+            "   'hair'        — hair chains\n"
+            "   'cloth'       — cloth / skirt / dress chains\n"
+            "   'ribbon'      — belt / sash / ribbon chains\n"
+            "   'tail'        — tail chains\n"
+            "   'non_physics' — bones that should NOT have physics "
+            "(eyes, face accessories, minor helpers)\n"
+            "   'other'       — anything else\n\n"
+            '3. "suggested_type": The best-matching physics preset key, '
+            "derived FROM guessed_nature.\n"
+            f"   Must be one of: {json.dumps(known_types)}\n"
+            "   For non_physics chains use the closest available or 'body_jiggle'.\n\n"
+            "Chain heads (JSON array):\n"
+            f"{chain_summary}\n\n"
+            "Reply ONLY with a JSON array in the SAME ORDER as the input. "
+            "Each element must include ALL original keys plus the three new fields."
+        )
+        raw_response = ""
+        try:
+            response = await asyncio.to_thread(
+                self._llm.chat,
+                [{"role": "user", "content": prompt}],
+                system="You are a concise JSON assistant. Output only valid JSON, no markdown fences.",
+                max_tokens=8192,
+            )
+            raw_response = response.content.strip()
+            content = raw_response
+
+            # Robust extraction:
+            # 1. Direct: already starts with "["
+            # 2. Markdown fence: ```json ... ```
+            # 3. Regex: find first [...] block (handles any preamble text)
+            # 4. Dict wrapper: {"result": [...]} or similar
+            if not content.startswith("["):
+                fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
+                if fence_match:
+                    content = fence_match.group(1).strip()
+            if not content.startswith("["):
+                arr_match = re.search(r"\[[\s\S]*\]", content)
+                if arr_match:
+                    content = arr_match.group(0)
+
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError:
+                # Truncated / partially-malformed array: scan for individual objects.
+                # This recovers all chains that were successfully generated before
+                # the LLM truncated or introduced a syntax error.
+                parsed = _extract_partial_json_objects(content)
+
+            # Unwrap dict if LLM returned {"chains": [...]} or similar
+            if isinstance(parsed, dict):
+                for v in parsed.values():
+                    if isinstance(v, list):
+                        parsed = v
+                        break
+
+            if isinstance(parsed, list):
+                # Exact length match: zip by position
+                if len(parsed) == len(chains):
+                    result = [{**_defaults, **orig, **anno}
+                              for orig, anno in zip(chains, parsed)]
+                else:
+                    # Length mismatch: match by "name" field so partial results still help
+                    name_to_anno: dict[str, dict] = {
+                        item.get("name"): item
+                        for item in parsed
+                        if isinstance(item, dict) and item.get("name")
+                    }
+                    result = [{**_defaults, **c, **name_to_anno.get(c.get("name", ""), {})}
+                              for c in chains]
+                # Propagate annotation to same-base-name variants still at defaults.
+                # LLMs often group numbered siblings (Skirt_L.001/006/011…) under one
+                # representative entry, so exact name matching leaves them blank.
+                # Strip trailing variant suffixes — any combination of .NNN, .L/.R,
+                # _L/_R, _End — to derive a common base name, then copy the first
+                # matched annotation to all unannotated siblings.
+                #
+                # Examples (covers real bone names from Phase 3.5 + MMD/VRC sources):
+                #   "Skirt_L.001"            → "Skirt"           (strip .001, then _L)
+                #   "Shoes ribbon_L.001.L"   → "Shoes ribbon"    (strip .L, .001, _L)
+                #   "Shoes ribbon.L_End"     → "Shoes ribbon"    (strip _End, then .L)
+                #   "Half twin tail_R.007"   → "Half twin tail"
+                # Lateral specificity (L vs R) is intentionally lost: physics type
+                # for left/right mirrored chains is always identical anyway.
+                _variant_suffix = re.compile(r'(\.\d+|[._][LR]|_End)+$')
+                _anno_fields = ("guessed_nature", "group", "suggested_type")
+                base_to_anno: dict[str, dict] = {}
+                for c in result:
+                    if c.get("suggested_type"):
+                        base = _variant_suffix.sub('', c.get("name", ""))
+                        base_to_anno.setdefault(base, {k: c[k] for k in _anno_fields if k in c})
+                result = [
+                    {**c, **base_to_anno[_variant_suffix.sub('', c.get("name", ""))]}
+                    if not c.get("suggested_type") and _variant_suffix.sub('', c.get("name", "")) in base_to_anno
+                    else c
+                    for c in result
+                ]
+                # Single-condition fallback retry: scan for chains the LLM
+                # silently dropped (no sibling for propagation either — typical
+                # case is a lone bone like "Tail.001" that gets overlooked when
+                # buried among 60+ chains).  Make ONE small targeted LLM call
+                # for the remaining empties.  Non-fatal — keep going on any error.
+                still_empty = [c for c in result if not c.get("suggested_type")]
+                if still_empty:
+                    fb_anno = await self._fallback_annotate_individual(
+                        still_empty, known_types
+                    )
+                    if fb_anno:
+                        result = [
+                            {**c, **fb_anno[c["name"]]}
+                            if not c.get("suggested_type") and c.get("name") in fb_anno
+                            else c
+                            for c in result
+                        ]
+                # Derive suggest_merge deterministically from group and depth.
+                # The LLM is not asked to set this field; rules are applied here
+                # so the result is predictable regardless of LLM output.
+                result = [_apply_merge_rules(c) for c in result]
+                # Debug trace: emit first annotated chain so mismatch is visible in debug mode
+                self._emit(
+                    "tool_result",
+                    id="annotate_chains",
+                    name="_annotate_chains",
+                    success=True,
+                    summary=f"annotated {len(result)} chains; sample={json.dumps(result[0] if result else {})[:200]}",
+                )
+                return result
+
+        except Exception as exc:
+            # Non-fatal: emit as debug-only tool_result so it's visible in debug mode
+            # without triggering the frontend error state.
+            self._emit(
+                "tool_result",
+                id="annotate_chains",
+                name="_annotate_chains",
+                success=False,
+                summary=f"annotation LLM call failed ({type(exc).__name__}: {exc}); raw={raw_response[:300]}",
+            )
+        return [_apply_merge_rules({**_defaults, **c}) for c in chains]
+
+    async def _fallback_annotate_individual(
+        self, missing: list[dict], known_types: list[str]
+    ) -> dict[str, dict]:
+        """Targeted second-pass LLM call for chains the main annotation pass
+        dropped (no sibling for base-name propagation to copy from).
+
+        Returns a dict keyed by chain `name` → annotation dict containing
+        guessed_nature/group/suggested_type.  Returns {} on any error.
+        Non-fatal — caller falls back to `_defaults` if this returns empty.
+        """
+        if not missing:
+            return {}
+
+        chain_summary = json.dumps(missing, ensure_ascii=False, indent=2)
+        prompt = (
+            "The PRIOR annotation pass missed these chain heads. "
+            "Output a JSON array with ONE entry per input — preserve the original "
+            "`name` field exactly, and add the three fields below:\n"
+            '  "guessed_nature": Chinese or English noun for what this chain physically is.\n'
+            '  "group": one of "hair" / "cloth" / "ribbon" / "tail" / "non_physics" / "other".\n'
+            f'  "suggested_type": one of {json.dumps(known_types)}.\n'
+            "DO NOT skip any entry. Reply ONLY with a JSON array, no markdown.\n\n"
+            "Chains needing annotation:\n"
+            f"{chain_summary}"
+        )
+        try:
+            response = await asyncio.to_thread(
+                self._llm.chat,
+                [{"role": "user", "content": prompt}],
+                system="You are a concise JSON assistant. Output only valid JSON, no markdown fences.",
+                max_tokens=2048,
+            )
+            content = response.content.strip()
+            # Same extraction logic as the main pass.
+            if not content.startswith("["):
+                fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
+                if fence:
+                    content = fence.group(1).strip()
+            if not content.startswith("["):
+                arr = re.search(r"\[[\s\S]*\]", content)
+                if arr:
+                    content = arr.group(0)
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError:
+                parsed = _extract_partial_json_objects(content)
+            if isinstance(parsed, dict):
+                for v in parsed.values():
+                    if isinstance(v, list):
+                        parsed = v
+                        break
+            if not isinstance(parsed, list):
+                return {}
+            result: dict[str, dict] = {}
+            for item in parsed:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name")
+                if not name:
+                    continue
+                # Only carry forward the three annotation fields — don't let
+                # the LLM overwrite role/depth/parent etc.
+                annotation = {
+                    k: item[k]
+                    for k in ("guessed_nature", "group", "suggested_type")
+                    if k in item and item[k]
+                }
+                if annotation.get("suggested_type"):
+                    result[name] = annotation
+            self._emit(
+                "tool_result",
+                id="annotate_chains_fallback",
+                name="_fallback_annotate_individual",
+                success=True,
+                summary=f"recovered {len(result)}/{len(missing)} dropped annotations",
+            )
+            return result
+        except Exception as exc:
+            self._emit(
+                "tool_result",
+                id="annotate_chains_fallback",
+                name="_fallback_annotate_individual",
+                success=False,
+                summary=f"fallback failed ({type(exc).__name__}: {exc})",
+            )
+            return {}
+
+    async def _emit_widget_if_inspector(self, tool_name: str, state_diff: dict | None) -> None:
+        """Stage a widget event for tools whose result needs user confirmation.
 
         Issue #7: physics_classification's chain_topology and material_inspect's
         materials+texture_files+existing_connections feed structured editable
         UI widgets instead of free-text Q&A. The next user message arrives
         prefixed `[CONFIRMED_CLASSIFICATIONS]` / `[CONFIRMED_MATERIAL_MAPPING]`
         carrying the user's selections as JSON.
+
+        Deferred emit (Issue 3): for physics_classification and material_inspect
+        we DO NOT emit the widget event here.  Emitting at tool-return time
+        surfaces an empty-looking table to the user BEFORE the LLM has a chance
+        to comment on the result in chat — confusing UX.  Instead we stash the
+        payload in `self._pending_widget` and `_run_react_turn` emits it after
+        the LLM's next text-only response (so chat commentary lands first).
+
+        Other widget-like emits (model_type_inferred) remain immediate because
+        they don't pair with an LLM commentary in the same way.
         """
         if not state_diff:
             return
@@ -511,15 +1047,20 @@ class AgentLoop:
             chain_topology = state_diff.get("chain_topology") or {}
             chains = chain_topology.get("chain_heads") or []
             if chains:
-                self._emit("widget_classification", chains=chains)
+                # Run the annotation LLM call now (slow) so the widget is
+                # ready to emit immediately when the deferred-emit point hits.
+                chains = await self._annotate_chains(chains)
+                self._pending_widget = ("widget_classification", {"chains": chains})
         elif tool_name == "material_inspect":
             materials = state_diff.get("materials") or []
             if materials:
-                self._emit(
+                self._pending_widget = (
                     "widget_material",
-                    materials=materials,
-                    existing_connections=state_diff.get("existing_connections") or {},
-                    texture_files=state_diff.get("texture_files") or [],
+                    {
+                        "materials": materials,
+                        "existing_connections": state_diff.get("existing_connections") or {},
+                        "texture_files": state_diff.get("texture_files") or [],
+                    },
                 )
         elif tool_name == "setup_infer_model_type":
             # Issue #4: surface the inference outcome to the form's
@@ -539,6 +1080,19 @@ class AgentLoop:
                     candidates=state_diff.get("candidates") or [],
                     uncovered_slots=state_diff.get("uncovered_slots") or [],
                 )
+
+    def _flush_pending_widget(self) -> None:
+        """Emit any stashed widget event (Issue 3 deferred-emit path).
+
+        Called at safe points in _run_react_turn — after the LLM has had a
+        chance to produce text commentary about the inspector tool result.
+        Idempotent: clears the slot after emitting so re-calls are no-ops.
+        """
+        if self._pending_widget is None:
+            return
+        event_type, payload = self._pending_widget
+        self._pending_widget = None
+        self._emit(event_type, **payload)
 
     def _on_phase_advance(self, completed_phase: str | None = None) -> None:
         """Update state after a phase completes successfully."""
@@ -591,6 +1145,7 @@ class AgentLoop:
 
         self._phase_history.append({"role": "user", "content": user_message})
 
+        _heal_history(self._phase_history)
         response = await asyncio.to_thread(
             self._llm.chat,
             self._phase_history,
@@ -701,6 +1256,7 @@ class AgentLoop:
         history = self._global_history
 
         for _ in range(_MAX_ASK_ROUNDS):
+            _heal_history(history)
             response = await asyncio.to_thread(
                 self._llm.chat,
                 history,
@@ -826,8 +1382,22 @@ class AgentLoop:
         ):
             self._phase_tools[tool.name] = tool
 
+    def emit_phase_sync(self) -> None:
+        """Re-emit phase progress events so a reconnecting frontend can sync its bubbles."""
+        self._sync_to_phase(_PHASE_SEQUENCE[self._phase_idx] if self._phase_idx < len(_PHASE_SEQUENCE) else None)
+
+    def _sync_to_phase(self, phase_name: str | None) -> None:
+        """Update _phase_idx to phase_name and emit phase_completed/phase_started events."""
+        if phase_name is None or phase_name not in _PHASE_SEQUENCE:
+            return
+        target_idx = _PHASE_SEQUENCE.index(phase_name)
+        self._phase_idx = target_idx
+        for i in range(target_idx):
+            self._emit("phase_completed", phase=_PHASE_SEQUENCE[i], index=i, total=len(_PHASE_SEQUENCE))
+        self._emit("phase_started", phase=phase_name, index=target_idx, total=len(_PHASE_SEQUENCE))
+
     def _build_tool_list(self) -> list[dict]:
-        return [t.tool_schema() for t in self._phase_tools.values()]
+        return [t.tool_schema() for t in self._phase_tools.values()] + [_SYNC_PHASE_TOOL_SCHEMA]
 
     def _build_phase_only_tool_list(self) -> list[dict]:
         """Phase tools only — excludes query tools. Used when the LLM has spent

@@ -177,6 +177,7 @@ class InferModelType(PhaseTool):
             "decision": decision,
             "covered_slots": winner.covered_slots,
             "uncovered_slots": winner.uncovered_slots,
+            "optional_skipped_slots": winner.optional_skipped,
             "total_slots": winner.total_slots,
             "candidates": top3,
             "preset_path": str(catalog[winner.preset_name].path),

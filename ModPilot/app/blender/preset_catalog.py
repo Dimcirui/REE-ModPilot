@@ -8,10 +8,14 @@ the Modding-Toolkit Blender addon. Each preset declares:
   exclude      — source-rig bone names the conversion phases should ignore
   mappings     — {standard_key: {"main": [candidate names...], "aux": [...]}}
 
-Coverage of a preset against a source rig is defined as: of the slots in
-the preset's `mappings`, how many have at least one `main` candidate present
-in the source rig's bone list. This is the metric issue #4 uses to pick the
-best-matching preset for an imported source model.
+Coverage of a preset against a source rig mirrors the Toolkit's two-level
+matching strategy (bone_mapper.py:get_matches_for_standard): exact match
+first, then separator/case-normalized fallback (strips `_`, `.`, spaces and
+lowercases). Both `main` and `aux` candidate lists are checked (`aux` as
+fallback when no `main` candidate matches). A slot counts as covered if any
+candidate — in either list — resolves to a bone actually present in the
+source rig. This is the metric issue #4 uses to pick the best-matching
+preset for an imported source model.
 
 Public API:
   discover_preset_dir(client)        — locate the import/ folder via Blender
@@ -25,6 +29,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -40,6 +45,12 @@ from app.blender.client import BLENDER_SENTINEL, BlenderClient
 # `preset_info.type = "Y_PRESET"` (target-game preset) despite living in
 # the import/ folder. enumerate_x_presets() correctly filters it out;
 # we mirror that filter here.
+# Slots that are optional from the target game's perspective: the REE skeleton
+# rarely (or never) includes spine_03 / UpperChest, so an unmatched spine_03
+# should not drag coverage below the supplement threshold. Extend this set if
+# other optional slots are confirmed absent from all target game skeletons.
+OPTIONAL_SLOTS: frozenset[str] = frozenset({"spine_03"})
+
 SHIPPED_X_PRESETS: tuple[str, ...] = (
     "MMD",
     "VRChat",
@@ -86,44 +97,62 @@ class CoverageReport:
     """Result of computing one preset's coverage against a source rig."""
 
     preset_name: str
-    coverage: float  # 0.0 .. 1.0
+    coverage: float  # 0.0 .. 1.0, computed over non-optional slots only
     covered_slots: dict[str, str]  # slot_key -> the matched candidate bone name
     uncovered_slots: list[str]  # slot_keys with no candidate present in source rig
-    total_slots: int
+    total_slots: int  # denominator (excludes optional slots absent from source)
+    optional_skipped: list[str] = field(default_factory=list)  # optional slots not in source
 
 
 def discover_preset_dir(client: BlenderClient, timeout: float = 5.0) -> Path:
     """Locate the toolkit's X-preset folder via blender-mcp.
 
-    Walks `bpy.utils.user_resource('SCRIPTS')` / addons / <candidate>
-    / assets / presets / import for each candidate addon folder name,
-    returning the first one that exists.
+    Primary strategy: scan all loaded Python modules for one whose directory
+    contains an `assets/presets/import` subfolder. This works regardless of
+    install location or addon folder name.
 
-    Raises FileNotFoundError if none of the candidates exist — the caller
-    is responsible for falling back gracefully (e.g. shipping a fixed
-    SHIPPED_X_PRESETS list at server boot).
+    Fallback: walk every directory returned by `bpy.utils.script_paths()`
+    (system + user + custom) and check `<dir>/addons/<candidate>/assets/
+    presets/import` for each name in `_ADDON_DIR_CANDIDATES`.
+
+    Raises FileNotFoundError if both strategies find nothing — the caller is
+    responsible for falling back gracefully (e.g. the SHIPPED_X_PRESETS boot
+    list).
     """
     candidates_py = ",\n        ".join(repr(name) for name in _ADDON_DIR_CANDIDATES)
     code = (
-        "import bpy, os\n"
+        "import sys, os, bpy\n"
         f"print({BLENDER_SENTINEL!r})\n"
-        "scripts = bpy.utils.user_resource('SCRIPTS')\n"
-        "candidates = [\n"
-        f"        {candidates_py},\n"
-        "]\n"
+        # Primary: module-based scan
         "found = ''\n"
-        "for name in candidates:\n"
-        "    p = os.path.join(scripts, 'addons', name, 'assets', 'presets', 'import')\n"
-        "    if os.path.isdir(p):\n"
-        "        found = p\n"
+        "for _mod in sys.modules.values():\n"
+        "    _f = getattr(_mod, '__file__', None)\n"
+        "    if not _f:\n"
+        "        continue\n"
+        "    _p = os.path.join(os.path.dirname(os.path.abspath(_f)), 'assets', 'presets', 'import')\n"
+        "    if os.path.isdir(_p):\n"
+        "        found = _p\n"
         "        break\n"
+        # Fallback: scripts-path + candidate-name scan
+        "if not found:\n"
+        "    _candidates = [\n"
+        f"        {candidates_py},\n"
+        "    ]\n"
+        "    for _scripts in bpy.utils.script_paths():\n"
+        "        for _name in _candidates:\n"
+        "            _p = os.path.join(_scripts, 'addons', _name, 'assets', 'presets', 'import')\n"
+        "            if os.path.isdir(_p):\n"
+        "                found = _p\n"
+        "                break\n"
+        "        if found:\n"
+        "            break\n"
         "print(found or 'NOT_FOUND')\n"
     )
     lines = client.execute_and_extract(code, timeout=timeout)
     if not lines or lines[0] == "NOT_FOUND":
         raise FileNotFoundError(
-            "Modding-Toolkit X-preset folder not found under any of "
-            f"{list(_ADDON_DIR_CANDIDATES)} in Blender's user scripts dir."
+            "Modding-Toolkit X-preset folder not found. "
+            "Ensure the addon is enabled in Blender's preferences."
         )
     return Path(lines[0])
 
@@ -160,26 +189,65 @@ def enumerate_x_presets(preset_dir: Path) -> dict[str, PresetMeta]:
     return result
 
 
+def _normalize_bone_name(name: str) -> str:
+    """Mirror Toolkit bone_mapper._normalize_bone_name: strip _ . space, lowercase."""
+    return re.sub(r'[_.\s]', '', name).lower()
+
+
 def compute_coverage(preset: PresetMeta, source_bones: set[str]) -> CoverageReport:
     """Compute how well a preset matches the source rig's bone names.
 
-    A slot counts as covered iff at least one of its `main` candidate names
-    is in `source_bones` (exact, case-sensitive match — Blender's bone
-    name lookup is case-sensitive and presets use exact names).
+    Mirrors the Toolkit's two-level strategy in BoneMapManager.get_matches_for_standard:
+      1. Exact match against `main` candidates.
+      2. Normalized match against `main` candidates (strips _ . space, lowercases).
+      3. Exact match against `aux` candidates.
+      4. Normalized match against `aux` candidates.
+    The first level that resolves to a bone present in `source_bones` wins.
+    The matched actual bone name (post-normalization resolution) is recorded.
     """
+    # Pre-build normalized lookup: {normalized_name: actual_bone_name}.
+    # First bone wins on collision, matching Toolkit behaviour.
+    norm_lookup: dict[str, str] = {}
+    for b in source_bones:
+        norm = _normalize_bone_name(b)
+        if norm not in norm_lookup:
+            norm_lookup[norm] = b
+
+    def _find(name: str) -> str | None:
+        if name in source_bones:
+            return name
+        return norm_lookup.get(_normalize_bone_name(name))
+
     covered: dict[str, str] = {}
     uncovered: list[str] = []
+    optional_skipped: list[str] = []
     for slot_key, slot in preset.mappings.items():
-        main_list = slot.get("main") if isinstance(slot, dict) else None
-        if not isinstance(main_list, list):
+        if not isinstance(slot, dict):
             uncovered.append(slot_key)
             continue
-        match = next((b for b in main_list if isinstance(b, str) and b in source_bones), None)
-        if match is None:
-            uncovered.append(slot_key)
+        matched: str | None = None
+        for cand in slot.get("main") or []:
+            if isinstance(cand, str):
+                actual = _find(cand)
+                if actual:
+                    matched = actual
+                    break
+        if matched is None:
+            for cand in slot.get("aux") or []:
+                if isinstance(cand, str):
+                    actual = _find(cand)
+                    if actual:
+                        matched = actual
+                        break
+        if matched is not None:
+            covered[slot_key] = matched
+        elif slot_key in OPTIONAL_SLOTS:
+            # Optional slot absent from source: exclude from denominator so it
+            # does not depress coverage below the supplement/exact threshold.
+            optional_skipped.append(slot_key)
         else:
-            covered[slot_key] = match
-    total = len(preset.mappings)
+            uncovered.append(slot_key)
+    total = len(preset.mappings) - len(optional_skipped)
     coverage = (len(covered) / total) if total else 0.0
     return CoverageReport(
         preset_name=preset.name,
@@ -187,6 +255,7 @@ def compute_coverage(preset: PresetMeta, source_bones: set[str]) -> CoverageRepo
         covered_slots=covered,
         uncovered_slots=uncovered,
         total_slots=total,
+        optional_skipped=optional_skipped,
     )
 
 
