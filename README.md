@@ -16,8 +16,9 @@
 | Stage 2 — phase tool layer (videos 1-3) | 🟢 done (PoseCorrection + SkeletonAlign + VertexGroups; 76 unit tests) |
 | Stage 3 — agent loop | 🟢 done (ReAct loop + prompts + error handler + `/agent/chat`; 117 unit tests) |
 | Stage 4 — phase tools (videos 4-7) | 🟢 done: physics_bones + material + batch_export + mesh_cleanup + query tools; E2E verified (Phase 1→6 full run); advanced out of MVP scope |
-| Stage 5 — frontend (htmx + SSE chat) | 🟢 done: chat UI + 10-event SSE stream (#1), error-choice UI (#2), session-config form (#3), confirmation widgets (#7), global LLM/Blender config UI (#9), Ollama provider, viewport screenshot side-panel, model-type auto-inference (#4), preset supplement/custom write (#5/#6). 360+ unit tests + 73 Playwright e2e checks. |
+| Stage 5 — frontend (htmx + SSE chat) | 🟢 done: chat UI + SSE event stream (#1), error-choice UI (#2), session-config form (#3 / #10), confirmation widgets (#7 / #11), global LLM/Blender config UI (#9), Ollama provider, viewport screenshot side-panel, model-type auto-inference (#4 / #5 / #6), user-interrupt UX (#14). |
 | Stage MVP — verification | 🟢 done (L3 in-game acceptance: 3-4 MMD/VRC models verified; `verify_mvp.py` script + `docs/demo_setup.md` walkthrough) |
+| Post-MVP polish | ongoing — #13 arm-bone scale, #14 interrupt, #15 phase transition pause, #16 Phase 5A small-loop architecture all shipped. **453 unit tests, 70+ Playwright checks.** |
 
 All design items in [docs/design.md](docs/design.md) (A/B/C/D/E layers) are 🟢 decided.
 
@@ -179,7 +180,7 @@ Fill in the session-config form (source file path, mod root, character name, etc
 **4. Run unit tests**
 
 ```bash
-uv run pytest -m unit -v   # 360+ tests, no Blender required
+uv run pytest -m unit -v   # 453+ tests, no Blender required
 ```
 
 **5. (Optional) Headless MVP verification**

@@ -318,11 +318,22 @@
 
   // Open a native EventSource so we own every event type, not just those
   // listed in sse-swap attributes. htmx-ext-sse is no longer used.
-  window.addEventListener("DOMContentLoaded", () => {
-    const sessionId = document.body.dataset.sessionId;
-    if (!sessionId) return;
+  //
+  // Reconnect strategy: native EventSource auto-reconnects (readyState=CONNECTING)
+  // for transient network errors, but transitions to CLOSED on permanent failures
+  // (4xx response, malformed content-type). In CLOSED state the browser will NOT
+  // retry on its own — the UI would silently deadlock with the chat input stuck
+  // disabled. We watch readyState in the error handler and manually re-open with
+  // exponential backoff (1s → 2s → 4s → 8s → 16s → capped at 30s).
+  let sseReconnectAttempts = 0;
+  const SSE_MAX_BACKOFF_MS = 30_000;
 
+  const openSseStream = (sessionId) => {
     const source = new EventSource(`/agent/stream/${sessionId}`);
+
+    source.addEventListener("open", () => {
+      sseReconnectAttempts = 0;
+    });
 
     for (const [type, fn] of Object.entries(dispatchers)) {
       source.addEventListener(type, (event) => {
@@ -344,8 +355,29 @@
     // Native EventSource connection error — distinct from the server-sent
     // "agent_error" event type (renamed to avoid the "error" name clash).
     source.addEventListener("error", () => {
-      setStatus("disconnected", "error");
+      if (source.readyState === EventSource.CLOSED) {
+        const delayMs = Math.min(
+          1000 * 2 ** sseReconnectAttempts,
+          SSE_MAX_BACKOFF_MS,
+        );
+        sseReconnectAttempts += 1;
+        setStatus(`reconnecting (${delayMs / 1000}s)`, "error");
+        setTimeout(() => openSseStream(sessionId), delayMs);
+        // Unstick the chat input — otherwise a stream drop mid-turn leaves
+        // the user staring at a disabled box with no way to recover.
+        const sendBtn = btn();
+        if (sendBtn) sendBtn.disabled = false;
+        unlockChatFromWidget();
+      } else {
+        setStatus("disconnected", "error");
+      }
     });
+  };
+
+  window.addEventListener("DOMContentLoaded", () => {
+    const sessionId = document.body.dataset.sessionId;
+    if (!sessionId) return;
+    openSseStream(sessionId);
   });
 
   // Classification widget: toggle between agent chip and manual override panel.

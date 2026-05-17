@@ -69,6 +69,11 @@ Thumbs.db
 # Local demo assets users download per docs/demo_setup.md
 ~/.modpilot_assets/
 ModPilot/.modpilot_state/
+# Persisted user config (~/.modpilot/config.json holds LLM API keys in plain text).
+# Belt-and-suspenders: the path lives in the user's home, so git wouldn't see it
+# unless someone copies it into the repo. Keep this line so that mistake is caught.
+.modpilot/
+~/.modpilot/
 
 # Logs
 *.log

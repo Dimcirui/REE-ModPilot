@@ -23,9 +23,12 @@ For agent baseline rules (commands, hard rules, code style, conventions) see [AG
 
 ## Current Stage
 
-**Stage Setup** — design phase complete; project structure & docs being scaffolded.
+**MVP shipped.** All P0 work in [docs/backlog.md](docs/backlog.md) is 🟢: Stages 0 / Setup / 1 / 2 / 3 / 4 / 5 / MVP-verification.
+Backend (FastAPI + hand-rolled ReAct + 15 phase tools), frontend (htmx + SSE + viewport pane + confirmation widgets), LLM provider abstraction (Anthropic + OpenAI-compatible + Ollama), and `verify_mvp.py` headless harness all live.
+Live with **453+ unit tests** and 70+ Playwright e2e checks. L3 acceptance achieved against MMD/VRC source models.
 
-All 15 design items in [docs/design.md](docs/design.md) are 🟢. Code implementation has not started; first P0 tasks are in [docs/backlog.md](docs/backlog.md) under "Stage Setup" and "Stage 1".
+Current work is post-MVP polish — backlog item priorities P1 → P3.
+Recently shipped: #10 (config hoist) → #11 (material widget pre-fill) → #13 (arm-bone scale) → #14 (interrupt) → #15 (phase transition pause) → #16 (Phase 5A small loop).
 
 ---
 
