@@ -416,6 +416,13 @@ class AgentLoop:
         # widget appears alongside the proposal.
         self._pending_widget: tuple[str, dict] | None = None
 
+        # Issue #14 — user-interrupt flag.  Set by AgentLoop.interrupt() from the
+        # FastAPI route layer (Escape key in the frontend → POST /agent/interrupt).
+        # Checked between rounds of _run_react_turn and between tool calls within
+        # a round, so a long phase bails out without leaving orphan tool_use
+        # blocks in history.  Cleared by the bail-out branch.
+        self._interrupted: bool = False
+
         # global_history: full conversation (all turns).
         # phase_history:  isolated per NEGOTIATING phase; reset at each phase boundary.
         self._global_history: list[Message] = []
@@ -442,6 +449,20 @@ class AgentLoop:
         self._event_sink(evt)
 
     # ── public ────────────────────────────────────────────────────────────
+
+    def interrupt(self) -> None:
+        """Request graceful bail-out of an in-flight phase (issue #14).
+
+        Safe to call from a concurrent FastAPI route handler — flipping a bool
+        is atomic under the GIL.  `_run_react_turn` polls the flag between
+        rounds and between tool calls within a round, then transitions to
+        IDLE.  Idempotent: a second call while the flag is still set is a no-op
+        (no duplicate `interrupted` event).
+        """
+        if self._interrupted:
+            return
+        self._interrupted = True
+        self._emit("interrupted")
 
     @property
     def current_phase(self) -> str | None:
@@ -515,7 +536,17 @@ class AgentLoop:
         }
         query_only_rounds = 0  # consecutive rounds with only query tool calls
 
+        # Issue #14 — short-circuit if interrupt() was called before step entry.
+        if self._interrupted:
+            return self._handle_interrupt_bailout()
+
         for _ in range(_MAX_TOOL_ROUNDS):
+            # Issue #14 — between-round interrupt check.  Tool_use/tool_result
+            # pairs from any previous round are already balanced in history at
+            # this point, so bailing out here cannot leave orphan blocks.
+            if self._interrupted:
+                return self._handle_interrupt_bailout()
+
             # Restrict to phase tools after too many query-only rounds
             if query_only_rounds >= _MAX_QUERY_ONLY_ROUNDS:
                 tools = self._build_phase_only_tool_list()
@@ -603,7 +634,11 @@ class AgentLoop:
                             "content": result_text,
                         }
                     )
-                    if error_reply or self.state != LoopState.RUNNING_PHASE:
+                    if (
+                        error_reply
+                        or self.state != LoopState.RUNNING_PHASE
+                        or self._interrupted  # issue #14 — bail mid-round
+                    ):
                         break
             finally:
                 # Fill placeholder tool_results for any tool_use IDs not yet executed.
@@ -637,6 +672,19 @@ class AgentLoop:
                 return final.content
 
         return "Reached the maximum number of tool-call rounds. Please try again."
+
+    def _handle_interrupt_bailout(self) -> str:
+        """Clean-shutdown path for an interrupt observed in `_run_react_turn`.
+
+        Resets the flag (so the next user turn proceeds normally), transitions
+        to IDLE, emits a state event for the SSE clients, and returns the
+        reply string that the agent message bubble will render.  Callers must
+        only invoke this once history is balanced (no orphan tool_use blocks).
+        """
+        self._interrupted = False
+        self.state = LoopState.IDLE
+        self._emit("state", state=self.state.value)
+        return "Interrupted by user."
 
     async def _execute_tool_call(self, tc: dict) -> tuple[str, str | None]:
         """

@@ -539,6 +539,29 @@ async def agent_messages(body: ChatRequest) -> ChatResponse:
     return ChatResponse(reply=reply, state=loop.state.value, session_id=body.session_id)
 
 
+# ── /agent/interrupt/{session_id} (issue #14) ──────────────────────────────
+
+
+@app.post("/agent/interrupt/{session_id}")
+async def agent_interrupt(session_id: str) -> JSONResponse:
+    """Flip the loop's interrupt flag for a running session.
+
+    Frontend wires this to the Escape key.  The in-flight `_run_react_turn`
+    polls the flag between tool rounds (and between tool calls inside a
+    round), then transitions to IDLE and returns a short reply — the existing
+    `_run_step_with_done_emit` already emits the trailing `done` event that
+    unsticks the chat UI.
+
+    404 when the session id isn't known yet (no chat turn has been started).
+    """
+    sessions: dict[str, AgentLoop] = app.state.agent_sessions
+    loop = sessions.get(session_id)
+    if loop is None:
+        raise HTTPException(status_code=404, detail="Unknown session_id")
+    loop.interrupt()
+    return JSONResponse({"session_id": session_id, "interrupted": True})
+
+
 # ── /agent/config (Stage 5 issue #3) ───────────────────────────────────────
 
 

@@ -55,6 +55,38 @@
     if (sb) sb.disabled = false;
   };
 
+  // ── Interrupt banner (issue #14) ─────────────────────────────────────────
+  // Server emits `interrupted` after the user hits Escape (which POSTs to
+  // /agent/interrupt/{sid}).  Render a dismissable banner anchored above the
+  // chat input; auto-hides after 6s.
+  const INTERRUPT_BANNER_TIMEOUT_MS = 6000;
+  let interruptBannerTimer = null;
+
+  const dismissInterruptBanner = () => {
+    if (interruptBannerTimer !== null) {
+      clearTimeout(interruptBannerTimer);
+      interruptBannerTimer = null;
+    }
+    const el = document.getElementById("interrupt-banner");
+    if (el) el.classList.add("hidden");
+  };
+
+  const showInterruptBanner = () => {
+    const el = document.getElementById("interrupt-banner");
+    if (!el) return;
+    el.classList.remove("hidden");
+    if (interruptBannerTimer !== null) clearTimeout(interruptBannerTimer);
+    interruptBannerTimer = setTimeout(dismissInterruptBanner, INTERRUPT_BANNER_TIMEOUT_MS);
+  };
+
+  const requestInterrupt = () => {
+    const sessionId = document.body.dataset.sessionId;
+    if (!sessionId) return;
+    // Fire-and-forget; the server pushes `interrupted` over SSE which the
+    // dispatcher renders.  No need to await the response.
+    fetch(`/agent/interrupt/${sessionId}`, { method: "POST" }).catch(() => {});
+  };
+
   // ── done-event watchdog (Issue A safety net) ─────────────────────────────
   // Symptom: `assistant` message bubble arrives but the `done` SSE event
   // sometimes doesn't (suspected: session queue desync on the server).
@@ -168,6 +200,13 @@
         document.getElementById("widget-slot")?.children.length > 0;
       if (!widgetActive) btn().disabled = false;
     },
+    // Issue #14: user-interrupt. Server emits this from the
+    // POST /agent/interrupt/{sid} route AND from AgentLoop.interrupt() itself.
+    // Frontend renders a dismissable banner; the trailing `done` event clears
+    // the thinking spinner.
+    interrupted: (_e) => {
+      showInterruptBanner();
+    },
     // Issue #4: source-model type auto-inference. Emitted by AgentLoop
     // after setup_infer_model_type runs. We back-fill the form's
     // model_type dropdown, attach a coverage badge, and unlock the field
@@ -257,6 +296,24 @@
         try { localStorage.setItem(DEBUG_KEY, next ? "1" : "0"); } catch (_) { /* ignore */ }
       });
     }
+  });
+
+  // Issue #14 — Escape key requests an interrupt of the in-flight phase.
+  // Ignored when an editable field is focused (so typing Esc inside a textarea
+  // doesn't kill the agent), or when the chat is idle (nothing to interrupt).
+  window.addEventListener("DOMContentLoaded", () => {
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Escape") return;
+      const tag = (ev.target && ev.target.tagName) || "";
+      // Allow Esc in inputs to first blur — don't trigger interrupt.
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      const statusEl = document.getElementById("status");
+      const isThinking = statusEl && statusEl.classList.contains("thinking");
+      if (!isThinking) return;
+      requestInterrupt();
+    });
+    const dismissBtn = document.getElementById("interrupt-banner-dismiss");
+    if (dismissBtn) dismissBtn.addEventListener("click", dismissInterruptBanner);
   });
 
   // Open a native EventSource so we own every event type, not just those

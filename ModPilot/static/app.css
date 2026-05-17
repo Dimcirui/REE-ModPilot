@@ -520,3 +520,21 @@ footer {
 .status.thinking { color: #2c79f0; }
 .status.error    { color: #991b1b; }
 .status.done     { color: #047857; }
+
+/* Issue #14 — interrupt banner, anchored just above the chat input. */
+.interrupt-banner {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  margin: 0 0.75rem 0.25rem 0.75rem;
+  background: #fff4d6; color: #7a5b00;
+  border: 1px solid #e6c45a; border-radius: 4px;
+  font-size: 0.8rem;
+}
+.interrupt-banner.hidden { display: none; }
+.interrupt-banner-text { flex: 1; }
+.interrupt-banner-dismiss {
+  background: transparent; border: none; color: #7a5b00;
+  font-size: 1rem; cursor: pointer; padding: 0 0.25rem;
+}
+.interrupt-banner-dismiss:hover { color: #4a3700; }

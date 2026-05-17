@@ -139,6 +139,11 @@
     </aside>
   </div>
 
+  <div id="interrupt-banner" class="interrupt-banner hidden" role="status" aria-live="polite">
+    <span class="interrupt-banner-text">已打断 — agent has been interrupted. The next message starts a fresh turn.</span>
+    <button type="button" id="interrupt-banner-dismiss" class="interrupt-banner-dismiss" aria-label="Dismiss">✕</button>
+  </div>
+
   <footer>
     <form id="chat-form"
           hx-ext="json-enc"
