@@ -8,11 +8,23 @@ A three-step deterministic pipeline applied before skeleton alignment (Phase 2):
     rotations/locations from prior Blender operations do not pollute the result.
     Uses the built-in operator: bpy.ops.pose.transforms_clear()
 
-  Step 2 — Mesh-bbox scale alignment  (skipped when skip_scale_align=True)
-    Scale the source armature uniformly so its mesh height matches the target.
-    Height = world-space Z_max across all MESH objects whose Armature modifier
-    points to the given armature.  Assumption: feet are at Z≈0 for both models
-    (holds for >95% of source models; set skip_scale_align=True for outliers).
+  Step 2 — Arm-bone scale alignment  (skipped when skip_scale_align=True)
+    Scale the source armature uniformly so its arm bones match the target's
+    arm-bone vertical height. We average the world-space head Z of the six
+    arm-segment bones (upperarm/forearm/hand × L/R) for each side, then
+    derive ratio = mean(target_z) / mean(source_z).
+
+    Why arms, not mesh bbox: mesh-bbox-Z is biased by anything that sticks
+    out above the head (hats, props, hair, weapons), which trips up scale on
+    a meaningful fraction of MMD / VRChat avatars. Arm-bone Z is stable
+    because it's a structural shoulder-height signal that's invariant to
+    surface geometry. Source bone names per slot come from the active
+    X-preset's `main` candidate list; target bone names ARE the slot keys
+    (MHWilds canonical naming). At least 2 bones per side must resolve.
+
+    Feet are assumed at Z≈0 for both models (Modding-Toolkit's import
+    operator does foot-align by default — see issue #13).
+
     Applies the scale transform immediately so downstream operators see clean data.
 
   Step 3 — Deterministic pose conversion  (driven by x_preset, no LLM needed)
@@ -31,9 +43,11 @@ Optional params:
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from app.blender.client import BLENDER_SENTINEL, BlenderClient, BlenderError
+from app.blender.preset_catalog import discover_preset_dir, enumerate_x_presets
 from app.blender.state import SceneCache
 from app.phases.base import (
     X_PRESETS,
@@ -42,6 +56,54 @@ from app.phases.base import (
     PhaseTool,
     require_finished,
 )
+
+# Issue #13: the 6 arm-segment slots used for scale-align. Order is stable so
+# any debug output is reproducible.
+_ARM_SLOTS: tuple[str, ...] = (
+    "upperarm_L", "forearm_L", "hand_L",
+    "upperarm_R", "forearm_R", "hand_R",
+)
+
+# Cache of {x_preset_name: {slot: [main_candidate_names]}}, populated lazily on
+# first call. Discovery requires Blender, so the cache is keyed by nothing and
+# rebuilt only when set to None (test-injectable).
+_ARM_CANDIDATE_CACHE: dict[str, dict[str, list[str]]] | None = None
+
+
+def _resolve_arm_candidates(
+    client: BlenderClient,
+    x_preset: str,
+) -> dict[str, list[str]]:
+    """Return {slot_key: [bone-name candidates]} for the 6 arm slots of the
+    given X-preset (issue #13).
+
+    Source-side bone names vary per preset (e.g. MMD's `upperarm_L` matches
+    "Left arm" / "腕.L"); we pull the `main` candidate list from the preset's
+    mappings so the scale-align code blob can try each in order. Slots not
+    present in the preset fall back to the slot key itself — covers minimal
+    custom presets or 怪猎荒野 (canonical-naming) rigs.
+
+    Catalog lookup is cached for app lifetime; tests can monkeypatch this
+    function directly or clear `_ARM_CANDIDATE_CACHE`.
+    """
+    global _ARM_CANDIDATE_CACHE
+    if _ARM_CANDIDATE_CACHE is None:
+        try:
+            preset_dir = discover_preset_dir(client)
+            catalog = enumerate_x_presets(preset_dir)
+        except Exception:
+            catalog = {}
+        _ARM_CANDIDATE_CACHE = {
+            name: {
+                slot: list(meta.mappings.get(slot, {}).get("main", [])) or [slot]
+                for slot in _ARM_SLOTS
+            }
+            for name, meta in catalog.items()
+        }
+    return _ARM_CANDIDATE_CACHE.get(
+        x_preset,
+        {slot: [slot] for slot in _ARM_SLOTS},
+    )
 
 _OP_RESET = "pose.transforms_clear"
 _OP_APPLY_SCALE = "object.transform_apply"
@@ -89,7 +151,11 @@ class PoseCorrection(PhaseTool):
                     },
                     "skip_scale_align": {
                         "type": "boolean",
-                        "description": "Skip bbox scale step if models are already scaled. Default: false.",
+                        "description": (
+                            "Skip the scale-align step (issue #13: based on arm-bone "
+                            "average height) if models are already correctly sized. "
+                            "Default: false."
+                        ),
                     },
                 },
                 "required": ["x_preset", "source_armature", "target_armature"],
@@ -150,9 +216,9 @@ class PoseCorrection(PhaseTool):
             if err is not None:
                 return PhaseResult.fail(err)
 
-            # Step 2 — mesh-bbox scale alignment
+            # Step 2 — arm-bone average-height scale alignment (issue #13)
             if not skip_scale:
-                err = self._scale_align(client, source_arm, target_arm)
+                err = self._scale_align(client, source_arm, target_arm, x_preset)
                 if err is not None:
                     return PhaseResult.fail(err)
 
@@ -229,18 +295,34 @@ class PoseCorrection(PhaseTool):
         client: BlenderClient,
         source_arm: str,
         target_arm: str,
+        x_preset: str,
     ) -> PhaseError | None:
         """
-        Compute world-space Z_max of bound meshes for both armatures, derive a
-        uniform scale ratio, apply it to the source armature, then bake the scale
-        with object.transform_apply so downstream operators see clean data.
+        Issue #13 — Arm-bone average-height scale alignment.
 
-        Uses Z_max as the height proxy under the assumption that feet are at Z≈0.
-        Returns None on success; PhaseError on PRECONDITION or zero-height edge case.
+        For each of the 6 arm-segment slots (upperarm/forearm/hand × L/R) we
+        sample world-space head Z on both armatures, then compute
+        `ratio = mean(target_z) / mean(source_z)` and apply it as a uniform
+        scale on the source armature (with transform_apply to bake).
+
+        Source bone names per slot come from the active X-preset's `main`
+        candidate list (first candidate that resolves in the armature wins).
+        Target bone names ARE the slot keys (MHWilds canonical naming).
+
+        Requires at least 2 resolved bones per side to avoid noisy averages;
+        below that threshold we PRECONDITION-fail with a suggestion. This
+        replaces the prior mesh-bbox-Z method which broke on rigs with
+        above-head props (hats / weapons / hair).
         """
+        candidates = _resolve_arm_candidates(client, x_preset)
+        # Serialize as a JSON literal so the Blender side just `json.loads`-es
+        # it; safer than f-string-embedding a dict of bone names that may
+        # contain quotes (e.g. "Left arm").
+        candidates_json = json.dumps(candidates, ensure_ascii=False)
+        slot_keys_json = json.dumps(list(_ARM_SLOTS))
+
         code = (
-            f"import bpy\n"
-            f"from mathutils import Vector\n"
+            f"import bpy, json\n"
             f"src_arm = bpy.data.objects.get({source_arm!r})\n"
             f"tgt_arm = bpy.data.objects.get({target_arm!r})\n"
             f"missing = []\n"
@@ -250,9 +332,8 @@ class PoseCorrection(PhaseTool):
             f"    print({BLENDER_SENTINEL!r})\n"
             f"    print('PRECONDITION:objects_not_found:' + ','.join(missing))\n"
             f"else:\n"
-            # Step 0: apply any unapplied scale on source armature + mesh children so
-            # that matrix_world reflects the true visual size before computing the ratio.
-            # Output from transform_apply lands before the sentinel and is discarded.
+            # Bake any unapplied scale on the source armature + mesh children
+            # so matrix_world reflects the true visual size before sampling.
             f"    bpy.ops.object.mode_set(mode='OBJECT')\n"
             f"    bpy.ops.object.select_all(action='DESELECT')\n"
             f"    src_arm.select_set(True)\n"
@@ -261,35 +342,39 @@ class PoseCorrection(PhaseTool):
             f"    bpy.context.view_layer.objects.active = src_arm\n"
             f"    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)\n"
             f"    bpy.context.view_layer.update()\n"
-            # Helper: collect meshes bound to arm_obj via Armature modifier
-            f"    def bound_meshes(arm_obj):\n"
-            f"        return [o for o in bpy.data.objects\n"
-            f"                if o.type == 'MESH' and any(\n"
-            f"                    m.type == 'ARMATURE' and m.object == arm_obj\n"
-            f"                    for m in o.modifiers)]\n"
-            # Helper: world-space Z_max across all bound meshes
-            f"    def z_max(meshes):\n"
-            f"        zmax = 0.0\n"
-            f"        for mesh in meshes:\n"
-            f"            for corner in mesh.bound_box:\n"
-            f"                z = (mesh.matrix_world @ Vector(corner)).z\n"
-            f"                if z > zmax:\n"
-            f"                    zmax = z\n"
-            f"        return zmax\n"
-            f"    src_meshes = bound_meshes(src_arm)\n"
-            f"    tgt_meshes = bound_meshes(tgt_arm)\n"
+            # ── arm-bone sampling ───────────────────────────────────────────
+            f"    _candidates = json.loads({candidates_json!r})\n"
+            f"    _slot_keys = json.loads({slot_keys_json!r})\n"
+            # Source: try each candidate per slot; first match wins.
+            f"    src_zs = []\n"
+            f"    src_matched = []\n"
+            f"    for slot in _slot_keys:\n"
+            f"        for name in _candidates.get(slot, [slot]):\n"
+            f"            pb = src_arm.pose.bones.get(name)\n"
+            f"            if pb is not None:\n"
+            f"                src_zs.append((src_arm.matrix_world @ pb.head).z)\n"
+            f"                src_matched.append(slot)\n"
+            f"                break\n"
+            # Target: canonical names = slot keys.
+            f"    tgt_zs = []\n"
+            f"    tgt_matched = []\n"
+            f"    for slot in _slot_keys:\n"
+            f"        pb = tgt_arm.pose.bones.get(slot)\n"
+            f"        if pb is not None:\n"
+            f"            tgt_zs.append((tgt_arm.matrix_world @ pb.head).z)\n"
+            f"            tgt_matched.append(slot)\n"
             f"    print({BLENDER_SENTINEL!r})\n"
-            f"    if not src_meshes:\n"
-            f"        print('PRECONDITION:no_source_meshes')\n"
-            f"    elif not tgt_meshes:\n"
-            f"        print('PRECONDITION:no_target_meshes')\n"
+            f"    if len(src_zs) < 2:\n"
+            f"        print('PRECONDITION:source_arm_bones_unresolved:' + ','.join(src_matched))\n"
+            f"    elif len(tgt_zs) < 2:\n"
+            f"        print('PRECONDITION:target_arm_bones_unresolved:' + ','.join(tgt_matched))\n"
             f"    else:\n"
-            f"        src_h = z_max(src_meshes)\n"
-            f"        tgt_h = z_max(tgt_meshes)\n"
+            f"        src_h = sum(src_zs) / len(src_zs)\n"
+            f"        tgt_h = sum(tgt_zs) / len(tgt_zs)\n"
             f"        if src_h <= 0:\n"
-            f"            print('PRECONDITION:source_height_zero')\n"
+            f"            print('PRECONDITION:source_arm_height_zero')\n"
             f"        elif tgt_h <= 0:\n"
-            f"            print('PRECONDITION:target_height_zero')\n"
+            f"            print('PRECONDITION:target_arm_height_zero')\n"
             f"        else:\n"
             f"            ratio = tgt_h / src_h\n"
             f"            src_arm.scale = (ratio, ratio, ratio)\n"
@@ -298,7 +383,7 @@ class PoseCorrection(PhaseTool):
             f"            src_arm.select_set(True)\n"
             f"            bpy.ops.object.transform_apply(\n"
             f"                location=False, rotation=False, scale=True)\n"
-            f"            print(f'SCALE_OK:{{ratio:.4f}}')\n"
+            f"            print(f'SCALE_OK:ratio={{ratio:.4f}} src_mean_z={{src_h:.3f}} tgt_mean_z={{tgt_h:.3f}} src_matched={{src_matched}} tgt_matched={{tgt_matched}}')\n"
         )
         lines = client.execute_and_extract(code)
         if lines and lines[0].startswith("PRECONDITION:"):
@@ -306,10 +391,14 @@ class PoseCorrection(PhaseTool):
             return PhaseError(
                 category="precondition",
                 operator=_OP_APPLY_SCALE,
-                message=f"Mesh-bbox scale alignment failed: {detail}",
+                message=f"Arm-bone scale alignment failed: {detail}",
                 suggestion=(
-                    "Ensure both armatures have MESH objects with an Armature modifier. "
-                    "If models are already correctly scaled, set skip_scale_align=True."
+                    "Issue #13 uses upperarm/forearm/hand bone heights for scale. "
+                    "Ensure both armatures expose at least 2 of those slots — for the "
+                    "source rig, the X-preset's `main` candidate list is consulted; "
+                    "for the target rig, canonical MHWilds names (upperarm_L, "
+                    "forearm_L, hand_L, …) must resolve. If the models are already "
+                    "correctly sized, pass skip_scale_align=true."
                 ),
             )
         # SCALE_OK or any non-PRECONDITION output → success

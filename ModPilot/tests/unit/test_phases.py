@@ -98,13 +98,34 @@ class TestPoseCorrection:
     """
     Tests for the redesigned 3-step PoseCorrection pipeline:
       Step 1 — pose_reset  (pose.transforms_clear)
-      Step 2 — scale_align (mesh-bbox uniform scale)
+      Step 2 — scale_align (issue #13: arm-bone average-Z scale)
       Step 3 — pose_convert (deterministic by x_preset)
 
     Default mock returns [{'FINISHED'}] for every execute_and_extract call.
     For scale_align, non-PRECONDITION output is treated as success, so the
     default mock value passes through cleanly.
+
+    Issue #13: the candidate cache in pose_correction module is module-level
+    and cached across calls; tests that exercise candidate-injection paths
+    monkeypatch `_resolve_arm_candidates` directly.
     """
+
+    @pytest.fixture(autouse=True)
+    def _stub_arm_candidates(self, monkeypatch):
+        """Issue #13: short-circuit `_resolve_arm_candidates` so it doesn't
+        round-trip to Blender (via discover_preset_dir) on every call. The
+        existing call_count assertions in this class budget for 2 or 3 phase
+        steps, not the extra discovery round-trip. Tests that need to
+        exercise candidate-injection paths re-patch this themselves.
+        """
+        from app.phases import pose_correction as pc
+
+        canonical = {slot: [slot] for slot in pc._ARM_SLOTS}
+        monkeypatch.setattr(pc, "_resolve_arm_candidates",
+                            lambda client, preset: canonical)
+        pc._ARM_CANDIDATE_CACHE = None
+        yield
+        pc._ARM_CANDIDATE_CACHE = None
 
     def _phase(self):
         return PoseCorrection()
@@ -172,27 +193,83 @@ class TestPoseCorrection:
     # ── step 2: scale align ────────────────────────────────────────────────
 
     def test_scale_align_is_second_call(self):
-        """Second execute_and_extract call must reference both armature names."""
+        """Second execute_and_extract call must reference both armature names
+        and use the arm-bone method (issue #13: pose.bones + matrix_world over
+        upperarm/forearm/hand slots, NOT the old mesh-bbox path)."""
         client = make_client()
         cache = make_cache(client)
         self._phase().run(client, cache, self._base_params())
         second_code = client.execute_and_extract.call_args_list[1].args[0]
         assert "SourceArm" in second_code
         assert "GameArm" in second_code
-        assert "bound_box" in second_code
+        # Arm-bone method markers (issue #13)
+        assert "pose.bones" in second_code
+        assert "matrix_world" in second_code
+        for slot in ("upperarm_L", "forearm_L", "hand_L",
+                     "upperarm_R", "forearm_R", "hand_R"):
+            assert slot in second_code
+        # Old mesh-bbox method must be gone (regression guard).
+        assert "bound_box" not in second_code
+        assert "bound_meshes" not in second_code
+        assert "z_max" not in second_code
 
     def test_scale_align_precondition_stops_pipeline(self):
         """If scale_align returns PRECONDITION, pose_convert must NOT be called."""
         client = make_client()
         client.execute_and_extract.side_effect = [
-            [f"{{'FINISHED'}}"],          # pose_reset ok
-            ["PRECONDITION:no_source_meshes"],  # scale_align fails
+            [f"{{'FINISHED'}}"],                              # pose_reset ok
+            ["PRECONDITION:source_arm_bones_unresolved:"],    # issue #13 path
         ]
         cache = make_cache(client)
         result = self._phase().run(client, cache, self._base_params())
         assert not result.success
         assert result.error.category == "precondition"
+        assert "Arm-bone scale alignment failed" in result.error.message
         assert client.execute_and_extract.call_count == 2
+
+    def test_scale_align_injects_preset_candidates(self):
+        """Issue #13: the active X-preset's `main` candidate list per arm slot
+        must be embedded as a JSON literal in the Blender code blob."""
+        from app.phases import pose_correction as pc
+
+        fake = {
+            "upperarm_L": ["Left arm", "腕.L"],
+            "forearm_L": ["Left elbow", "ひじ.L"],
+            "hand_L": ["Left wrist", "手首.L"],
+            "upperarm_R": ["Right arm", "腕.R"],
+            "forearm_R": ["Right elbow", "ひじ.R"],
+            "hand_R": ["Right wrist", "手首.R"],
+        }
+        with patch.object(pc, "_resolve_arm_candidates", return_value=fake):
+            client = make_client()
+            cache = make_cache(client)
+            self._phase().run(client, cache, self._base_params("MMD"))
+        second_code = client.execute_and_extract.call_args_list[1].args[0]
+        # All non-canonical candidate names land in the embedded JSON.
+        for candidate in ("Left arm", "Left elbow", "Left wrist", "腕.L", "ひじ.L"):
+            assert candidate in second_code
+
+    def test_resolve_arm_candidates_falls_back_to_slot_keys_when_catalog_empty(self):
+        """When `discover_preset_dir` raises (e.g. no Blender), the catalog is
+        empty and every preset name resolves to {slot: [slot]} — the rig is
+        assumed to already use canonical MHWilds bone names."""
+        from app.phases import pose_correction as pc
+
+        # Force cache miss + discovery failure
+        pc._ARM_CANDIDATE_CACHE = None
+        with patch.object(pc, "discover_preset_dir",
+                          side_effect=RuntimeError("no blender")):
+            result = pc._resolve_arm_candidates(MagicMock(), "MMD")
+        assert result == {
+            "upperarm_L": ["upperarm_L"],
+            "forearm_L":  ["forearm_L"],
+            "hand_L":     ["hand_L"],
+            "upperarm_R": ["upperarm_R"],
+            "forearm_R":  ["forearm_R"],
+            "hand_R":     ["hand_R"],
+        }
+        # Clear so other tests get a fresh cache state
+        pc._ARM_CANDIDATE_CACHE = None
 
     def test_skip_scale_align_skips_step2(self):
         """With skip_scale_align=True, only 2 calls: reset + pose_convert (MMD)."""

@@ -304,11 +304,15 @@ Proceed automatically without asking the user.
 #### Execution Steps
 1. Set X preset (source) and skeleton preset to match source model type.
 2. Set Y preset (target) to MHWs.
-3. Scale the armature + meshes to roughly match MHWs bounding box (bbox align).
+3. Scale the armature + meshes by arm-bone average height (issue #13: average
+   world-space Z of upperarm/forearm/hand × L/R on both rigs; ratio = target
+   mean / source mean). Foot-align is already handled by the importer. The
+   prior mesh-bbox-Z method was retired because rigs with above-head props
+   (hats, hair, weapons) produced wrong ratios.
 4. Apply the pose correction tool selected above.
 
 #### User Interaction Points
-1. **After step 3 (bbox scale)**: Display viewport screenshot. Ask:
+1. **After step 3 (arm-bone scale)**: Display viewport screenshot. Ask:
    "The model has been scaled to match the MHWs reference proportions. Does the scale look acceptable? [Yes / Adjust]"
 2. **After step 4 (pose correction)**: Display viewport screenshot. Ask:
    "Pose correction applied. Does the pose roughly match the T-pose of the reference armature? [Yes / No — describe the issue]"
@@ -1285,7 +1289,7 @@ If warnings or errors appear in the log:
 
 | Phase | Step Description | Operator | Notes |
 |-------|-----------------|----------|-------|
-| 1 | Bbox scale align | <!-- FILL IN --> | Scales armature + meshes |
+| 1 | Arm-bone scale align (issue #13) | `object.transform_apply(scale=True)` | Ratio = mean(target arm-bone Z) / mean(source arm-bone Z) |
 | 1 | Direction calculation (MMD) | <!-- FILL IN --> | Rotates upper arms |
 | 1 | Pose recorder forward (Endfield) | <!-- FILL IN --> | Applies pre-recorded delta |
 | 2 | Align bones [X+Y] | <!-- FILL IN --> | Dual armature selection required |
