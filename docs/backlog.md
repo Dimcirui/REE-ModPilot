@@ -102,7 +102,7 @@ Items here block MVP shipping. All must reach 🟢 before MVP acceptance (L3, [d
 
 - 🟢 `verify_mvp.py` + `verify_mvp_config.example.json` — End-to-end script that imports phase tools directly (bypassing the agent loop / LLM) and drives them with config-supplied classification mappings. Aggregates Operator FINISHED checks (already enforced inside each phase tool by `require_finished()`), post-Phase-6 file existence + non-zero-size checks against `natives_root/expected_files`, per-step duration capture, optional JSON report (`--report`), `--phases` subset selector for iterative debugging.
 - 🟢 `docs/demo_setup.md` — Blender + addon install order (Modding-Toolkit / Modder-Batch-Tool / RE Mesh Editor / RE Chain Editor / blender-mcp), MMD source-model recommendations (no assets bundled per D15), `.fbxskel.7` extraction via REasy / RE Toolbox, mod folder layout, full `verify_mvp_config.json` field reference, and an L3 in-game acceptance procedure with a symptom→failure-phase table.
-- ⚪ Run a full L3 acceptance pass with self-provided assets — user-side step (requires real MMD model + game install); procedure is now documented in `docs/demo_setup.md` §5.
+- 🟢 Run a full L3 acceptance pass with self-provided assets — 3-4 MMD/VRC models tested end-to-end (Phase 1→6), exported mods verified in-game. Pipeline stable. MVP declared complete.
 
 ---
 

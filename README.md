@@ -16,8 +16,8 @@
 | Stage 2 — phase tool layer (videos 1-3) | 🟢 done (PoseCorrection + SkeletonAlign + VertexGroups; 76 unit tests) |
 | Stage 3 — agent loop | 🟢 done (ReAct loop + prompts + error handler + `/agent/chat`; 117 unit tests) |
 | Stage 4 — phase tools (videos 4-7) | 🟢 done: physics_bones + material + batch_export + mesh_cleanup + query tools; E2E verified (Phase 1→6 full run); advanced out of MVP scope |
-| Stage 5 — frontend (htmx + SSE chat) | 🟢 done: issue #1 (chat UI + SSE event stream, 9 event types), issue #2 (error-choice three-button UI), issue #3 (session-config form, 8 fields, localStorage rehydrate, prompt injection). 23 unit tests + 36 Playwright e2e checks. Viewport screenshot side-panel still pending. |
-| Stage MVP — verification | ⚪ pending |
+| Stage 5 — frontend (htmx + SSE chat) | 🟢 done: chat UI + 10-event SSE stream (#1), error-choice UI (#2), session-config form (#3), confirmation widgets (#7), global LLM/Blender config UI (#9), Ollama provider, viewport screenshot side-panel, model-type auto-inference (#4), preset supplement/custom write (#5/#6). 360+ unit tests + 73 Playwright e2e checks. |
+| Stage MVP — verification | 🟢 done (L3 in-game acceptance: 3-4 MMD/VRC models verified; `verify_mvp.py` script + `docs/demo_setup.md` walkthrough) |
 
 All design items in [docs/design.md](docs/design.md) (A/B/C/D/E layers) are 🟢 decided.
 
@@ -45,12 +45,12 @@ The AI's value concentrates in **videos 4-7** (physics bones / materials / batch
 
 ```
 Browser (localhost)
-   ↓ HTML / htmx + SSE
+   ↓ HTML / htmx + SSE (10 event types)
 FastAPI backend
-   ├── Agent loop          (ReAct, hand-rolled, ~300 lines)
-   ├── Phase tools         (12-15, mapped 1:1 to plan.md sections)
-   ├── LLM client          (provider-agnostic: Anthropic SDK / OpenAI-compatible)
-   └── Blender client      (TCP socket)
+   ├── Agent loop          (ReAct, hand-rolled, ~600 lines)
+   ├── Phase tools         (15 tools across setup + phases 1-6)
+   ├── LLM client          (provider-agnostic: Anthropic / OpenAI-compatible / Ollama)
+   └── Blender client      (TCP socket, thread-safe RLock)
             ↓
 blender-mcp addon.py       (port 9876 — `execute_code` channel)
             ↓
@@ -60,9 +60,10 @@ User's Modding-Toolkit     (bpy.ops.modder.* / mhws.* / re4.* / etc.)
 **Key architectural decisions**:
 
 - **Phase tool middle layer**, not raw operator wrappers. LLM orchestrates *between* phases and makes *classification* decisions inside phases; deterministic Python orchestrates *within* phases. (B6, [project memory](.claude/projects/.../memory/project_python_over_llm.md))
-- **Provider-agnostic LLM client** (~100 lines). Default DeepSeek V4 for development; Claude Sonnet 4.6 / Haiku 4.5 as oracle / demo fallback. (C10)
+- **Provider-agnostic LLM client** (~150 lines). Default DeepSeek V4 for development; Claude Sonnet 4.6 / Haiku 4.5 as oracle fallback; Ollama Cloud (`deepseek-v4-flash`) as a third option. Runtime-switchable via `/config` UI — no restart needed. (C10)
 - **No RAG in MVP** — `docs/agent_workflow.md` (machine-readable execution manual) goes directly into system prompt + prompt cache. `plan.md` is the video script for humans only. Content RAG retained as a future upgrade path. (C11)
 - **htmx + Jinja2** frontend, no SPA framework. (C12)
+- **Confirmation widgets** — server-rendered Jinja partials pushed over SSE for Phase 4A (physics bone classification) and Phase 5 (material slot → texture mapping). User edits the widget in-browser; confirmed values re-enter the agent loop as prefixed JSON messages.
 
 ---
 
@@ -75,6 +76,7 @@ User's Modding-Toolkit     (bpy.ops.modder.* / mhws.* / re4.* / etc.)
 | Package manager | uv | C13 |
 | LLM (dev default) | DeepSeek V4 (OpenAI-compatible API) | C10 |
 | LLM (oracle / fallback) | Claude Sonnet 4.6 / Haiku 4.5 (Anthropic SDK) | C10 |
+| LLM (third option) | Ollama Cloud (`deepseek-v4-flash` / `deepseek-v4-pro`) | C10 |
 | Agent framework | Hand-rolled ReAct (raw SDKs, no LangChain in MVP) | C9 |
 | Frontend | htmx + Jinja2 templates | C12 |
 | Blender integration | TCP socket via blender-mcp addon | Stage 0 |
@@ -93,16 +95,19 @@ REE-ModPilot/
 │   ├── .env.example
 │   ├── app/
 │   │   ├── main.py               # FastAPI app; /health /scene_info /agent/chat
-│   │   │                         #   plus Stage 5: GET / + /agent/messages
-│   │   │                         #   + /agent/stream/{sid} + /agent/config
-│   │   ├── config.py             # Settings (LLM / Blender / vision model)
-│   │   ├── blender/              # BlenderClient (TCP socket) + SceneCache
-│   │   ├── llm/                  # Provider-agnostic LLMClient (Anthropic + OpenAI)
+│   │   │                         #   GET / + /agent/messages + /agent/stream/{sid}
+│   │   │                         #   /agent/widget/{classification,material}
+│   │   │                         #   /app/config GET+POST + /config UI
+│   │   │                         #   /viewport_screenshot + /app/x_presets
+│   │   ├── config.py             # Settings (LLM / Blender / vision model); runtime-mutable
+│   │   ├── blender/              # BlenderClient (thread-safe RLock, BlenderBusyError) + SceneCache
+│   │   ├── llm/                  # Provider-agnostic LLMClient (Anthropic + OpenAI + Ollama)
 │   │   ├── agent/                # ReAct loop, prompt builders, error handler
-│   │   ├── templates/            # Jinja2 templates (chat.html — htmx + SSE chat shell)
-│   │   └── phases/               # Phase tools: pose_correction, skeleton_align,
-│   │                             #   vertex_groups (done); physics_bones, material,
-│   │                             #   batch_export, advanced (Stage 4)
+│   │   ├── templates/            # Jinja2 templates: chat.html, config.html
+│   │   │   └── widgets/          #   widget partials: classification.html, material.html
+│   │   └── phases/               # Phase tools: setup (validate+infer+import), pose_correction,
+│   │                             #   skeleton_align, vertex_groups, physics_bones, material,
+│   │                             #   batch_export, query_tools; advanced out of MVP scope
 │   ├── tests/
 │   │   ├── unit/                 # mock Blender + mock LLM
 │   │   ├── integration/          # real Blender required; marker-gated
@@ -114,9 +119,11 @@ REE-ModPilot/
 │   ├── agent_workflow.md         # Machine-readable execution manual for the agent
 │   ├── plan.md                   # 7-video workflow script (human reference only)
 │   ├── plugin_api.md             # Modding-Toolkit operator reference
-│   └── demo_setup.md             # MMD model + game asset setup (TBD)
+│   └── demo_setup.md             # Blender addon install, MMD model setup, mod folder layout,
+│                                 #   verify_mvp_config.json field reference, L3 acceptance procedure
 ├── verify_blender_mcp.py         # Stage 0 verification (5 checks)
-├── verify_mvp.py                 # Stage MVP end-to-end check (TBD)
+├── verify_mvp.py                 # MVP end-to-end script (bypasses agent loop; drives phase tools
+│                                 #   directly via config JSON; exit-code-correlated; --report flag)
 ├── README.md                     # ← you are here
 ├── CLAUDE.md                     # Claude-specific working notes
 └── AGENTS.md                     # Contributor baseline (commands, conventions)
@@ -146,9 +153,6 @@ After enabling both in Blender → Edit → Preferences → Add-ons, open the Bl
 
 ## Quick Start
 
-> Stages 1-4 are complete. The full Phase 1→6 pipeline runs end-to-end.
-> Stage 5 (htmx frontend) is pending — see [docs/backlog.md](docs/backlog.md).
-
 **1. Verify Blender connectivity (Stage 0)**
 
 ```bash
@@ -159,37 +163,33 @@ python verify_blender_mcp.py
 
 Expected output ends with `=== Stage 0 PASSED. Pipeline is alive. ===`.
 
-**2. Configure environment**
+**2. Run the backend**
 
 ```bash
 cd ModPilot
-cp .env.example .env
-# Edit .env: set LLM_API_KEY (DeepSeek recommended), BLENDER_HOST/PORT if non-default
-```
-
-**3. Run the backend**
-
-```bash
 uv run uvicorn app.main:app --reload
-# Server starts at http://localhost:8000
-# GET  /health        — Blender connectivity check
-# GET  /scene_info    — current Blender scene state
-# POST /agent/chat    — send a message to the agent loop
 ```
 
-**4. Send a message to the agent**
+Open **http://localhost:8000** — on first launch (no API key configured) you are redirected to the `/config` settings page. Enter your LLM provider, API key, and model. Settings are persisted in `~/.modpilot/config.json` across restarts.
+
+**3. Start a mod session**
+
+Fill in the session-config form (source file path, mod root, character name, etc.) and click **Start**. The agent walks through Phases 1-6 automatically, pausing at classification checkpoints (physics bone table, material texture mapping) for user confirmation via in-browser widgets.
+
+**4. Run unit tests**
 
 ```bash
-curl -X POST http://localhost:8000/agent/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Let'\''s start the mod workflow.", "session_id": "my-session"}'
+uv run pytest -m unit -v   # 360+ tests, no Blender required
 ```
 
-**5. Run unit tests**
+**5. (Optional) Headless MVP verification**
 
 ```bash
-uv run pytest -m unit -v   # 117 tests, no Blender required
+# Copy and fill in the config template, then:
+python verify_mvp.py --config verify_mvp_config.json [--phases setup phase_1_2_3 ...] [--report out.json]
 ```
+
+See `docs/demo_setup.md` for prerequisite addon install order, MMD model recommendations, mod folder layout, and the full config field reference.
 
 ---
 
