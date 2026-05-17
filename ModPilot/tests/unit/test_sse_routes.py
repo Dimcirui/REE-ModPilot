@@ -348,6 +348,55 @@ def test_render_material_widget_html_per_material_slot_table():
 
 
 @pytest.mark.unit
+def test_render_material_widget_html_pre_fills_llm_suggestions():
+    """Issue #11 — when `suggestions` carries a {mat: {slot: path}} hint, the
+    matching cell is pre-selected, the row gets the `row-suggested` class, and
+    the slot label gets the `LLM` chip. Suggestions take precedence over the
+    existing connection.
+    """
+    from app.main import _render_material_widget_html
+
+    sid = "widget-test-mat-sug"
+    materials = ["body_mat"]
+    # existing wired connection points at the WRONG file on purpose; the LLM
+    # suggestion should win.
+    connections = {"body_mat": {"Base Color": "C:/tex/wrong.png"}}
+    texture_files = ["C:/tex/wrong.png", "C:/tex/body_diffuse.png"]
+    suggestions = {"body_mat": {"Base Color": "C:/tex/body_diffuse.png"}}
+    fragment = _render_material_widget_html(
+        sid, materials, connections, texture_files, suggestions
+    )
+
+    # The suggested file is pre-selected
+    assert 'value="C:/tex/body_diffuse.png" selected' in fragment
+    # The wrong (existing) file is NOT selected
+    assert 'value="C:/tex/wrong.png" selected' not in fragment
+    # The row gets the highlight class
+    assert "row-suggested" in fragment
+    # The slot label gets the chip
+    assert "widget-suggested-chip" in fragment
+
+
+@pytest.mark.unit
+def test_render_material_widget_html_no_suggestions_falls_back_to_existing():
+    """Issue #11 — when `suggestions` is empty / missing, behavior matches the
+    pre-issue #11 path: existing connections still pre-select, no chip / no
+    row highlight."""
+    from app.main import _render_material_widget_html
+
+    sid = "widget-test-mat-nosug"
+    materials = ["body_mat"]
+    connections = {"body_mat": {"Base Color": "C:/tex/diff.png"}}
+    texture_files = ["C:/tex/diff.png"]
+    fragment = _render_material_widget_html(
+        sid, materials, connections, texture_files, suggestions=None
+    )
+
+    assert 'value="C:/tex/diff.png" selected' in fragment
+    assert "row-suggested" not in fragment
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
 def test_legacy_chat_does_not_populate_stream(monkeypatch):
     """POST /agent/chat must not install a sink — SSE consumers see nothing."""

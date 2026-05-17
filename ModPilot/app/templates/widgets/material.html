@@ -4,7 +4,7 @@
       hx-swap="none">
   <header class="widget-header">
     <h3>Confirm texture mapping</h3>
-    <span class="widget-hint">Pick the correct texture file for each Principled BSDF slot per material. Leave a slot blank to skip it.</span>
+    <span class="widget-hint">Rows marked <span class="widget-suggested-chip">LLM 建议</span> are pre-filled by the agent — accept as-is or override per slot. Leave a slot blank to skip it.</span>
   </header>
   {% for mat in materials %}
   <details class="material-block" open>
@@ -17,13 +17,21 @@
         {% for slot_idx in range(slot_names|length) %}
         {% set slot = slot_names[slot_idx] %}
         {% set existing = existing_connections.get(mat, {}).get(slot) %}
-        <tr>
-          <td class="slot-name">{{ slot }}</td>
+        {% set suggested = suggestions.get(mat, {}).get(slot) %}
+        {# Issue #11 precedence: LLM suggestion wins over existing connection,
+           which wins over "(none)". `existing == "connected_no_image"` is a
+           sentinel meaning the slot is wired to an image-less node; treat as none. #}
+        {% set chosen = suggested or (existing if existing and existing != "connected_no_image" else "") %}
+        <tr class="{% if suggested %}row-suggested{% endif %}">
+          <td class="slot-name">
+            {{ slot }}
+            {% if suggested %}<span class="widget-suggested-chip" title="Pre-filled by LLM">LLM</span>{% endif %}
+          </td>
           <td>
             <select name="texmap__{{ slot_idx }}__{{ mat }}">
-              <option value=""{% if not existing or existing == "connected_no_image" %} selected{% endif %}>(none)</option>
+              <option value=""{% if not chosen %} selected{% endif %}>(none)</option>
               {% for tex in texture_files %}
-              <option value="{{ tex }}"{% if existing == tex %} selected{% endif %}>{{ tex_basename(tex) }}</option>
+              <option value="{{ tex }}"{% if chosen == tex %} selected{% endif %}>{{ tex_basename(tex) }}</option>
               {% endfor %}
             </select>
           </td>

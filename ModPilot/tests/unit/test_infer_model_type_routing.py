@@ -183,7 +183,11 @@ def test_session_config_rejects_unknown_preset(monkeypatch, tmp_path):
 async def test_emit_widget_if_inspector_emits_model_type_inferred():
     """Direct unit test of the inspector hook: a state_diff carrying an
     `inferred_preset` + `decision` should produce a `model_type_inferred`
-    event without touching Blender or the LLM."""
+    event without touching Blender or the LLM.
+
+    Issue #11 made the hook async (so the material branch can `await` the LLM
+    pre-fill call). This test now awaits the coroutine.
+    """
     from app.agent.loop import AgentLoop
 
     events: list[dict] = []

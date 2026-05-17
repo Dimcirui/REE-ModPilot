@@ -400,6 +400,21 @@ body.config-locked #config-saved-badge { display: flex; }
 }
 .material-block[open] summary { margin-bottom: 0.35rem; }
 
+/* Issue #11: LLM-suggested rows are highlighted with a left bar + a chip in
+   the slot-name cell. The chip in the hint row uses the same palette so the
+   relationship is visually consistent. */
+.widget-suggested-chip {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0 0.4rem;
+  font-size: 0.65rem; font-weight: 600;
+  color: #1c4ea8; background: #dbeafe;
+  border: 1px solid #bfdbfe; border-radius: 999px;
+  letter-spacing: 0.03em; vertical-align: middle;
+}
+.widget-table tr.row-suggested td { background: #f3f8ff; }
+.widget-table tr.row-suggested td.slot-name { border-left: 2px solid #2c79f0; }
+
 .widget-actions { display: flex; justify-content: flex-end; }
 .widget-submit {
   padding: 0.4rem 1.1rem; font-size: 0.9rem; font-weight: 500;

@@ -570,6 +570,12 @@ async def test_material_inspect_success_emits_widget_material():
             }],
             content_blocks=[],
         ),
+        # Issue #11: extra LLM call from _suggest_texture_mapping; bare JSON
+        # so it parses cleanly and the result rides on the widget event.
+        MagicMock(
+            content='{"body_mat": {"Base Color": "C:/tex/diff.png"}}',
+            has_tool_calls=False, tool_calls=[],
+        ),
         MagicMock(content="awaiting confirmation", has_tool_calls=False, tool_calls=[]),
     ]
     blender = MagicMock()
@@ -596,6 +602,10 @@ async def test_material_inspect_success_emits_widget_material():
     assert widget_evts[0]["materials"] == materials
     assert widget_evts[0]["existing_connections"] == connections
     assert widget_evts[0]["texture_files"] == texture_files
+    # Issue #11: LLM pre-fill suggestion now rides on the widget event.
+    assert widget_evts[0]["suggestions"] == {
+        "body_mat": {"Base Color": "C:/tex/diff.png"},
+    }
 
 
 # ── _annotate_chains base-name propagation ────────────────────────────────
@@ -880,3 +890,52 @@ class TestHealHistory:
         # Empty content list would itself be a 400 — must leave a marker block.
         assert history[1]["content"]
         assert all(b.get("type") != "tool_result" for b in history[1]["content"])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_suggest_texture_mapping_filters_and_handles_failure():
+    """Issue #11: _suggest_texture_mapping drops unknown materials/slots and
+    invented file paths, and returns {} when the LLM raises or replies with
+    non-JSON content.
+    """
+    llm = MagicMock()
+    blender = MagicMock()
+    blender.get_scene_info.return_value = {"name": "Scene", "object_count": 1}
+
+    loop = _make_loop(sink=[], llm=llm, blender=blender)
+
+    materials = ["body_mat"]
+    texture_files = ["C:/tex/body_diffuse.png"]
+
+    # 1. Happy path: clean JSON; unknown mat, unknown slot, and invented file
+    #    are all filtered out.
+    llm.chat.return_value = MagicMock(
+        content=(
+            '{"body_mat": {"Base Color": "C:/tex/body_diffuse.png", '
+            '"NotASlot": "anything", "Normal": "C:/tex/invented.png"}, '
+            '"unknown_mat": {"Base Color": "C:/tex/body_diffuse.png"}}'
+        ),
+        has_tool_calls=False, tool_calls=[],
+    )
+    result = await loop._suggest_texture_mapping(materials, texture_files, {})
+    assert result == {"body_mat": {"Base Color": "C:/tex/body_diffuse.png"}}
+
+    # 2. Non-JSON content → {}
+    llm.chat.return_value = MagicMock(
+        content="sure, here's a guess: Base Color → body_diffuse.png",
+        has_tool_calls=False, tool_calls=[],
+    )
+    result = await loop._suggest_texture_mapping(materials, texture_files, {})
+    assert result == {}
+
+    # 3. LLM raises → {}
+    llm.chat.side_effect = RuntimeError("provider down")
+    result = await loop._suggest_texture_mapping(materials, texture_files, {})
+    assert result == {}
+
+    # 4. No texture files / no materials → short-circuit, no LLM call
+    llm.chat.reset_mock(side_effect=True)
+    llm.chat.side_effect = AssertionError("must not call LLM with empty inputs")
+    assert await loop._suggest_texture_mapping([], texture_files, {}) == {}
+    assert await loop._suggest_texture_mapping(materials, [], {}) == {}

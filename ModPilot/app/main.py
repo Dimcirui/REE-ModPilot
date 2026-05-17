@@ -214,14 +214,22 @@ def _render_material_widget_html(
     materials: list[str],
     existing_connections: dict,
     texture_files: list[str],
+    suggestions: dict | None = None,
 ) -> str:
-    """Render the material slot→texture confirmation widget (issue #7)."""
+    """Render the material slot→texture confirmation widget (issue #7).
+
+    `suggestions` (issue #11): optional {mat: {slot: file_path}} LLM pre-fill
+    consumed by the template to pre-select cells and tag them with the
+    `widget-suggested` chip. Falls back to `existing_connections` semantics
+    when missing.
+    """
     return templates.get_template("widgets/material.html").render(
         session_id=session_id,
         materials=materials,
         existing_connections=existing_connections,
         texture_files=texture_files,
         slot_names=PRINCIPLED_SLOTS,
+        suggestions=suggestions or {},
         tex_basename=lambda p: Path(p).name,
     )
 
@@ -932,6 +940,7 @@ async def agent_stream(session_id: str, request: Request):
                     evt.get("materials", []),
                     evt.get("existing_connections", {}),
                     evt.get("texture_files", []),
+                    evt.get("suggestions", {}),
                 )
             else:
                 data = json.dumps(evt, ensure_ascii=False)
