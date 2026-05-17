@@ -423,6 +423,15 @@ class AgentLoop:
         # blocks in history.  Cleared by the bail-out branch.
         self._interrupted: bool = False
 
+        # Issue #15 — inter-phase pause flag.  Flipped True in `_execute_tool_call`
+        # right after a phase-advancing tool succeeds; `_run_react_turn` then
+        # breaks the tool-call loop, runs ONE tools=None wrap-up llm.chat to get
+        # a completion report, and returns that text to the user.  Reset at the
+        # top of every step() and right after the wrap-up branch fires.  The
+        # rail enforces the Phase Transition Protocol from agent_workflow.md
+        # even when the LLM ignores the prompt-level rule.
+        self._phase_just_advanced: bool = False
+
         # global_history: full conversation (all turns).
         # phase_history:  isolated per NEGOTIATING phase; reset at each phase boundary.
         self._global_history: list[Message] = []
@@ -472,6 +481,10 @@ class AgentLoop:
 
     async def step(self, user_message: str) -> str:
         """Process one user turn. Returns the agent reply string."""
+        # Issue #15: defensive reset.  The wrap-up branch in _run_react_turn
+        # already clears this flag; reset here too so a leaked True from a
+        # prior turn can't short-circuit the new one.
+        self._phase_just_advanced = False
         self._global_history.append({"role": "user", "content": user_message})
         self._emit("message", role="user", content=user_message)
         try:
@@ -588,7 +601,9 @@ class AgentLoop:
                     history.append({"role": "user", "content": "\n".join(tool_results_text)})
                     if error_reply:
                         return error_reply
-                    if self.state != LoopState.RUNNING_PHASE:
+                    # Issue #15 — same pause rule applies to the DSML branch.
+                    if self.state != LoopState.RUNNING_PHASE or self._phase_just_advanced:
+                        self._phase_just_advanced = False
                         final = await asyncio.to_thread(
                             self._llm.chat,
                             history,
@@ -660,9 +675,21 @@ class AgentLoop:
             if error_reply:
                 return error_reply
 
-            if self.state != LoopState.RUNNING_PHASE:
-                # State changed (e.g., DONE or NEGOTIATING). Let LLM produce a
-                # transition summary without tool calls.
+            # Issue #14 takes priority over the issue #15 phase-advance pause —
+            # an interrupted user does not want to wait through a wrap-up LLM
+            # call.  Drain happened above so history is balanced.
+            if self._interrupted:
+                return self._handle_interrupt_bailout()
+
+            if self.state != LoopState.RUNNING_PHASE or self._phase_just_advanced:
+                # Three cases that all funnel into the same wrap-up:
+                #   1. State changed (DONE / NEGOTIATING / ERROR_HANDLING / AWAIT_CONFIRM)
+                #   2. Issue #15 — phase-advancing tool succeeded; pause before
+                #      the LLM can call the next phase tool in the same step.
+                # In both cases ask the LLM for a text-only completion report
+                # (tools=None), return it as the assistant reply, and let the
+                # next user message re-enter the loop.
+                self._phase_just_advanced = False
                 _heal_history(history)
                 final = await asyncio.to_thread(
                     self._llm.chat,
@@ -767,6 +794,11 @@ class AgentLoop:
             if tool.advances_phase:
                 completed = _PHASE_SEQUENCE[self._phase_idx]
                 self._phase_idx += 1
+                # Issue #15 — signal the inter-phase pause rail.  The flag is
+                # consumed by `_run_react_turn` AFTER the tool_result lands in
+                # history (so the wrap-up llm.chat sees a balanced trace) and
+                # is reset by the wrap-up branch itself.
+                self._phase_just_advanced = True
                 self._emit(
                     "tool_result",
                     id=tc.get("id"),

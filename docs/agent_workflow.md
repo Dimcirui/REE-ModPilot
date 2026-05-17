@@ -87,6 +87,41 @@ Call `list_collections()` and read it from the result. Do NOT report it as "unkn
 
 ---
 
+## Phase Transition Protocol
+
+**After EVERY successful phase tool that advances the pipeline** (i.e. tools whose
+`advances_phase` is True — every phase tool except the inspection / sub-step ones
+like `material_inspect`, `physics_classification`, `physics_adjust`):
+
+1. **Report** a 1–2 sentence completion summary in the user's reply. Mention what was
+   done and (when meaningful) what the user should look at in the viewport.
+2. **STOP**. Do NOT call the next phase tool in the same agent reply. Wait for the
+   user's explicit instruction ("继续" / "next" / "yes" / "go" / similar) before
+   advancing to the next phase tool.
+
+**Why**: every phase materially alters the scene. The user must be given the chance
+to inspect the result, ask follow-up questions, or back out before the next phase
+fires. Chaining multiple phase tools in one reply removes that checkpoint.
+
+**Mid-pause Q&A is allowed**: while waiting for the user's continue signal, you
+MAY call **query tools only** (`scene_info`, `list_objects`, `list_collections`,
+`get_bone_info`, `get_mesh_info`, `get_material_info`, `get_object_props`,
+`inspect_material_nodes`, `list_mdf_presets`, `physics_read`) to answer user
+questions about the current state. Phase tools are forbidden until the user
+says continue.
+
+**Backend rail**: the agent loop enforces this rule by pausing the tool-call
+loop after any phase-advancing tool succeeds — your next response is required
+to be text-only. The system will not let you smuggle a second phase tool into
+the same turn even if you try.
+
+**Exceptions** (no pause required):
+- Sub-step tools that do not advance `_phase_idx` — these are intermediate
+  steps within a phase (e.g. `material_inspect` precedes `material_setup`).
+- Query tools — never trigger the pause.
+
+---
+
 ## Phase Sequence
 
 ```

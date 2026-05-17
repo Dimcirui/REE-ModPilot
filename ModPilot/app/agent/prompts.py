@@ -174,6 +174,9 @@ def build_system_prompt(
     """
     global_rules = _extract_section(_WORKFLOW_TEXT, "Global Behavior Rules")
     assessment_protocol = _extract_section(_WORKFLOW_TEXT, "Pipeline State Assessment Protocol")
+    # Issue #15: pause-between-phases rule.  Paired with the AgentLoop rail
+    # that breaks the tool-call loop after a phase-advancing tool succeeds.
+    transition_protocol = _extract_section(_WORKFLOW_TEXT, "Phase Transition Protocol")
     phase_seq = _extract_section(_WORKFLOW_TEXT, "Phase Sequence")
     # Issue #4: Setup Phase now contains the model-type inference step
     # (#4/#5/#6); inject it so the LLM knows about the new step 1.5 and
@@ -199,6 +202,8 @@ def build_system_prompt(
         # sees it before encountering any object/collection names from phase descriptions
         # that might prime history-based reasoning instead of fresh tool calls.
         assessment_protocol,
+        "",
+        transition_protocol,
         "",
         _WIDGET_PROTOCOL,
         "",

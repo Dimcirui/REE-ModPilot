@@ -11,7 +11,9 @@ Priority-ranked task list. Status badges follow the [project convention](../AGEN
 
 Tasks are grouped by priority band (P0 → P3). Within a band, ordering is suggested execution sequence; tasks are independently deliverable unless an explicit dependency is noted.
 
-**Last updated**: 2026-05-17 (latest) — Issue **#14** UX interrupt mechanism. New `AgentLoop.interrupt()` flips a private `_interrupted` flag and emits one `interrupted` SSE event; `_run_react_turn` polls the flag at the top of every round AND inside the per-tool-call inner loop, then routes through new `_handle_interrupt_bailout` which resets the flag, transitions to `IDLE`, emits `state`, and returns "Interrupted by user." The inner-loop break uses the existing try/finally placeholder injector so any partially-executed round still drains tool_results for every tool_use id — no orphan blocks left in history. New `POST /agent/interrupt/{session_id}` route surfaces this to the frontend (returns 200 + `{interrupted: true}` on hit, 404 on unknown session). Frontend: native Escape key listener on `document` posts to the route (ignored when an `INPUT`/`TEXTAREA`/`SELECT` is focused so Esc-to-blur still works, and skipped when status isn't `thinking` so dead Escapes are no-ops); new `interrupted` dispatcher renders a dismissable yellow banner (`#interrupt-banner`, auto-hides after 6s, click `✕` to dismiss earlier). 7 new unit tests (flag init / set+emit / idempotent / pre-step short-circuit / mid-round drain + bail / route 200 / route 404) + playwright smoke (banner default-hidden, dismiss click toggles `.hidden`). Full unit suite 448 passing (was 441, +7). Backlog P3 entry struck through.
+**Last updated**: 2026-05-17 (latest) — Issue **#15** Phase Transition Protocol. Two-layer fix for the "LLM chains phase tools in one turn" gap. (a) `agent_workflow.md` gains a `## Phase Transition Protocol` H2 between Pipeline State Assessment Protocol and Phase Sequence, mandating report-then-wait after every phase-advancing tool, whitelisting query tools for mid-pause Q&A, and explicitly forbidding phase tools until the user says continue. `build_system_prompt` extracts and injects the section. (b) Backend rail on `AgentLoop`: new `_phase_just_advanced: bool` flag set in `_execute_tool_call`'s phase-advance branch right after `_phase_idx += 1`; the existing wrap-up branch in `_run_react_turn` now reads `state != RUNNING_PHASE or _phase_just_advanced`, runs a single `tools=None` `llm.chat` for the completion report, returns the text to the user, and resets the flag. Same rule mirrored in the DSML branch. Flag also reset at the top of every `step()` as a safety belt. Issue #14 interrupt check inserted before the issue #15 wrap-up so an interrupted user never waits through an extra LLM call. 5 new unit tests + 1 system-prompt assertion. Full unit suite **453 passing** (was 448, +5). P2 backlog entry struck through.
+
+**Last updated**: 2026-05-17 (just before that) — Issue **#14** UX interrupt mechanism. New `AgentLoop.interrupt()` flips a private `_interrupted` flag and emits one `interrupted` SSE event; `_run_react_turn` polls the flag at the top of every round AND inside the per-tool-call inner loop, then routes through new `_handle_interrupt_bailout` which resets the flag, transitions to `IDLE`, emits `state`, and returns "Interrupted by user." The inner-loop break uses the existing try/finally placeholder injector so any partially-executed round still drains tool_results for every tool_use id — no orphan blocks left in history. New `POST /agent/interrupt/{session_id}` route surfaces this to the frontend (returns 200 + `{interrupted: true}` on hit, 404 on unknown session). Frontend: native Escape key listener on `document` posts to the route (ignored when an `INPUT`/`TEXTAREA`/`SELECT` is focused so Esc-to-blur still works, and skipped when status isn't `thinking` so dead Escapes are no-ops); new `interrupted` dispatcher renders a dismissable yellow banner (`#interrupt-banner`, auto-hides after 6s, click `✕` to dismiss earlier). 7 new unit tests (flag init / set+emit / idempotent / pre-step short-circuit / mid-round drain + bail / route 200 / route 404) + playwright smoke (banner default-hidden, dismiss click toggles `.hidden`). Full unit suite 448 passing (was 441, +7). Backlog P3 entry struck through.
 
 **Last updated**: 2026-05-17 (later than that) — Issue **#16** Phase 5A architecture refactor: docs-only change to `docs/agent_workflow.md`. Replaced the linear `consolidate → classify → wire` pipeline with a 6-step small-loop architecture: `Consolidate → Inspect → Already-Connected Branch → Classify+Confirm (loop entry) → Wire → Verify`. Two new guardrails: (1) **Already-Connected Branch** asks the user before overwriting fully-wired materials (Base Color + Normal both resolved to a file) — protects manual setup from silent loss; (2) **Verify** re-runs `material_inspect` after `material_setup` and asks "satisfied?", with a scope-narrowing loop-back path that re-classifies only user-named materials via a `materials_filter` instead of restarting from scratch. Layer 4 classification source updated to point at the issue #7 + #11 confirmation widget (instead of the now-deprecated `propose_and_confirm` JSON sketch). Phase tools themselves untouched (`material_inspect` / `material_setup` already support per-material scoping) — the LLM reads the new workflow spec from the system prompt. `_extract_section` smoke-tested: Phase 5 section contains all new markers; stops cleanly before Phase 6. Full unit suite still 441 passing (no test changes needed; pure spec doc).
 
@@ -148,23 +150,16 @@ Items here block MVP shipping. All must reach 🟢 before MVP acceptance (L3, [d
 - ⚪ **Static asset cache-busting** — `app.js` / `style.css` served without version query string; browser caches stale JS after deployments, making frontend hotfixes unverifiable. Add `?v=<git-short-sha>` query string to static asset URLs in the base template.
 - ⚪ **Consecutive tool_use without tool_result (Anthropic 400)** — `_heal_history` repairs history after the fact, but does not prevent the LLM from issuing two back-to-back `tool_use` blocks in the same turn. Mitigation: strengthen "one tool per turn" constraint in `agent_workflow.md` prompt, and detect duplicate tool names in `_dispatch` to short-circuit before they reach the API.
 - ⚪ **Done watchdog mis-timing** — 5 s watchdog fires while a legitimately long tool call (e.g. large physics_chains) is still running, unlocking the chat input prematurely. Watchdog should start only after `message(assistant)` fires, and the timeout should be configurable (10–15 s default).
-- ⚪ **Phase transition protocol** — add explicit inter-phase consultation behavior.
-  Current gap: after a phase tool returns success, the loop immediately re-enters
-  `RUNNING_PHASE` with no architectural guarantee of a pause. The LLM may call the
-  next phase tool in the same turn without checking state or informing the user.
-  Intended design: phase advancement (ReAct tool calls) and inter-phase consultation
-  (query tools + user Q&A) are conceptually distinct modes but share the same
-  `RUNNING_PHASE` state. Fix options in priority order:
-  (A) `agent_workflow.md` phase transition protocol: after phase success, call query
-      tools to verify outcome, report to user, wait for explicit direction before next
-      phase. Lightweight — prompt-only, no state machine change.
-  (B) `PHASE_COMPLETE` state: loop pauses after each phase, forces verification +
-      user-facing report before re-entering RUNNING_PHASE. Architecture change.
-  (C) Separate NEGOTIATING into all phases that have classification/user decisions
-      (currently only Phase 4A/4B), not just physics phases.
-  Mid-phase inline Q&A is a related sub-problem: user questions during a phase should
-  be answerable using query tools (NOT phase tools) without advancing phase state.
-  Rule: query tools OK in Q&A, phase tools prohibited until user directs next action.
+- 🟢 **Phase transition protocol** (issue #15) — shipped both layers: (A) `agent_workflow.md`
+  gains a `## Phase Transition Protocol` section injected into the system prompt that mandates
+  report-then-wait after every phase-advancing tool, with query tools explicitly whitelisted
+  for mid-pause Q&A and phase tools forbidden until the user says continue; (B) backend rail
+  on `AgentLoop` — new `_phase_just_advanced` flag flipped True in `_execute_tool_call`'s
+  phase-advance branch, consumed by the existing wrap-up branch in `_run_react_turn` (now
+  reads `state != RUNNING_PHASE or _phase_just_advanced`) which runs ONE `tools=None`
+  `llm.chat` to get a completion report and returns it to the user. Interrupt check (issue
+  #14) runs before the wrap-up so an interrupted user never waits through an extra LLM call.
+  Mirrored in the DSML branch.
 
 ---
 
