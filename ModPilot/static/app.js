@@ -1,8 +1,12 @@
 // ModPilot chat — SSE event dispatcher and DOM updater.
 //
-// The htmx sse extension fires `htmx:sseMessage` for every server-sent event,
-// with the SSE `event:` field on `evt.detail.type`. We dispatch by type and
-// mutate the DOM directly — no template fragments come back over the wire.
+// We open the SSE stream ourselves with a native EventSource rather than
+// htmx-ext-sse. htmx-ext-sse only registers EventSource listeners for event
+// types listed in sse-swap attributes, so custom types (message, state, done,
+// etc.) would never fire. By owning the EventSource directly we register a
+// listener for each type in `dispatchers`, and we inject HTML fragment events
+// (error_choice, widget_*) manually then call htmx.process() to activate any
+// htmx attributes on the new content.
 
 (() => {
   const log     = () => document.getElementById("log");
@@ -18,9 +22,72 @@
     el.className = "status " + (cls || "");
   };
 
-  const appendBubble = (role, text) => {
+  // ── Chat input lockout while a confirmation widget is active ─────────────
+  // Issue: widget_classification / widget_material both render an editable
+  // table that the user must Confirm to advance the phase.  Before this lock
+  // the chat input stayed live, letting the user send free-text that the LLM
+  // would interpret as a separate intent — two sources of truth, both
+  // ambiguously consumed.  Solution: while a widget is mounted in
+  // #widget-slot, disable the textarea + Send button so the table is the
+  // unambiguous interaction surface.  Auto-released when the downstream
+  // phase tool (physics_chains / material_setup / material_generate) clears
+  // the slot.
+  const DEFAULT_INPUT_PLACEHOLDER = "Type a message and press Enter…";
+  const WIDGET_LOCK_PLACEHOLDER = "请先在上方表单中完成选择并点击 Confirm…";
+
+  const lockChatForWidget = () => {
+    const inp = input();
+    const sb = btn();
+    if (inp) {
+      inp.disabled = true;
+      inp.placeholder = WIDGET_LOCK_PLACEHOLDER;
+    }
+    if (sb) sb.disabled = true;
+  };
+
+  const unlockChatFromWidget = () => {
+    const inp = input();
+    const sb = btn();
+    if (inp) {
+      inp.disabled = false;
+      inp.placeholder = DEFAULT_INPUT_PLACEHOLDER;
+    }
+    if (sb) sb.disabled = false;
+  };
+
+  // ── done-event watchdog (Issue A safety net) ─────────────────────────────
+  // Symptom: `assistant` message bubble arrives but the `done` SSE event
+  // sometimes doesn't (suspected: session queue desync on the server).
+  // Without `done` the chat input stays disabled forever and the status
+  // sticks on "thinking".  Fix: start a short timer when an assistant message
+  // is rendered; if no `done` lands within DONE_WATCHDOG_MS, fire a phantom
+  // done locally to recover the UI.  The backend `try/finally` should fix
+  // the root cause; this is the second layer of defense.
+  const DONE_WATCHDOG_MS = 5000;
+  let doneWatchdog = null;
+
+  const cancelDoneWatchdog = () => {
+    if (doneWatchdog !== null) {
+      clearTimeout(doneWatchdog);
+      doneWatchdog = null;
+    }
+  };
+
+  const armDoneWatchdog = () => {
+    cancelDoneWatchdog();
+    doneWatchdog = setTimeout(() => {
+      console.warn("ModPilot: no `done` event after assistant message; firing phantom done");
+      setStatus("ready", "");
+      const widgetActive =
+        document.getElementById("widget-slot")?.children.length > 0;
+      if (!widgetActive) btn().disabled = false;
+      doneWatchdog = null;
+    }, DONE_WATCHDOG_MS);
+  };
+
+  const appendBubble = (role, text, isDebug = false) => {
     const div = document.createElement("div");
-    div.className = "bubble " + role;
+    div.className = "bubble " + role + (isDebug ? " debug-bubble" : "");
     div.textContent = text;
     log().appendChild(div);
     log().scrollTop = log().scrollHeight;
@@ -40,7 +107,12 @@
       // user messages echo back over SSE — only append assistant ones here;
       // the user bubble is appended optimistically on form submit so the user
       // sees their text immediately even before SSE arrives.
-      if (e.role === "assistant") appendBubble("assistant", e.content);
+      if (e.role === "assistant") {
+        appendBubble("assistant", e.content);
+        // Assistant message means step() is about to return — done should
+        // follow within ~1s.  Arm the watchdog as a safety net.
+        armDoneWatchdog();
+      }
     },
     state: (e) => {
       const map = {
@@ -63,7 +135,7 @@
     },
     tool_call: (e) => {
       const inputPreview = JSON.stringify(e.input || {}).slice(0, 200);
-      appendBubble("tool", `> ${e.name}  ${inputPreview}`);
+      appendBubble("tool", `> ${e.name}  ${inputPreview}`, true);
       // Issue #7: a confirmation widget is only meaningful until the LLM picks
       // up the answer and calls the downstream phase tool. Clear the slot so a
       // stale widget can't be re-submitted once its data is consumed.
@@ -73,20 +145,28 @@
       if (slotClearTools.has(e.name)) {
         const slot = document.getElementById("widget-slot");
         if (slot) slot.innerHTML = "";
+        // Widget consumed → chat input is the interaction surface again.
+        unlockChatFromWidget();
       }
     },
     tool_result: (e) => {
       const tag = e.success ? "ok" : "FAIL";
-      appendBubble("tool", `< [${tag}] ${e.name}: ${(e.summary || "").slice(0, 300)}`);
+      appendBubble("tool", `< [${tag}] ${e.name}: ${(e.summary || "").slice(0, 300)}`, true);
     },
-    error: (e) => {
+    agent_error: (e) => {
       appendBubble("error", `Error (${e.where || "?"}): ${e.message}`);
       setStatus("error", "error");
       btn().disabled = false;
     },
     done: (_e) => {
+      cancelDoneWatchdog();
       setStatus("ready", "");
-      btn().disabled = false;
+      // Don't undo the widget lock — if a confirmation widget is currently
+      // mounted, the chat input must stay disabled until the widget is
+      // submitted and its downstream tool consumes the slot.
+      const widgetActive =
+        document.getElementById("widget-slot")?.children.length > 0;
+      if (!widgetActive) btn().disabled = false;
     },
     // Issue #4: source-model type auto-inference. Emitted by AgentLoop
     // after setup_infer_model_type runs. We back-fill the form's
@@ -130,19 +210,109 @@
     },
   };
 
-  document.body.addEventListener("htmx:sseMessage", (ev) => {
-    const sseType = ev.detail.type;
-    const fn = dispatchers[sseType];
-    if (!fn) return;
-    let payload;
+  // HTML-fragment events: server sends raw HTML, not JSON. We inject it into
+  // the appropriate slot and call htmx.process() so that any hx-post / hx-ext
+  // attributes on the new content are activated by htmx's core.
+  const htmlFragmentHandlers = {
+    error_choice: (html) => {
+      const slot = document.getElementById("error-choice-slot");
+      if (!slot) return;
+      slot.innerHTML = html;
+      htmx.process(slot);
+    },
+    widget_classification: (html) => {
+      const slot = document.getElementById("widget-slot");
+      if (!slot) return;
+      slot.innerHTML = html;
+      htmx.process(slot);
+      lockChatForWidget();
+    },
+    widget_material: (html) => {
+      const slot = document.getElementById("widget-slot");
+      if (!slot) return;
+      slot.innerHTML = html;
+      htmx.process(slot);
+      lockChatForWidget();
+    },
+  };
+
+  // ── Debug toggle ─────────────────────────────────────────────────────────
+  const DEBUG_KEY = "modpilot.debug";
+
+  const applyDebugMode = (on) => {
+    document.body.classList.toggle("debug-mode", on);
+    const btn = document.getElementById("debug-toggle");
+    if (btn) btn.classList.toggle("active", on);
+  };
+
+  window.addEventListener("DOMContentLoaded", () => {
     try {
-      payload = JSON.parse(ev.detail.data);
-    } catch (err) {
-      console.warn("ModPilot: malformed SSE payload", ev.detail.data, err);
-      return;
+      applyDebugMode(localStorage.getItem(DEBUG_KEY) === "1");
+    } catch (_) { /* storage blocked */ }
+    const btn = document.getElementById("debug-toggle");
+    if (btn) {
+      btn.addEventListener("click", () => {
+        const next = !document.body.classList.contains("debug-mode");
+        applyDebugMode(next);
+        try { localStorage.setItem(DEBUG_KEY, next ? "1" : "0"); } catch (_) { /* ignore */ }
+      });
     }
-    fn(payload);
   });
+
+  // Open a native EventSource so we own every event type, not just those
+  // listed in sse-swap attributes. htmx-ext-sse is no longer used.
+  window.addEventListener("DOMContentLoaded", () => {
+    const sessionId = document.body.dataset.sessionId;
+    if (!sessionId) return;
+
+    const source = new EventSource(`/agent/stream/${sessionId}`);
+
+    for (const [type, fn] of Object.entries(dispatchers)) {
+      source.addEventListener(type, (event) => {
+        let payload;
+        try {
+          payload = JSON.parse(event.data);
+        } catch (err) {
+          console.warn("ModPilot: malformed SSE payload", event.data, err);
+          return;
+        }
+        fn(payload);
+      });
+    }
+
+    for (const [type, fn] of Object.entries(htmlFragmentHandlers)) {
+      source.addEventListener(type, (event) => fn(event.data));
+    }
+
+    // Native EventSource connection error — distinct from the server-sent
+    // "agent_error" event type (renamed to avoid the "error" name clash).
+    source.addEventListener("error", () => {
+      setStatus("disconnected", "error");
+    });
+  });
+
+  // Classification widget: toggle between agent chip and manual override panel.
+  window.toggleOverride = function (btn) {
+    const td = btn.closest("td");
+    td.querySelector(".inferred-accept").hidden = true;
+    td.querySelector(".inferred-override").hidden = false;
+    td.querySelector("input[name^='preset__']").disabled = true;
+    td.querySelector("select[name^='type__']").disabled = false;
+    td.querySelector("textarea[name^='desc__']").disabled = false;
+  };
+
+  window.cancelOverride = function (btn) {
+    const td = btn.closest("td");
+    td.querySelector(".inferred-accept").hidden = false;
+    td.querySelector(".inferred-override").hidden = true;
+    td.querySelector("input[name^='preset__']").disabled = false;
+    const sel = td.querySelector("select[name^='type__']");
+    sel.disabled = true;
+    sel.value = "";
+    const txt = td.querySelector("textarea[name^='desc__']");
+    txt.disabled = true;
+    txt.value = "";
+  };
 
   // Optimistic user bubble + disable the input while a turn is in flight.
   // We rely on the SSE `done` (or `error`) event to re-enable.
@@ -158,11 +328,11 @@
     if (!isForm && !isErrorChoice && !widgetForm) return;
 
     if (widgetForm) {
-      // Optimistic preview: count rows that have a non-empty selection.
-      const selected = widgetForm.querySelectorAll("select").length
-        ? Array.from(widgetForm.querySelectorAll("select")).filter((s) => s.value).length
-        : 0;
-      const total = widgetForm.querySelectorAll("select").length;
+      // Optimistic preview: count chains with a confirmed type (accept chip or override).
+      const presetFilled = Array.from(widgetForm.querySelectorAll("input[name^='preset__']:not([disabled])")).filter((i) => i.value).length;
+      const overrideFilled = Array.from(widgetForm.querySelectorAll("select[name^='type__']:not([disabled])")).filter((s) => s.value).length;
+      const selected = presetFilled + overrideFilled;
+      const total = widgetForm.querySelectorAll("input[name^='preset__']").length || widgetForm.querySelectorAll("select").length;
       appendBubble("user", `[Confirmed ${selected}/${total} rows]`);
       widgetForm.classList.add("pending");
       widgetForm.querySelectorAll("button, select").forEach((el) => { el.disabled = true; });
@@ -205,11 +375,8 @@
     }
   });
 
-  // Surface SSE-side connection issues.
-  document.body.addEventListener("htmx:sseError", (ev) => {
-    console.warn("ModPilot: SSE error", ev.detail);
-    setStatus("disconnected", "error");
-  });
+  // SSE error handling is done in source.onerror inside the DOMContentLoaded
+  // handler above — no htmx:sseError listener needed.
 
   // ── Session config form (issue #3) ──────────────────────────────────────
   //

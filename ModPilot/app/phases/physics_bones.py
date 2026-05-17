@@ -393,7 +393,7 @@ class PhysicsClassification(PhaseTool):
             f"                    c for c in cur.children\n"
             f"                    if arm_obj.pose.bones.get(c.name) is not None and\n"
             f"                       arm_obj.pose.bones[c.name].get('chain_role', '')\n"
-            f"                       not in ('head', 'branch_head', '')\n"
+            f"                       not in ('head', 'branch_head')\n"
             f"                ]\n"
             f"                cur = cont[0] if cont else None\n"
             f"            parent_name = bone.parent.name if bone.parent else ''\n"
@@ -754,6 +754,30 @@ class PhysicsChains(PhaseTool):
             # merge_into_parent auto-refreshes chain_role bone colors; running it
             # after clear would re-mark the just-cleared native bones as physics.
             if bones_to_merge:
+                # Cascade: anything ending in `_End` that's a child of a bone
+                # being merged is itself a Phase-3.5 placeholder leaf with no
+                # physics meaning — the LLM frequently overlooks pairing them
+                # (e.g. selects `Twist wrist_L` but not `Twist wrist_L_End`).
+                # Expand the merge list deterministically so the leftover
+                # `_End` leaves don't get spurious physics chains.
+                original_merge_len = len(bones_to_merge)
+                bones_to_merge = self._expand_end_children(
+                    client, target_arm, bones_to_merge
+                )
+                added = bones_to_merge[original_merge_len:]
+                # Surface the cascade outcome to the SSE log so the user can
+                # verify the auto-extension actually ran and what it caught.
+                # Visible only in debug mode (debug-bubble class).
+                cascade_summary = (
+                    f"_End cascade added {len(added)} bone(s): "
+                    f"{added[:10]}{'...' if len(added) > 10 else ''}"
+                )
+                # Diagnostics: write to state_diff via an attribute the caller
+                # can later attach.  For now just log via stdout so the dev
+                # console shows it; future improvement: emit a debug SSE event.
+                # noqa: this is a deliberate print — Blender pipeline runs in
+                # background thread without our usual emit handle.
+                print(f"[physics_chains] {cascade_summary}")
                 err = self._merge_into_parents(client, target_arm, bones_to_merge)
                 if err is not None:
                     return PhaseResult.fail(err)
@@ -772,7 +796,15 @@ class PhysicsChains(PhaseTool):
             if err is not None:
                 return PhaseResult.fail(err)
 
-            # Step 4 — apply physics params to chain settings objects
+            # Step 4 — apply physics params to chain settings objects.
+            # If new_cs_names is empty the operator returned no NEW objects — this
+            # happens when a prior run timed out on the Python side but Blender
+            # actually finished and the CS objects already exist.  Fall back to
+            # scanning the chain collection for existing CS objects.
+            if not new_cs_names and chain_col_name:
+                new_cs_names = self._find_existing_cs_in_collection(
+                    client, chain_col_name
+                )
             if new_cs_names:
                 if settings_mode == "SEPARATE":
                     # One CS per chain — apply params in alphabetical bone order
@@ -807,6 +839,17 @@ class PhysicsChains(PhaseTool):
                 )
             )
         except OSError as exc:
+            # Connection dropped mid-run (Blender crash, timeout, or socket reset).
+            # Blender may have actually finished creating chains before the drop.
+            # Try to reconnect and apply params to whatever was created.
+            recovery = self._recover_after_drop(
+                client, target_arm, inferred_types, resolved
+            )
+            if recovery is not None:
+                state_after = cache.refresh()
+                diff = state_before.diff(state_after)
+                diff.update(recovery)
+                return PhaseResult.ok(diff)
             return PhaseResult.fail(
                 PhaseError(
                     category="timeout",
@@ -1089,6 +1132,69 @@ class PhysicsChains(PhaseTool):
         result_line = lines[-1]
         return require_finished([result_line], _OP_CLEAR_ROLE)
 
+    def _expand_end_children(
+        self,
+        client: BlenderClient,
+        target_arm: str,
+        bones_to_merge: list[str],
+    ) -> list[str]:
+        """Append any `*_End` direct children of bones in `bones_to_merge`.
+
+        Phase 3.5 `smart_graft` writes a trailing `_End` placeholder under
+        every transplanted physics bone to mark the chain tail.  When the user
+        decides to merge an auxiliary bone (e.g. `Twist wrist_L`) into its
+        parent, the `_End` leaf left behind has no physics meaning either —
+        but the LLM commonly forgets to add it to `bones_to_merge`, so
+        physics_chains then builds a degenerate single-bone chain on the leaf.
+
+        NB: we do NOT filter by `chain_role` — by Phase 3.5 convention every
+        `_End` is a placeholder leaf, regardless of whether its chain_role
+        marker is currently set or got cleared earlier in the pipeline
+        (prepare_only's cleanup can strip marks before we reach here).
+
+        Returns a de-duplicated list preserving original order.  On any
+        Blender error the input is returned unchanged (non-fatal).
+        """
+        if not bones_to_merge:
+            return list(bones_to_merge)
+        names_json = json.dumps(bones_to_merge, ensure_ascii=False)
+        code = (
+            f"import bpy, json\n"
+            f"arm = bpy.data.objects.get({target_arm!r})\n"
+            f"extras = []\n"
+            f"if arm and arm.type == 'ARMATURE':\n"
+            f"    pose_bones = arm.pose.bones\n"
+            f"    for name in {names_json}:\n"
+            f"        pb = pose_bones.get(name)\n"
+            f"        if pb is None:\n"
+            f"            continue\n"
+            f"        for child in pb.children:\n"
+            f"            if not child.name.endswith('_End'):\n"
+            f"                continue\n"
+            f"            extras.append(child.name)\n"
+            f"print({BLENDER_SENTINEL!r})\n"
+            f"print('EXTRAS:' + json.dumps(extras, ensure_ascii=False))\n"
+        )
+        try:
+            lines = client.execute_and_extract(code)
+        except Exception:
+            return list(bones_to_merge)
+        if not lines or not lines[0].startswith("EXTRAS:"):
+            return list(bones_to_merge)
+        try:
+            extras: list[str] = json.loads(lines[0][len("EXTRAS:"):])
+        except Exception:
+            return list(bones_to_merge)
+        # De-dup while preserving order: original first, then extras.
+        seen: set[str] = set()
+        out: list[str] = []
+        for name in [*bones_to_merge, *extras]:
+            if name in seen:
+                continue
+            seen.add(name)
+            out.append(name)
+        return out
+
     def _merge_into_parents(
         self,
         client: BlenderClient,
@@ -1158,8 +1264,8 @@ class PhysicsChains(PhaseTool):
         settings_mode='SHARED': creates one CS shared by all chains (used by the
         SHARED consolidation path).
 
-        Uses a 300-second socket timeout because auto_create_chains can be slow
-        for scenes with many chain heads (45+ chains ≈ 30-120 seconds).
+        Uses a 1200-second socket timeout because auto_create_chains can be slow
+        for scenes with many chain heads (60+ chains ≈ 60-600 seconds on Windows).
 
         chain_collection discovery rules (in order):
           1. Use chain_col hint if provided and the collection has .chain/.clsp suffix.
@@ -1225,7 +1331,7 @@ class PhysicsChains(PhaseTool):
             f"    else:\n"
             f"        print('NEW_CS:' + json.dumps({{'new_cs': new_cs, 'col': chain_col.name}}))\n"
         )
-        lines = client.execute_and_extract(code, timeout=600)
+        lines = client.execute_and_extract(code, timeout=1200)
         if not lines:
             return (
                 PhaseError(
@@ -1292,6 +1398,96 @@ class PhysicsChains(PhaseTool):
             [],
             "",
         )
+
+    def _recover_after_drop(
+        self,
+        client: BlenderClient,
+        target_arm: str,
+        inferred_types: dict[str, str],
+        resolved_params: dict[str, dict],
+    ) -> dict | None:
+        """Reconnect after a dropped connection and apply params to any CS that exist.
+
+        Returns a partial diff dict on success, None if recovery is impossible.
+        Called from the OSError handler in run() — Blender may have finished
+        auto_create_chains before the socket dropped.
+        """
+        try:
+            client.reconnect()
+        except Exception:
+            return None  # Blender is gone; nothing to recover
+
+        # Scan all chain collections for CHAINSETTINGS objects
+        code = (
+            f"import bpy, json\n"
+            f"cs = [o.name for o in bpy.data.objects\n"
+            f"      if o.get('TYPE') == 'RE_CHAIN_CHAINSETTINGS']\n"
+            f"cols = [c.name for c in bpy.data.collections\n"
+            f"        if '.chain' in c.name or '.clsp' in c.name]\n"
+            f"print({BLENDER_SENTINEL!r})\n"
+            f"print('CS:' + json.dumps(cs))\n"
+            f"print('COLS:' + json.dumps(cols))\n"
+        )
+        try:
+            lines = client.execute_and_extract(code)
+        except Exception:
+            return None
+
+        all_cs: list[str] = []
+        col_name: str = ""
+        for line in lines:
+            if line.startswith("CS:"):
+                try:
+                    all_cs = json.loads(line[len("CS:"):])
+                except Exception:
+                    pass
+            elif line.startswith("COLS:"):
+                try:
+                    cols = json.loads(line[len("COLS:"):])
+                    col_name = cols[0] if cols else ""
+                except Exception:
+                    pass
+
+        if not all_cs:
+            return None  # nothing was created; must retry from scratch
+
+        # Best-effort: apply params to whatever CS exists
+        try:
+            skipped = self._apply_params_to_chain_settings(
+                client, all_cs, inferred_types, resolved_params, "SEPARATE"
+            )
+        except Exception as exc:
+            skipped = [str(exc)]
+
+        # Best-effort: angle limit ramp
+        if col_name:
+            self._apply_angle_limit_ramp(client, col_name)
+
+        return {
+            "chain_settings_created": all_cs,
+            "recovered_after_disconnect": True,
+            "skipped_params": skipped,
+        }
+
+    def _find_existing_cs_in_collection(
+        self, client: BlenderClient, chain_col_name: str
+    ) -> list[str]:
+        """Return CHAINSETTINGS object names inside chain_col_name (fallback for re-runs)."""
+        code = (
+            f"import bpy, json\n"
+            f"col = bpy.data.collections.get({chain_col_name!r})\n"
+            f"cs = [o.name for o in (col.all_objects if col else [])\n"
+            f"      if o.get('TYPE') == 'RE_CHAIN_CHAINSETTINGS']\n"
+            f"print({BLENDER_SENTINEL!r})\n"
+            f"print('CS:' + json.dumps(cs))\n"
+        )
+        try:
+            lines = client.execute_and_extract(code)
+            if lines and lines[0].startswith("CS:"):
+                return json.loads(lines[0][len("CS:"):])
+        except Exception:
+            pass
+        return []
 
     def _apply_params_to_chain_settings(
         self,
@@ -1377,7 +1573,7 @@ class PhysicsChains(PhaseTool):
             f"print({BLENDER_SENTINEL!r})\n"
             f"print('APPLIED:' + json.dumps(skipped))\n"
         )
-        lines = client.execute_and_extract(code)
+        lines = client.execute_and_extract(code, timeout=120)
         if lines and lines[0].startswith("APPLIED:"):
             try:
                 return json.loads(lines[0][len("APPLIED:"):])
@@ -1624,7 +1820,7 @@ class PhysicsChains(PhaseTool):
             f"        print('RAMP:' + str(ret))\n"
         )
         try:
-            client.execute_and_extract(code)
+            client.execute_and_extract(code, timeout=120)
         except Exception:
             pass  # non-fatal
 

@@ -66,8 +66,11 @@ def _patch_llm_factory(monkeypatch, reply_text: str = "ok") -> MagicMock:
 @pytest.mark.unit
 @pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
 def test_widget_classification_packages_pairs_and_calls_step(monkeypatch):
-    """type__<chain> fields become a JSON dict on a [CONFIRMED_CLASSIFICATIONS]
-    prefix that loop.step() receives as the next user message."""
+    """preset__/type__ fields become a JSON dict on a [CONFIRMED_CLASSIFICATIONS]
+    prefix that loop.step() receives as the next user message.
+
+    preset__ = agent accept (chip); type__ = manual override (wins over preset__).
+    """
     _patch_blender(monkeypatch)
     _patch_llm_factory(monkeypatch)
     from app.main import app
@@ -79,8 +82,8 @@ def test_widget_classification_packages_pairs_and_calls_step(monkeypatch):
             "/agent/widget/classification",
             json={
                 "session_id": sid,
-                "type__hair_001": "hair_long_straight",
-                "type__skirt_002": "cloth_skirt_waist",
+                "preset__hair_001": "hair_long_straight",
+                "preset__skirt_002": "cloth_skirt_waist",
             },
         )
         assert r.status_code == 200, r.text
@@ -95,8 +98,12 @@ def test_widget_classification_packages_pairs_and_calls_step(monkeypatch):
         assert last.startswith("[CONFIRMED_CLASSIFICATIONS] ")
         body = json.loads(last[len("[CONFIRMED_CLASSIFICATIONS] "):])
         assert body == {
-            "hair_001": "hair_long_straight",
-            "skirt_002": "cloth_skirt_waist",
+            "inferred_types": {
+                "hair_001": "hair_long_straight",
+                "skirt_002": "cloth_skirt_waist",
+            },
+            "descriptions": {},
+            "bones_to_merge": [],
         }
 
 
@@ -114,8 +121,8 @@ def test_widget_classification_skips_blank_rows(monkeypatch):
             "/agent/widget/classification",
             json={
                 "session_id": sid,
-                "type__hair_001": "hair_short",
-                "type__skirt_002": "",
+                "preset__hair_001": "hair_short",
+                "preset__skirt_002": "",
             },
         )
         assert r.status_code == 200
@@ -221,3 +228,75 @@ def test_widget_material_rejects_empty_submission(monkeypatch):
             json={"session_id": sid},
         )
         assert r.status_code == 422
+
+
+# ── done emit regression (Issue A: widget routes were missing it) ─────────
+
+
+def _drain_queue(queue) -> list[dict]:
+    """Pull every queued event out of the asyncio.Queue synchronously
+    (test-only — production uses an async consumer)."""
+    out: list[dict] = []
+    while not queue.empty():
+        out.append(queue.get_nowait())
+    return out
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
+def test_widget_classification_emits_done_event(monkeypatch):
+    """Regression: widget Confirm route used to call loop.step() without
+    emitting a `done` event afterwards.  Without `done`, the frontend's
+    chat-input lockout stayed engaged forever ('thinking' status stuck).
+    The /agent/messages route already had done emit; widget routes did not.
+    """
+    _patch_blender(monkeypatch)
+    _patch_llm_factory(monkeypatch)
+    from app.main import app
+
+    sid = "widget-cls-done"
+    with TestClient(app) as client:
+        app.state.llm = _stub_llm("ok")
+        # Pre-create a stream queue so we can inspect what got emitted.
+        import asyncio
+        app.state.agent_streams[sid] = asyncio.Queue(maxsize=64)
+        r = client.post(
+            "/agent/widget/classification",
+            json={
+                "session_id": sid,
+                "preset__hair_001": "hair_short",
+            },
+        )
+        assert r.status_code == 200
+        events = _drain_queue(app.state.agent_streams[sid])
+        types = [e.get("type") for e in events]
+        assert "done" in types, f"expected `done` event among {types}"
+        # done must be the LAST event the consumer sees.
+        assert types[-1] == "done"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
+def test_widget_material_emits_done_event(monkeypatch):
+    """Same regression as above, for the material widget route."""
+    _patch_blender(monkeypatch)
+    _patch_llm_factory(monkeypatch)
+    from app.main import app
+
+    sid = "widget-mat-done"
+    with TestClient(app) as client:
+        app.state.llm = _stub_llm("ok")
+        import asyncio
+        app.state.agent_streams[sid] = asyncio.Queue(maxsize=64)
+        r = client.post(
+            "/agent/widget/material",
+            json={
+                "session_id": sid,
+                "texmap__0__body_mat": "C:/tex/diff.png",
+            },
+        )
+        assert r.status_code == 200
+        events = _drain_queue(app.state.agent_streams[sid])
+        types = [e.get("type") for e in events]
+        assert "done" in types
+        assert types[-1] == "done"

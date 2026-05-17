@@ -12,7 +12,7 @@ import socket
 import threading
 import pytest
 
-from app.blender.client import BLENDER_SENTINEL, BlenderClient, BlenderError
+from app.blender.client import BLENDER_SENTINEL, BlenderBusyError, BlenderClient, BlenderError
 from app.blender.state import SceneCache, SceneState, _parse_scene_info
 
 
@@ -147,6 +147,100 @@ class TestBlenderClientProtocol:
         c = BlenderClient("127.0.0.1", 1)  # not connected
         with pytest.raises(RuntimeError, match="not connected"):
             c.call("execute_code")
+
+
+# ── BlenderClient locking / concurrency ───────────────────────────────────
+
+
+@pytest.mark.unit
+class TestBlenderClientLocking:
+    """Ensure send/recv pairs serialise across threads — otherwise two
+    concurrent callers (agent loop tool call + viewport screenshot side-panel
+    pull) would interleave bytes on the shared TCP stream and deadlock at recv.
+    """
+
+    @staticmethod
+    def _hold_lock_in_thread(c: BlenderClient) -> tuple[threading.Event, threading.Thread]:
+        """Spawn a daemon thread that acquires c._lock and parks until told to
+        release.  Returns (release_event, thread) — set the event to let the
+        holder release the lock and exit.  RLock is reentrant per-thread, so
+        the lock must be held by a DIFFERENT thread to actually block try_call.
+        """
+        locked = threading.Event()
+        release = threading.Event()
+
+        def holder() -> None:
+            c._lock.acquire()
+            try:
+                locked.set()
+                release.wait(timeout=5.0)
+            finally:
+                c._lock.release()
+
+        t = threading.Thread(target=holder, daemon=True)
+        t.start()
+        assert locked.wait(timeout=1.0), "holder thread failed to acquire lock"
+        return release, t
+
+    def test_try_call_raises_busy_when_lock_held(self, client):
+        c, srv = client
+        srv.responses["get_scene_info"] = {
+            "status": "success",
+            "result": {"name": "S", "object_count": 0, "objects": [], "materials_count": 0},
+        }
+        release, t = self._hold_lock_in_thread(c)
+        try:
+            with pytest.raises(BlenderBusyError, match="busy"):
+                c.try_call("get_scene_info", lock_timeout=0.05)
+        finally:
+            release.set()
+            t.join(timeout=1.0)
+
+    def test_try_call_succeeds_when_lock_free(self, client):
+        c, srv = client
+        srv.responses["get_scene_info"] = {
+            "status": "success",
+            "result": {"name": "S", "object_count": 0, "objects": [], "materials_count": 0},
+        }
+        result = c.try_call("get_scene_info", lock_timeout=0.1)
+        assert result["name"] == "S"
+
+    def test_call_blocks_until_lock_released(self, client):
+        """A second thread calling c.call() must wait for the first to finish."""
+        c, srv = client
+        srv.responses["execute_code"] = {
+            "status": "success",
+            "result": {"executed": True, "result": "ok\n"},
+        }
+        started = threading.Event()
+        done = threading.Event()
+        result_box: list[str | None] = [None]
+
+        def worker() -> None:
+            started.set()
+            result_box[0] = c.execute("x")
+            done.set()
+
+        # Hold the lock from the main thread to simulate an in-flight call.
+        c._lock.acquire()
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        assert started.wait(timeout=1.0)
+        # Worker should be parked on the lock — not finished yet.
+        assert not done.wait(timeout=0.2), "worker proceeded despite lock being held"
+        c._lock.release()
+        assert done.wait(timeout=2.0), "worker did not complete after lock release"
+        assert result_box[0] == "ok\n"
+
+    def test_get_viewport_screenshot_raises_busy_when_lock_held(self, client):
+        c, _ = client
+        release, t = self._hold_lock_in_thread(c)
+        try:
+            with pytest.raises(BlenderBusyError):
+                c.get_viewport_screenshot(busy_timeout=0.05)
+        finally:
+            release.set()
+            t.join(timeout=1.0)
 
 
 # ── SceneState / SceneCache tests ──────────────────────────────────────────

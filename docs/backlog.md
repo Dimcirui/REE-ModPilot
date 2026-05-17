@@ -151,6 +151,8 @@ Items here block MVP shipping. All must reach 🟢 before MVP acceptance (L3, [d
 
 ## P3 — Future / nice-to-have
 
+- ⚪ **Agent interrupt mechanism** — let the user stop a running phase mid-flight (e.g. Escape key in the frontend, or `POST /agent/interrupt/{sid}`). Design sketch: `_interrupted: bool` flag on `AgentLoop`; checked between tool calls in `_run_react_turn` before each `_execute_tool_call`; when set, the loop transitions to `IDLE` and appends a placeholder `tool_result` for any `tool_use` block already committed to history (avoids Anthropic 400 "tool_use without tool_result" errors). History-protection rule: if the last history entry contains a `tool_use` that has no matching `tool_result`, insert a synthetic `{"role": "user", "content": [{"type": "tool_result", "tool_use_id": ..., "content": "Interrupted by user."}]}` before emitting the interrupted state event. Frontend: Escape key listener posts to `/agent/interrupt/{sid}` which sets the flag; chat shell shows a dismissable "已打断" banner. Not MVP-blocking — current workaround is to refresh the page.
+- ⚪ Physics classification widget: hierarchical tree view (chain parent-child relationship rendered as nested/indented rows or collapsible tree; requires multi-level groupby or JS tree component — deferred from Phase 4A widget work)
 - ⚪ Cross-session state continuation (B8 留的口子)
 - ⚪ Tool retrieval / Content RAG upgrade if plan.md grows large (C11 留的口子)
 - ⚪ Multi-provider expansion (Qwen3 / Gemini 2.5 Flash / GPT-5 mini)

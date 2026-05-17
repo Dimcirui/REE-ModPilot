@@ -176,7 +176,8 @@ def test_session_config_rejects_unknown_preset(monkeypatch, tmp_path):
 
 
 @pytest.mark.unit
-def test_emit_widget_if_inspector_emits_model_type_inferred():
+@pytest.mark.asyncio
+async def test_emit_widget_if_inspector_emits_model_type_inferred():
     """Direct unit test of the inspector hook: a state_diff carrying an
     `inferred_preset` + `decision` should produce a `model_type_inferred`
     event without touching Blender or the LLM."""
@@ -200,7 +201,7 @@ def test_emit_widget_if_inspector_emits_model_type_inferred():
         "candidates": [{"preset": "MMD", "coverage": 1.0}],
         "uncovered_slots": [],
     }
-    loop._emit_widget_if_inspector("setup_infer_model_type", state_diff)
+    await loop._emit_widget_if_inspector("setup_infer_model_type", state_diff)
 
     matched = [e for e in events if e["type"] == "model_type_inferred"]
     assert len(matched) == 1
@@ -211,7 +212,8 @@ def test_emit_widget_if_inspector_emits_model_type_inferred():
 
 
 @pytest.mark.unit
-def test_emit_widget_skips_when_state_diff_missing_keys():
+@pytest.mark.asyncio
+async def test_emit_widget_skips_when_state_diff_missing_keys():
     from app.agent.loop import AgentLoop
 
     events: list[dict] = []
@@ -222,5 +224,5 @@ def test_emit_widget_skips_when_state_diff_missing_keys():
     loop._phase_idx = 1
 
     # No inferred_preset → don't emit.
-    loop._emit_widget_if_inspector("setup_infer_model_type", {"coverage": 0.5})
+    await loop._emit_widget_if_inspector("setup_infer_model_type", {"coverage": 0.5})
     assert not any(e["type"] == "model_type_inferred" for e in events)
