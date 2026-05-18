@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import ChatPage from './pages/ChatPage';
 import ConfigPage from './pages/ConfigPage';
+import { BackendSplash } from './components/BackendSplash';
 
 function getRoute(): string {
   return window.location.pathname;
@@ -15,6 +16,9 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
-  if (route.startsWith('/config')) return <ConfigPage />;
-  return <ChatPage />;
+  return (
+    <BackendSplash>
+      {route.startsWith('/config') ? <ConfigPage /> : <ChatPage />}
+    </BackendSplash>
+  );
 }

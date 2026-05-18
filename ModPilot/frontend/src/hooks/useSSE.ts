@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { apiUrl } from '@/lib/origin';
 import type { SseEvent, SseEventByType, SseEventType } from '@/types/sse';
 
 // All event types the backend may emit on /agent/stream/{sid}.
@@ -93,7 +94,7 @@ export function useSSE(
       if (cancelled) return;
       setStatus(attempts === 0 ? 'connecting' : 'reconnecting');
       setReconnectIn(null);
-      source = new EventSource(`/agent/stream/${sessionId}`);
+      source = new EventSource(apiUrl(`/agent/stream/${sessionId}`));
 
       source.addEventListener('open', () => {
         attempts = 0;

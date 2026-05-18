@@ -27,7 +27,6 @@ mhws.auto_create_chains calling convention (post-toolkit patch):
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 from app.blender.client import BLENDER_SENTINEL, BlenderClient, BlenderError
@@ -40,10 +39,11 @@ from app.phases.base import (
     PhaseTool,
     require_finished,
 )
+from app.resources import app_data_dir
 
 # ── physics presets loader ────────────────────────────────────────────────────
 
-_PRESETS_PATH = Path(__file__).resolve().parent.parent / "data" / "physics_presets.json"
+_PRESETS_PATH = app_data_dir() / "physics_presets.json"
 _PRESETS_CACHE: dict | None = None
 
 

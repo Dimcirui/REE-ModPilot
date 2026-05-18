@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
+import { apiUrl } from '@/lib/origin';
 import styles from './ViewportPane.module.css';
 
 const POLL_INTERVAL_MS = 5000;
@@ -24,7 +25,7 @@ export function ViewportPane() {
     inFlightRef.current = true;
     setStatus({ kind: 'refreshing' });
     try {
-      const res = await fetch(`/viewport_screenshot?max_size=${MAX_SIZE}`, {
+      const res = await fetch(apiUrl(`/viewport_screenshot?max_size=${MAX_SIZE}`), {
         cache: 'no-store',
       });
       if (!res.ok) {

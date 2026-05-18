@@ -56,7 +56,10 @@ from app.phases.material import PRINCIPLED_SLOTS
 
 _APP_DIR = Path(__file__).resolve().parent
 _PROJECT_DIR = _APP_DIR.parent  # ModPilot/
-_STATIC_BUILT_DIR = _APP_DIR / "static_built"  # Vite build output
+# Vite build output. In frozen runs this resolves under sys._MEIPASS instead
+# of next to __file__, so go through the resources helper.
+from app.resources import static_built_dir as _static_built_dir
+_STATIC_BUILT_DIR = _static_built_dir()
 
 
 # ── lifespan: manage shared BlenderClient + agent session/stream registries ──
@@ -126,6 +129,27 @@ app = FastAPI(
     description="AI-guided Blender automation for RE Engine character mods",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+# Cross-origin allowance for the Tauri desktop webview. The bundled webview
+# loads the SPA from a `tauri://localhost` (macOS) or `http://tauri.localhost`
+# (Windows WebView2) origin and then fetches `http://localhost:8000/...` — a
+# different origin, so the browser blocks the request without explicit CORS
+# headers. Localhost-only deployment means we can allow these origins
+# permissively. Browser dev (Vite proxy at :5173) and same-origin prod (SPA
+# served by FastAPI) don't need CORS but tolerate it.
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "tauri://localhost",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Vite emits hashed bundles to static_built/assets/. Mount that at /assets so

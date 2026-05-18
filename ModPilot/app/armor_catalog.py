@@ -10,9 +10,10 @@ equipment dropdown without requiring Blender to be running at boot.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
-_CATALOG_PATH = Path(__file__).resolve().parent / "data" / "armor_sets.json"
+from app.resources import app_data_dir
+
+_CATALOG_PATH = app_data_dir() / "armor_sets.json"
 _CACHE: list[dict[str, str]] | None = None
 
 

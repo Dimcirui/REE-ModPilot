@@ -12,11 +12,10 @@ No LLM calls happen here.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
-_WORKFLOW_PATH = (
-    Path(__file__).resolve().parent.parent.parent.parent / "docs" / "agent_workflow.md"
-)
+from app.resources import docs_dir
+
+_WORKFLOW_PATH = docs_dir() / "agent_workflow.md"
 _WORKFLOW_TEXT: str = _WORKFLOW_PATH.read_text(encoding="utf-8")
 
 _WIDGET_PROTOCOL: str = (
