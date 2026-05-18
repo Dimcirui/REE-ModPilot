@@ -43,6 +43,26 @@ the user owns Monster Hunter Wilds and Blender separately.
 > The first four addons together expose the operator surface documented in
 > [plugin_api.md](plugin_api.md). Without them ModPilot cannot run.
 
+### Frontend (since 2026-05-18 — React + Tauri rebuild)
+
+The Stage-5 htmx + Jinja2 frontend has been replaced by a React 19 + TypeScript +
+Vite SPA under `ModPilot/frontend/`, with an optional Tauri v2 desktop shell.
+Choose whichever runtime you prefer:
+
+| Mode | Run | When to use |
+|---|---|---|
+| **Browser** (Vite at `:5173`) | `cd ModPilot/frontend && pnpm install && pnpm dev` | Fast dev loop; **text-only** path inputs (no drag-and-drop — browser sandbox refuses to expose `File.path` from drops). |
+| **Tauri desktop** (`modpilot.exe`) | `cd ModPilot/frontend && pnpm tauri:dev` | Same React bundle, wrapped in a Rust + WebView2 shell so `PathField` accepts **native drag-and-drop** of files and directories, and the Browse button opens a system file picker via `tauri-plugin-dialog`. Required if you want to drop your model `.fbx` / textures dir / mod root into the form instead of pasting paths. |
+
+Both modes hit the same FastAPI backend at `127.0.0.1:8000` (`vite.config.ts`
+proxies `/agent`, `/app`, `/viewport_screenshot`, `/health`). The
+`PathField` component detects which environment it's in (`window.__TAURI_INTERNALS__`)
+and degrades gracefully in browser mode.
+
+The Tauri build requires Rust toolchain (`rustup` + MSVC build tools on Windows).
+Browser mode needs only Node + pnpm. See `frontend/README.md` (if present) or
+`docs/design.md` C25 for the full rationale.
+
 ### Verify the install
 
 From the repo root:

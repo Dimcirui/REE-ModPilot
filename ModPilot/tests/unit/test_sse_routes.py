@@ -170,65 +170,11 @@ def test_stream_route_is_registered():
 
 
 @pytest.mark.unit
-def test_render_error_choice_html_contains_three_buttons():
-    """Direct test of the error_choice HTML renderer (issue #2).
-
-    Verifies the rendered fragment contains all three buttons with the right
-    Chinese labels, posts to /agent/messages (not legacy /agent/chat), and
-    bakes the session_id into each button's hx-vals.
-    """
-    from app.main import _render_error_choice_html
-
-    sid = "sse-test-html"
-    fragment = _render_error_choice_html(sid)
-
-    # Three buttons, three labels
-    assert "重试" in fragment
-    assert "跳过" in fragment
-    assert "查看详情" in fragment
-
-    # All post to /agent/messages, not legacy /agent/chat
-    assert fragment.count('hx-post="/agent/messages"') == 3
-    assert 'hx-post="/agent/chat"' not in fragment
-
-    # session_id baked into each hx-vals
-    assert fragment.count(f'"session_id":"{sid}"') == 3
-
-    # Each button discards the JSON response so it doesn't get swapped
-    assert fragment.count('hx-swap="none"') == 3
-
-    # hx-ext="json-enc" must be on each button — htmx's default form-urlencoded
-    # body would 422 against the Pydantic ChatRequest endpoint.
-    assert fragment.count('hx-ext="json-enc"') == 3
-
-    # No inline onclick — removal is handled by app.js on htmx:beforeRequest
-    # so the optimistic-bubble path (configRequest) sees the live button first.
-    assert "onclick=" not in fragment
-
-    # Style hooks for app.css selectors
-    assert 'class="error-choice-group"' in fragment
-    for variant in ("retry", "skip", "ask"):
-        assert f'class="error-choice-btn {variant}"' in fragment
-
-
-@pytest.mark.unit
-def test_render_error_choice_html_escapes_session_id():
-    """Session-id is HTML-escaped to keep a future id-format change from
-    opening an attribute-injection hole."""
-    from app.main import _render_error_choice_html
-
-    # uuid4().hex[:12] is hex-only today, but the renderer must still escape
-    # so a future format change can't break out of the hx-vals attribute.
-    fragment = _render_error_choice_html('"><script>x</script>')
-    assert "<script>" not in fragment
-    assert "&quot;" in fragment or "&#x27;" in fragment
-
-
-@pytest.mark.unit
 @pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
 def test_post_failing_turn_emits_error_choice_in_queue(monkeypatch):
     """End-to-end at the queue layer: a phase failure must enqueue an
-    error_choice event so the SSE generator can ship its HTML payload.
+    error_choice event so the SSE generator can ship its JSON payload to
+    the React frontend (which renders the retry/skip/ask buttons).
     """
     _patch_blender(monkeypatch)
     _patch_llm_factory(monkeypatch)
@@ -287,113 +233,6 @@ def test_post_failing_turn_emits_error_choice_in_queue(monkeypatch):
     assert evt["operator"] == "modder.pose_correction"
     assert evt["message"] == "No armature named 'Body' in scene"
     assert evt["state"] == "error_handling"
-
-
-@pytest.mark.unit
-def test_render_classification_widget_html_lists_all_chains_and_types():
-    """Issue #7 — the classification widget fragment must include one row per
-    chain head, all 17 inferred-type options per dropdown, and a hidden
-    session_id input that posts back to /agent/widget/classification."""
-    from app.main import _render_classification_widget_html
-    from app.phases.physics_bones import list_inferred_types
-
-    sid = "widget-test-sid"
-    chains = [
-        {"name": "hair_001", "role": "head", "depth": 5, "parent": "head"},
-        {"name": "skirt_002", "role": "head", "depth": 8, "parent": "waist"},
-    ]
-    fragment = _render_classification_widget_html(sid, chains)
-
-    assert 'hx-post="/agent/widget/classification"' in fragment
-    assert 'hx-ext="json-enc"' in fragment
-    assert f'value="{sid}"' in fragment
-    assert "hair_001" in fragment
-    assert "skirt_002" in fragment
-
-    # One <select> per row + one <option value=""> sentinel + 17 type options.
-    for t in list_inferred_types():
-        assert f'value="{t}"' in fragment
-    # Each chain gets a name="type__<chain>" select.
-    assert 'name="type__hair_001"' in fragment
-    assert 'name="type__skirt_002"' in fragment
-
-
-@pytest.mark.unit
-def test_render_material_widget_html_per_material_slot_table():
-    """Issue #7 — material widget renders one <details> per material with a
-    select per Principled BSDF slot, pre-selects existing connections, and
-    offers each texture file as an option."""
-    from app.main import _render_material_widget_html
-    from app.phases.material import PRINCIPLED_SLOTS
-
-    sid = "widget-test-mat"
-    materials = ["body_mat", "hair_mat"]
-    connections = {"body_mat": {"Base Color": "C:/tex/diff.png"}}
-    texture_files = ["C:/tex/diff.png", "C:/tex/norm.png"]
-    fragment = _render_material_widget_html(sid, materials, connections, texture_files)
-
-    assert 'hx-post="/agent/widget/material"' in fragment
-    assert f'value="{sid}"' in fragment
-    assert "body_mat" in fragment
-    assert "hair_mat" in fragment
-    for slot in PRINCIPLED_SLOTS:
-        assert slot in fragment
-    # Each material × each slot gets a select with name="texmap__<idx>__<mat>"
-    assert 'name="texmap__0__body_mat"' in fragment
-    assert 'name="texmap__0__hair_mat"' in fragment
-    # Pre-selected option for the existing connection
-    assert 'value="C:/tex/diff.png" selected' in fragment
-    # Texture options rendered with basename labels for readability
-    assert ">diff.png</option>" in fragment
-
-
-@pytest.mark.unit
-def test_render_material_widget_html_pre_fills_llm_suggestions():
-    """Issue #11 — when `suggestions` carries a {mat: {slot: path}} hint, the
-    matching cell is pre-selected, the row gets the `row-suggested` class, and
-    the slot label gets the `LLM` chip. Suggestions take precedence over the
-    existing connection.
-    """
-    from app.main import _render_material_widget_html
-
-    sid = "widget-test-mat-sug"
-    materials = ["body_mat"]
-    # existing wired connection points at the WRONG file on purpose; the LLM
-    # suggestion should win.
-    connections = {"body_mat": {"Base Color": "C:/tex/wrong.png"}}
-    texture_files = ["C:/tex/wrong.png", "C:/tex/body_diffuse.png"]
-    suggestions = {"body_mat": {"Base Color": "C:/tex/body_diffuse.png"}}
-    fragment = _render_material_widget_html(
-        sid, materials, connections, texture_files, suggestions
-    )
-
-    # The suggested file is pre-selected
-    assert 'value="C:/tex/body_diffuse.png" selected' in fragment
-    # The wrong (existing) file is NOT selected
-    assert 'value="C:/tex/wrong.png" selected' not in fragment
-    # The row gets the highlight class
-    assert "row-suggested" in fragment
-    # The slot label gets the chip
-    assert "widget-suggested-chip" in fragment
-
-
-@pytest.mark.unit
-def test_render_material_widget_html_no_suggestions_falls_back_to_existing():
-    """Issue #11 — when `suggestions` is empty / missing, behavior matches the
-    pre-issue #11 path: existing connections still pre-select, no chip / no
-    row highlight."""
-    from app.main import _render_material_widget_html
-
-    sid = "widget-test-mat-nosug"
-    materials = ["body_mat"]
-    connections = {"body_mat": {"Base Color": "C:/tex/diff.png"}}
-    texture_files = ["C:/tex/diff.png"]
-    fragment = _render_material_widget_html(
-        sid, materials, connections, texture_files, suggestions=None
-    )
-
-    assert 'value="C:/tex/diff.png" selected' in fragment
-    assert "row-suggested" not in fragment
 
 
 @pytest.mark.unit

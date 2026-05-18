@@ -1,0 +1,73 @@
+.row {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+  min-width: 0;
+}
+
+.row:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.85rem;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+}
+
+.input:focus {
+  outline: none;
+}
+
+.browseButton {
+  flex: 0 0 auto;
+  padding: 0 0.7rem;
+  font-size: 0.78rem;
+  font-weight: 500;
+  background: var(--bg-soft);
+  color: var(--fg-muted);
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-top-right-radius: var(--radius-sm);
+  border-bottom-right-radius: var(--radius-sm);
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.browseButton:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+
+.browseButton:disabled {
+  cursor: progress;
+  color: var(--fg-dim);
+}
+
+.dragOver {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.dragOver .browseButton {
+  background: var(--accent-soft);
+}
+
+.invalid {
+  border-color: var(--danger);
+  background: #fef2f2;
+}
+
+.invalid .browseButton {
+  background: #fef2f2;
+  border-left-color: var(--danger-border);
+}

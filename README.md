@@ -16,9 +16,9 @@
 | Stage 2 — phase tool layer (videos 1-3) | 🟢 done (PoseCorrection + SkeletonAlign + VertexGroups; 76 unit tests) |
 | Stage 3 — agent loop | 🟢 done (ReAct loop + prompts + error handler + `/agent/chat`; 117 unit tests) |
 | Stage 4 — phase tools (videos 4-7) | 🟢 done: physics_bones + material + batch_export + mesh_cleanup + query tools; E2E verified (Phase 1→6 full run); advanced out of MVP scope |
-| Stage 5 — frontend (htmx + SSE chat) | 🟢 done: chat UI + SSE event stream (#1), error-choice UI (#2), session-config form (#3 / #10), confirmation widgets (#7 / #11), global LLM/Blender config UI (#9), Ollama provider, viewport screenshot side-panel, model-type auto-inference (#4 / #5 / #6), user-interrupt UX (#14). |
+| Stage 5 — frontend (React 19 + TS + Vite + motion) | 🟢 done. Rebuilt from htmx (2026-05-18, C25). Same SSE/widget/config surfaces; ports: dev `:5173` proxied → backend `:8000`. Tauri v2 desktop shell layered on top (optional) provides native drag-and-drop file/dir paths through `PathField`. Stage-driven UI under `src/stages/` — `StageRouter` cross-fades a per-phase component (`Phase1Stage`, `Phase23Stage` shared by phase_2+3, `Phase4Stage` shared by phase_35+4a+4b, `Phase5Stage`, `Phase6Stage`, `DoneStage`), chat moved to a collapsible bottom `ChatStrip`. |
 | Stage MVP — verification | 🟢 done (L3 in-game acceptance: 3-4 MMD/VRC models verified; `verify_mvp.py` script + `docs/demo_setup.md` walkthrough) |
-| Post-MVP polish | ongoing — #13 arm-bone scale, #14 interrupt, #15 phase transition pause, #16 Phase 5A small-loop architecture all shipped. **453 unit tests, 70+ Playwright checks.** |
+| Post-MVP polish | ongoing — #13 arm-bone scale, #14 interrupt, #15 phase transition pause, #16 Phase 5A small-loop architecture, frontend React/Tauri rebuild, single-pick Body part radio (default `Body`), "Mod Output" rename. **453 unit tests, 70+ Playwright checks.** |
 
 All design items in [docs/design.md](docs/design.md) (A/B/C/D/E layers) are 🟢 decided.
 
@@ -45,17 +45,23 @@ The AI's value concentrates in **videos 4-7** (physics bones / materials / batch
 ## Architecture
 
 ```
-Browser (localhost)
-   ↓ HTML / htmx + SSE (10 event types)
-FastAPI backend
-   ├── Agent loop          (ReAct, hand-rolled, ~600 lines)
-   ├── Phase tools         (15 tools across setup + phases 1-6)
-   ├── LLM client          (provider-agnostic: Anthropic / OpenAI-compatible / Ollama)
-   └── Blender client      (TCP socket, thread-safe RLock)
-            ↓
-blender-mcp addon.py       (port 9876 — `execute_code` channel)
-            ↓
-User's Modding-Toolkit     (bpy.ops.modder.* / mhws.* / re4.* / etc.)
+Browser (Vite dev server :5173) ────────────╮
+   or                                       │ Same React 19 + TS bundle
+Tauri desktop shell (modpilot.exe) ─────────┤  (browser-mode falls back to
+                                            │   text path inputs; desktop
+                                            │   gets native drag-and-drop)
+                                            ↓
+                          React SPA (motion + structured JSON SSE)
+                                            │
+                          FastAPI backend (CORS / Vite proxy)
+                            ├── Agent loop          (ReAct, hand-rolled, ~600 lines)
+                            ├── Phase tools         (15 tools across setup + phases 1-6)
+                            ├── LLM client          (provider-agnostic: Anthropic / OpenAI-compatible / Ollama)
+                            └── Blender client      (TCP socket, thread-safe RLock)
+                                            ↓
+                          blender-mcp addon.py       (port 9876 — `execute_code` channel)
+                                            ↓
+                          User's Modding-Toolkit     (bpy.ops.modder.* / mhws.* / re4.* / etc.)
 ```
 
 **Key architectural decisions**:
@@ -63,7 +69,7 @@ User's Modding-Toolkit     (bpy.ops.modder.* / mhws.* / re4.* / etc.)
 - **Phase tool middle layer**, not raw operator wrappers. LLM orchestrates *between* phases and makes *classification* decisions inside phases; deterministic Python orchestrates *within* phases. (B6, [project memory](.claude/projects/.../memory/project_python_over_llm.md))
 - **Provider-agnostic LLM client** (~150 lines). Default DeepSeek V4 for development; Claude Sonnet 4.6 / Haiku 4.5 as oracle fallback; Ollama Cloud (`deepseek-v4-flash`) as a third option. Runtime-switchable via `/config` UI — no restart needed. (C10)
 - **No RAG in MVP** — `docs/agent_workflow.md` (machine-readable execution manual) goes directly into system prompt + prompt cache. `plan.md` is the video script for humans only. Content RAG retained as a future upgrade path. (C11)
-- **htmx + Jinja2** frontend, no SPA framework. (C12)
+- **React 19 + TypeScript + Vite** frontend, with `motion` for transitions; same SSE event surface as the original htmx build. **Tauri v2** ships an optional Rust desktop shell so the path inputs can accept native file/directory drag-and-drop (impossible inside a browser sandbox). (C25 — supersedes C12)
 - **Confirmation widgets** — server-rendered Jinja partials pushed over SSE for Phase 4A (physics bone classification) and Phase 5 (material slot → texture mapping). User edits the widget in-browser; confirmed values re-enter the agent loop as prefixed JSON messages.
 
 ---
@@ -79,7 +85,8 @@ User's Modding-Toolkit     (bpy.ops.modder.* / mhws.* / re4.* / etc.)
 | LLM (oracle / fallback) | Claude Sonnet 4.6 / Haiku 4.5 (Anthropic SDK) | C10 |
 | LLM (third option) | Ollama Cloud (`deepseek-v4-flash` / `deepseek-v4-pro`) | C10 |
 | Agent framework | Hand-rolled ReAct (raw SDKs, no LangChain in MVP) | C9 |
-| Frontend | htmx + Jinja2 templates | C12 |
+| Frontend | React 19 + TypeScript + Vite + motion (SPA) | C25 (supersedes ~~C12~~) |
+| Desktop shell (optional) | Tauri v2 (Rust + WebView2) — enables native drag-and-drop file pickers | C25 |
 | Blender integration | TCP socket via blender-mcp addon | Stage 0 |
 | Tests | pytest (`unit` / `integration` markers) | D14 |
 | Lint / format | Ruff | D14 |
@@ -104,16 +111,29 @@ REE-ModPilot/
 │   │   ├── blender/              # BlenderClient (thread-safe RLock, BlenderBusyError) + SceneCache
 │   │   ├── llm/                  # Provider-agnostic LLMClient (Anthropic + OpenAI + Ollama)
 │   │   ├── agent/                # ReAct loop, prompt builders, error handler
-│   │   ├── templates/            # Jinja2 templates: chat.html, config.html
-│   │   │   └── widgets/          #   widget partials: classification.html, material.html
 │   │   └── phases/               # Phase tools: setup (validate+infer+import), pose_correction,
 │   │                             #   skeleton_align, vertex_groups, physics_bones, material,
 │   │                             #   batch_export, query_tools; advanced out of MVP scope
-│   ├── tests/
-│   │   ├── unit/                 # mock Blender + mock LLM
-│   │   ├── integration/          # real Blender required; marker-gated
-│   │   └── e2e/                  # Playwright browser smokes; opt-in install
-│   └── static/                   # app.css, app.js, vendored htmx + sse-ext + json-enc-ext
+│   ├── frontend/                 # React 19 + TypeScript + Vite + motion (replaces former
+│   │   │                         #   templates/ + static/ + htmx setup)
+│   │   ├── src/
+│   │   │   ├── pages/            #   ChatPage (orchestrator: Shell + StageRouter + ChatStrip) + ConfigPage
+│   │   │   ├── stages/           #   StageRouter + per-phase stages (Phase1Stage, Phase23Stage,
+│   │   │   │                     #     Phase4Stage, Phase5Stage, Phase6Stage, DoneStage) +
+│   │   │   │                     #     FallbackStage for unmigrated phases; STAGE_REGISTRY
+│   │   │   ├── components/       #   Shell, ChatStrip, SessionConfigForm, PathField (drag-drop),
+│   │   │   │                     #     ChatLog, PhaseStepper, ViewportPane, widgets, ErrorChoice, …
+│   │   │   ├── hooks/            #   useChatState (incl. ToolRun[] tracking), useSSE
+│   │   │   ├── lib/              #   api, session, desktop (Tauri bridge w/ browser fallback)
+│   │   │   └── types/            #   api, sse, domain
+│   │   ├── src-tauri/            #   Rust shell (Tauri v2; dialog plugin; window center fix)
+│   │   ├── vite.config.ts        #   /agent /app /viewport_screenshot /health proxied to :8000
+│   │   └── package.json          #   pnpm; scripts: dev, build, tauri:dev, tauri:build
+│   ├── artifacts/                # Generated; gitignored. Includes ui_walkthroughs/<stamp>/walkthrough.webm
+│   └── tests/
+│       ├── unit/                 # mock Blender + mock LLM
+│       ├── integration/          # real Blender required; marker-gated
+│       └── e2e/                  # Playwright browser smokes; opt-in install
 ├── docs/
 │   ├── design.md                 # A/B/C/D/E-layer design decisions (🟢 all decided)
 │   ├── backlog.md                # P0-P3 implementation tasks with status badges
@@ -168,22 +188,35 @@ Expected output ends with `=== Stage 0 PASSED. Pipeline is alive. ===`.
 
 ```bash
 cd ModPilot
-uv run uvicorn app.main:app --reload
+uv run uvicorn app.main:app --reload   # binds 127.0.0.1:8000
 ```
 
-Open **http://localhost:8000** — on first launch (no API key configured) you are redirected to the `/config` settings page. Enter your LLM provider, API key, and model. Settings are persisted in `~/.modpilot/config.json` across restarts.
+**3. Run the frontend (pick one)**
 
-**3. Start a mod session**
+```bash
+# (a) Browser mode — fastest dev loop, text-only path inputs
+cd ModPilot/frontend
+pnpm install                 # one-time
+pnpm dev                     # http://localhost:5173, proxies /agent /app /viewport_screenshot /health → :8000
 
-Fill in the session-config form (source file path, mod root, character name, etc.) and click **Start**. The agent walks through Phases 1-6 automatically, pausing at classification checkpoints (physics bone table, material texture mapping) for user confirmation via in-browser widgets.
+# (b) Tauri desktop mode — native drag-and-drop file/dir paths via PathField
+cd ModPilot/frontend
+pnpm tauri:dev               # boots Vite, then spawns the Rust shell pointing at it
+```
 
-**4. Run unit tests**
+LLM config: first launch (no API key) redirects to `/config`. Enter provider / key / model, or seed via `ModPilot/.env` (see `.env.example` — `LLM_PROVIDER=ollama`, `LLM_API_KEY=…`, `LLM_MODEL=deepseek-v4-flash` for Ollama Cloud). Settings layer in `~/.modpilot/config.json`; `.env` is git-ignored.
+
+**4. Start a mod session**
+
+Fill in the session-config form (source file path, mod root, character name, body part radio, hunter type, armor set, etc.) and click **Start**. The agent walks through Phases 1-6 automatically, pausing at classification checkpoints (physics bone table, material texture mapping) for user confirmation via in-browser widgets.
+
+**5. Run unit tests**
 
 ```bash
 uv run pytest -m unit -v   # 453+ tests, no Blender required
 ```
 
-**5. (Optional) Headless MVP verification**
+**6. (Optional) Headless MVP verification**
 
 ```bash
 # Copy and fill in the config template, then:

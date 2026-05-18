@@ -1136,7 +1136,11 @@ class AgentLoop:
                 # Run the annotation LLM call now (slow) so the widget is
                 # ready to emit immediately when the deferred-emit point hits.
                 chains = await self._annotate_chains(chains)
-                self._pending_widget = ("widget_classification", {"chains": chains})
+                from app.phases.physics_bones import list_inferred_types
+                self._pending_widget = (
+                    "widget_classification",
+                    {"chains": chains, "inferred_types": list_inferred_types()},
+                )
         elif tool_name == "material_inspect":
             materials = state_diff.get("materials") or []
             if materials:

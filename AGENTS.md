@@ -11,7 +11,7 @@ For Claude-specific working notes see [CLAUDE.md](CLAUDE.md).
 ## Project at a Glance
 
 - **What**: Step-by-step AI guide + Blender automation for RE Engine character mod creation.
-- **Stack**: Python 3.11+, FastAPI, uv, htmx, hand-rolled ReAct over Anthropic / OpenAI SDKs.
+- **Stack**: Python 3.11+, FastAPI, uv, React 19 + TypeScript + Vite + motion SPA (optional Tauri v2 shell — see C25), hand-rolled ReAct over Anthropic / OpenAI SDKs.
 - **Key constraint**: LLM only makes classification decisions inside phase tools and orchestrates *between* phases; deterministic Python orchestrates *within* phases.
 - **MVP scope**: MHWs single-game, plan.md videos 1-7, user-provided MMD/VRC source models, L3 (in-game) acceptance.
 

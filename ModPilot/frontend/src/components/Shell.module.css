@@ -1,0 +1,27 @@
+.shell {
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+  height: 100vh;
+  min-height: 0;
+}
+
+.headerSlot {
+  min-width: 0;
+}
+
+.stageSlot {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.bannerSlot {
+  min-width: 0;
+}
+
+.chatSlot {
+  min-width: 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev);
+}

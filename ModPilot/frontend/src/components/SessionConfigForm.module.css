@@ -1,0 +1,165 @@
+.section {
+  padding: 0.6rem 1rem 0.75rem;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  max-height: 40vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.hint {
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+}
+
+.fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.4rem 0.75rem 0.6rem;
+  margin: 0 0 0.5rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.4rem 0.75rem;
+}
+
+.bodyParts {
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.variant {
+  grid-column: 1 / -1;
+}
+
+.fieldset legend {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--fg-muted);
+  padding: 0 0.35rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.78rem;
+  color: var(--fg-muted);
+}
+
+.fieldLabel {
+  font-weight: 500;
+}
+
+.field input[type='text'],
+.field select {
+  padding: 0.35rem 0.5rem;
+  font-size: 0.85rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  color: var(--fg);
+}
+
+.inline {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--fg);
+}
+
+.invalid {
+  border-color: var(--danger) !important;
+  background: #fef2f2 !important;
+}
+
+.fieldNote {
+  font-size: 0.7rem;
+}
+
+.fieldNoteOk {
+  color: var(--success);
+}
+
+.fieldNoteWarn {
+  color: var(--warning);
+}
+
+.fieldError {
+  font-size: 0.72rem;
+  color: var(--danger);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.startButton {
+  padding: 0.4rem 1.1rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  border-radius: var(--radius-md);
+  transition: background 120ms ease;
+}
+
+.startButton:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.startButton:disabled {
+  background: var(--border-strong);
+  color: var(--bg);
+}
+
+.generalError {
+  font-size: 0.8rem;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-sm);
+  padding: 0.3rem 0.6rem;
+}
+
+.savedBadge {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--success-bg);
+  border: 1px solid var(--success-border);
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  color: var(--success);
+}
+
+.editButton {
+  margin-left: auto;
+  background: transparent;
+  color: var(--success);
+  border: 1px solid var(--success);
+  padding: 0.2rem 0.55rem;
+  font-size: 0.75rem;
+  border-radius: var(--radius-sm);
+}
+
+.editButton:hover {
+  background: rgb(4 120 87 / 8%);
+}

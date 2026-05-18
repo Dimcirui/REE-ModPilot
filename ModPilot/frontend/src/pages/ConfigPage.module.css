@@ -1,0 +1,151 @@
+.page {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100vh;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.6rem 1rem;
+  background: var(--header-bg);
+  color: var(--header-fg);
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.subtitle {
+  font-size: 0.85rem;
+  color: #cbd2d9;
+}
+
+.main {
+  padding: 1.25rem;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  overflow-y: auto;
+}
+
+.card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1rem 1.25rem 1.25rem;
+  width: min(640px, 100%);
+}
+
+.card h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.hint {
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+  margin: 0 0 0.85rem;
+}
+
+.fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.5rem 0.75rem 0.75rem;
+  margin: 0 0 0.75rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.5rem 0.75rem;
+}
+
+.fieldset legend {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--fg-muted);
+  padding: 0 0.35rem;
+}
+
+.fieldset label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.78rem;
+  color: var(--fg-muted);
+}
+
+.fieldset label span {
+  font-weight: 500;
+}
+
+.fieldset input,
+.fieldset select {
+  padding: 0.4rem 0.5rem;
+  font-size: 0.85rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  color: var(--fg);
+}
+
+.fieldNote {
+  font-size: 0.7rem;
+}
+
+.fieldNoteOk {
+  color: var(--success);
+}
+
+.fieldNoteWarn {
+  color: var(--warning);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.saveBtn {
+  padding: 0.4rem 1.1rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  border-radius: var(--radius-md);
+  transition: background 120ms ease;
+}
+
+.saveBtn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.saveBtn:disabled {
+  background: var(--border-strong);
+}
+
+.backLink {
+  font-size: 0.85rem;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.backLink:hover {
+  text-decoration: underline;
+}
+
+.saveStatus {
+  font-size: 0.8rem;
+}
+
+.saveStatusOk {
+  color: var(--success);
+}
+
+.saveStatusError {
+  color: var(--danger);
+}

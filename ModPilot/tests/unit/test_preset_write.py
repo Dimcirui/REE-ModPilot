@@ -288,22 +288,11 @@ def test_custom_does_not_advance_phase():
 
 # ── tool_schema sanity ────────────────────────────────────────────────────
 
-
-@pytest.mark.unit
-def test_error_choice_renders_force_custom_for_unsupported_rig():
-    """Issue #6: when the failing error_choice event carries
-    category='unsupported_rig', the rendered fragment includes the
-    [Force Custom] button; otherwise it doesn't."""
-    from app.main import _render_error_choice_html
-
-    plain = _render_error_choice_html("sid123")
-    assert "force-custom" not in plain
-    assert "FORCE_CUSTOM" not in plain
-
-    custom = _render_error_choice_html("sid123", category="unsupported_rig")
-    assert "force-custom" in custom
-    assert "[FORCE_CUSTOM]" in custom
-    assert "强制自定义" in custom
+# Note: the force-custom button (issue #6) is now rendered by the React
+# ErrorChoice component, which keys off `event.category === "unsupported_rig"`.
+# AgentLoop already passes `category` through the error_choice SSE payload —
+# see test_post_failing_turn_emits_error_choice_in_queue in test_sse_routes.py
+# for the queue-level evidence of that field.
 
 
 @pytest.mark.unit

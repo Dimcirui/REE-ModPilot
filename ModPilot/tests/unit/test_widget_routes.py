@@ -1,13 +1,13 @@
 """
 Unit tests for the confirmation widget POST routes (issue #7).
 
-Covers:
-  - POST /agent/widget/classification packages `type__<chain>` form fields
-    as a [CONFIRMED_CLASSIFICATIONS]-prefixed JSON message and feeds it to
-    loop.step(); blank rows are ignored; an empty submission 422s.
-  - POST /agent/widget/material packages `texmap__<slot_idx>__<mat>` form
-    fields as a [CONFIRMED_MATERIAL_MAPPING]-prefixed JSON message; bogus
-    slot_idx values are silently dropped; empty submissions 422.
+Covers the structured-JSON shape introduced by the React migration:
+  - POST /agent/widget/classification accepts a list of
+    {chain_name, inferred_type, description, merge_to_parent} and packs them
+    into a [CONFIRMED_CLASSIFICATIONS]-prefixed JSON message for loop.step().
+  - POST /agent/widget/material accepts a list of {material, slot,
+    texture_path} and packs them into [CONFIRMED_MATERIAL_MAPPING] for
+    loop.step(). Empty texture paths and unknown slots are dropped.
 
 Real Blender is not required: BlenderClient is monkey-patched to a no-op
 stub and LLMClient.from_settings is replaced with a MagicMock factory.
@@ -65,11 +65,10 @@ def _patch_llm_factory(monkeypatch, reply_text: str = "ok") -> MagicMock:
 
 @pytest.mark.unit
 @pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
-def test_widget_classification_packages_pairs_and_calls_step(monkeypatch):
-    """preset__/type__ fields become a JSON dict on a [CONFIRMED_CLASSIFICATIONS]
-    prefix that loop.step() receives as the next user message.
-
-    preset__ = agent accept (chip); type__ = manual override (wins over preset__).
+def test_widget_classification_packages_confirmations_and_calls_step(monkeypatch):
+    """A structured confirmations[] payload becomes a JSON dict on a
+    [CONFIRMED_CLASSIFICATIONS] prefix that loop.step() receives as the next
+    user message.
     """
     _patch_blender(monkeypatch)
     _patch_llm_factory(monkeypatch)
@@ -82,16 +81,26 @@ def test_widget_classification_packages_pairs_and_calls_step(monkeypatch):
             "/agent/widget/classification",
             json={
                 "session_id": sid,
-                "preset__hair_001": "hair_long_straight",
-                "preset__skirt_002": "cloth_skirt_waist",
+                "confirmations": [
+                    {
+                        "chain_name": "hair_001",
+                        "inferred_type": "hair_long_straight",
+                        "description": "",
+                        "merge_to_parent": False,
+                    },
+                    {
+                        "chain_name": "skirt_002",
+                        "inferred_type": "cloth_skirt_waist",
+                        "description": "pleated front panel",
+                        "merge_to_parent": True,
+                    },
+                ],
             },
         )
         assert r.status_code == 200, r.text
-        payload = r.json()
-        assert payload == {"saved": True, "count": 2}
+        assert r.json() == {"saved": True, "count": 2}
 
         loop = app.state.agent_sessions[sid]
-        # loop.step appended the user message to global history
         user_msgs = [m["content"] for m in loop._global_history if m["role"] == "user"]
         assert user_msgs, "loop.step never appended a user message"
         last = user_msgs[-1]
@@ -102,14 +111,16 @@ def test_widget_classification_packages_pairs_and_calls_step(monkeypatch):
                 "hair_001": "hair_long_straight",
                 "skirt_002": "cloth_skirt_waist",
             },
-            "descriptions": {},
-            "bones_to_merge": [],
+            "descriptions": {"skirt_002": "pleated front panel"},
+            "bones_to_merge": ["skirt_002"],
         }
 
 
 @pytest.mark.unit
 @pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
 def test_widget_classification_skips_blank_rows(monkeypatch):
+    """Rows with empty inferred_type are dropped silently — the FE may emit
+    placeholder rows the user opted out of."""
     _patch_blender(monkeypatch)
     _patch_llm_factory(monkeypatch)
     from app.main import app
@@ -121,8 +132,10 @@ def test_widget_classification_skips_blank_rows(monkeypatch):
             "/agent/widget/classification",
             json={
                 "session_id": sid,
-                "preset__hair_001": "hair_short",
-                "preset__skirt_002": "",
+                "confirmations": [
+                    {"chain_name": "hair_001", "inferred_type": "hair_short"},
+                    {"chain_name": "skirt_002", "inferred_type": ""},
+                ],
             },
         )
         assert r.status_code == 200
@@ -141,7 +154,7 @@ def test_widget_classification_rejects_empty_submission(monkeypatch):
         app.state.llm = _stub_llm("got it")
         r = client.post(
             "/agent/widget/classification",
-            json={"session_id": sid},
+            json={"session_id": sid, "confirmations": []},
         )
         assert r.status_code == 422
 
@@ -149,7 +162,7 @@ def test_widget_classification_rejects_empty_submission(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
 def test_widget_material_packages_nested_mapping(monkeypatch):
-    """texmap__<slot_idx>__<mat> fields become {mat: {slot_name: path}}."""
+    """mappings[] becomes {mat: {slot_name: path}}."""
     _patch_blender(monkeypatch)
     _patch_llm_factory(monkeypatch)
     from app.main import app
@@ -158,14 +171,27 @@ def test_widget_material_packages_nested_mapping(monkeypatch):
     sid = "widget-mat-1"
     with TestClient(app) as client:
         app.state.llm = _stub_llm("got it")
-        # slot 0 == "Base Color", slot 5 == "Normal"
         r = client.post(
             "/agent/widget/material",
             json={
                 "session_id": sid,
-                "texmap__0__body_mat": "C:/tex/body_diff.png",
-                "texmap__5__body_mat": "C:/tex/body_norm.png",
-                "texmap__0__hair_mat": "C:/tex/hair_diff.png",
+                "mappings": [
+                    {
+                        "material": "body_mat",
+                        "slot": PRINCIPLED_SLOTS[0],  # "Base Color"
+                        "texture_path": "C:/tex/body_diff.png",
+                    },
+                    {
+                        "material": "body_mat",
+                        "slot": PRINCIPLED_SLOTS[5],  # "Normal"
+                        "texture_path": "C:/tex/body_norm.png",
+                    },
+                    {
+                        "material": "hair_mat",
+                        "slot": PRINCIPLED_SLOTS[0],
+                        "texture_path": "C:/tex/hair_diff.png",
+                    },
+                ],
             },
         )
         assert r.status_code == 200, r.text
@@ -187,8 +213,8 @@ def test_widget_material_packages_nested_mapping(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
-def test_widget_material_drops_invalid_slot_indices(monkeypatch):
-    """Out-of-range or non-numeric slot_idx values are silently dropped."""
+def test_widget_material_drops_invalid_slots_and_empty_paths(monkeypatch):
+    """Unknown slot names and empty texture paths are silently dropped."""
     _patch_blender(monkeypatch)
     _patch_llm_factory(monkeypatch)
     from app.main import app
@@ -200,16 +226,17 @@ def test_widget_material_drops_invalid_slot_indices(monkeypatch):
             "/agent/widget/material",
             json={
                 "session_id": sid,
-                "texmap__0__body_mat": "C:/tex/ok.png",
-                "texmap__99__body_mat": "C:/tex/dropped.png",
-                "texmap__abc__body_mat": "C:/tex/also_dropped.png",
+                "mappings": [
+                    {"material": "body_mat", "slot": "Base Color", "texture_path": "C:/tex/ok.png"},
+                    {"material": "body_mat", "slot": "Not A Slot", "texture_path": "C:/tex/dropped.png"},
+                    {"material": "body_mat", "slot": "Normal", "texture_path": ""},
+                ],
             },
         )
         assert r.status_code == 200
         loop = app.state.agent_sessions[sid]
         last = [m["content"] for m in loop._global_history if m["role"] == "user"][-1]
         body = json.loads(last[len("[CONFIRMED_MATERIAL_MAPPING] "):])
-        # Only the valid slot survives.
         assert body == {"body_mat": {"Base Color": "C:/tex/ok.png"}}
 
 
@@ -225,7 +252,7 @@ def test_widget_material_rejects_empty_submission(monkeypatch):
         app.state.llm = _stub_llm("got it")
         r = client.post(
             "/agent/widget/material",
-            json={"session_id": sid},
+            json={"session_id": sid, "mappings": []},
         )
         assert r.status_code == 422
 
@@ -257,21 +284,21 @@ def test_widget_classification_emits_done_event(monkeypatch):
     sid = "widget-cls-done"
     with TestClient(app) as client:
         app.state.llm = _stub_llm("ok")
-        # Pre-create a stream queue so we can inspect what got emitted.
         import asyncio
         app.state.agent_streams[sid] = asyncio.Queue(maxsize=64)
         r = client.post(
             "/agent/widget/classification",
             json={
                 "session_id": sid,
-                "preset__hair_001": "hair_short",
+                "confirmations": [
+                    {"chain_name": "hair_001", "inferred_type": "hair_short"},
+                ],
             },
         )
         assert r.status_code == 200
         events = _drain_queue(app.state.agent_streams[sid])
         types = [e.get("type") for e in events]
         assert "done" in types, f"expected `done` event among {types}"
-        # done must be the LAST event the consumer sees.
         assert types[-1] == "done"
 
 
@@ -292,7 +319,13 @@ def test_widget_material_emits_done_event(monkeypatch):
             "/agent/widget/material",
             json={
                 "session_id": sid,
-                "texmap__0__body_mat": "C:/tex/diff.png",
+                "mappings": [
+                    {
+                        "material": "body_mat",
+                        "slot": "Base Color",
+                        "texture_path": "C:/tex/diff.png",
+                    },
+                ],
             },
         )
         assert r.status_code == 200

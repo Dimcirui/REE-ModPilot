@@ -4,38 +4,35 @@ FastAPI application entry point.
 Debug endpoints (Stage 1):
   GET  /health              — liveness + Blender connectivity check; 503 if Blender unreachable
   GET  /scene_info          — proxy get_scene_info from Blender
-  GET  /viewport_screenshot — PNG bytes of the active 3D viewport (Stage 5 side-panel)
+  GET  /viewport_screenshot — PNG bytes of the active 3D viewport (side-panel)
   POST /exec                — execute arbitrary Python in Blender (DEBUG mode only)
 
 Agent endpoints:
   POST /agent/chat            — Stage 3 legacy; blocking JSON. Used by cli.py.
-  POST /agent/messages        — Stage 5; same JSON shape, but installs an event
-                                sink so SSE subscribers see live progress.
-  GET  /agent/stream/{sid}    — Stage 5; SSE stream of typed agent events.
+  POST /agent/messages        — installs an event sink so SSE subscribers see live progress.
+  GET  /agent/stream/{sid}    — SSE stream of typed agent events.
 
-Frontend (Stage 5):
-  GET  /            — renders the htmx chat shell with a fresh session_id.
+Frontend:
+  GET  /            — serves the React SPA (built by Vite to app/static_built/).
+  GET  /config      — serves the same SPA; React handles the client-side route.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import html
 import json
 import logging
-import uuid
 
 logger = logging.getLogger(__name__)
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from app.agent.loop import AgentLoop
@@ -48,20 +45,18 @@ from app.blender.preset_catalog import (
     enumerate_x_presets,
 )
 from app.config import settings
-from app.config_store import PERSISTED_FIELDS, apply_to_settings
+from app.config_store import apply_to_settings
 from app.config_store import load as load_persisted_config
 from app.config_store import save as save_persisted_config
 from app.llm.client import LLMClient
 from app.phases.base import X_PRESETS, update_x_presets
 from app.phases.material import PRINCIPLED_SLOTS
-from app.phases.physics_bones import list_inferred_types
 
 # ── paths ─────────────────────────────────────────────────────────────────
 
 _APP_DIR = Path(__file__).resolve().parent
 _PROJECT_DIR = _APP_DIR.parent  # ModPilot/
-_STATIC_DIR = _PROJECT_DIR / "static"
-_TEMPLATES_DIR = _APP_DIR / "templates"
+_STATIC_BUILT_DIR = _APP_DIR / "static_built"  # Vite build output
 
 
 # ── lifespan: manage shared BlenderClient + agent session/stream registries ──
@@ -133,8 +128,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
-templates = Jinja2Templates(directory=_TEMPLATES_DIR)
+# Vite emits hashed bundles to static_built/assets/. Mount that at /assets so
+# the SPA's <script src="/assets/index-{hash}.js"> resolves in prod.
+# In dev the Vite server (port 5173) serves these directly and proxies API
+# calls to FastAPI — the mount is a no-op until `pnpm build` lands files.
+_ASSETS_DIR = _STATIC_BUILT_DIR / "assets"
+if _ASSETS_DIR.is_dir():
+    app.mount("/assets", StaticFiles(directory=_ASSETS_DIR), name="spa_assets")
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -145,93 +145,6 @@ _BLENDER_HINT = (
 )
 
 _QUEUE_MAXSIZE = 256
-
-
-def _render_error_choice_html(session_id: str, category: str = "") -> str:
-    """Render the error-choice button fragment for a session.
-
-    Default: retry / skip / 查看详情 three-button group (issue #2).
-    When category == "unsupported_rig" (issue #6 0-match path), a fourth
-    [强制自定义] button is appended that sends `[FORCE_CUSTOM]` so the LLM
-    re-runs setup_infer_model_type with force_custom=true and proceeds
-    straight into the custom-preset build.
-
-    Returned HTML is shipped raw as the SSE data field so htmx's `sse-swap`
-    can drop it into #error-choice-slot directly. Each button posts the
-    matching keyword to /agent/messages (not /agent/chat) so the
-    retry/skip/ask turn keeps streaming via the session's sink.
-    """
-    sid = html.escape(session_id, quote=True)
-    # Removal of the .error-choice-group is handled by app.js on
-    # htmx:beforeRequest, NOT by inline onclick. Inline onclick removes the
-    # button before htmx fires configRequest, which makes htmx bail on the
-    # detached element and skips the optimistic-bubble path.
-    #
-    # hx-ext="json-enc" is set per-button rather than inherited from <body>
-    # because htmx 1.x's hx-ext inheritance walk doesn't reliably apply
-    # `encodeParameters` to dynamically-inserted (htmx.process'd) descendants
-    # — symptom: Content-Type header is correct but body stays form-urlencoded.
-    # The endpoint's Pydantic body expects JSON; mismatched encoding -> 422.
-    buttons = [
-        f'<button class="error-choice-btn retry" hx-ext="json-enc" hx-post="/agent/messages" '
-        f'hx-vals=\'{{"session_id":"{sid}","message":"重试"}}\' hx-swap="none">重试</button>',
-        f'<button class="error-choice-btn skip" hx-ext="json-enc" hx-post="/agent/messages" '
-        f'hx-vals=\'{{"session_id":"{sid}","message":"跳过"}}\' hx-swap="none">跳过</button>',
-        f'<button class="error-choice-btn ask" hx-ext="json-enc" hx-post="/agent/messages" '
-        f'hx-vals=\'{{"session_id":"{sid}","message":"查看详情"}}\' hx-swap="none">查看详情</button>',
-    ]
-    if category == "unsupported_rig":
-        # Issue #6: let the user force-custom past a 0-match unsupported_rig
-        # error. The LLM (per agent_workflow.md) recognizes the [FORCE_CUSTOM]
-        # prefix and re-runs setup_infer_model_type with force_custom=true.
-        buttons.append(
-            f'<button class="error-choice-btn force-custom" hx-ext="json-enc" '
-            f'hx-post="/agent/messages" '
-            f'hx-vals=\'{{"session_id":"{sid}","message":"[FORCE_CUSTOM] 强制自定义预设"}}\' '
-            f'hx-swap="none">强制自定义</button>'
-        )
-    return '<div class="error-choice-group" role="group">' + "".join(buttons) + '</div>'
-
-
-def _render_classification_widget_html(session_id: str, chains: list[dict]) -> str:
-    """Render the physics chain classification widget (issue #7).
-
-    Shipped over SSE as the raw `data:` field for `widget_classification`
-    events; htmx `sse-swap` drops it into `#widget-slot`. The embedded form
-    posts back to /agent/widget/classification which formats the user's
-    selections as a `[CONFIRMED_CLASSIFICATIONS]`-prefixed message and
-    feeds it through loop.step().
-    """
-    return templates.get_template("widgets/classification.html").render(
-        session_id=session_id,
-        chains=chains,
-        inferred_types=list_inferred_types(),
-    )
-
-
-def _render_material_widget_html(
-    session_id: str,
-    materials: list[str],
-    existing_connections: dict,
-    texture_files: list[str],
-    suggestions: dict | None = None,
-) -> str:
-    """Render the material slot→texture confirmation widget (issue #7).
-
-    `suggestions` (issue #11): optional {mat: {slot: file_path}} LLM pre-fill
-    consumed by the template to pre-select cells and tag them with the
-    `widget-suggested` chip. Falls back to `existing_connections` semantics
-    when missing.
-    """
-    return templates.get_template("widgets/material.html").render(
-        session_id=session_id,
-        materials=materials,
-        existing_connections=existing_connections,
-        texture_files=texture_files,
-        slot_names=PRINCIPLED_SLOTS,
-        suggestions=suggestions or {},
-        tex_basename=lambda p: Path(p).name,
-    )
 
 
 def _get_client() -> BlenderClient:
@@ -396,21 +309,28 @@ def _get_or_create_session(session_id: str, *, with_sink: bool) -> AgentLoop:
 # ── routes ─────────────────────────────────────────────────────────────────
 
 
-@app.get("/")
-async def index(request: Request):
-    """Render the chat shell with a fresh session_id (uuid4).
+def _serve_spa() -> Response:
+    """Return the Vite-built index.html, or 503 with a build hint if missing."""
+    index_html = _STATIC_BUILT_DIR / "index.html"
+    if not index_html.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Frontend bundle not built. "
+                "Run `cd frontend && pnpm install && pnpm build` first, "
+                "or use the Vite dev server at http://localhost:5173 with "
+                "this backend as its proxy target."
+            ),
+        )
+    return FileResponse(index_html)
 
-    Issue #9: redirect first-run users (no llm_api_key configured) to /config
-    so they can fill provider / key / model before the chat shell loads.
-    """
+
+@app.get("/")
+async def index():
+    """Serve the React SPA. First-run users (no llm_api_key) hop to /config."""
     if not _is_llm_configured():
         return RedirectResponse(url="/config", status_code=307)
-    session_id = uuid.uuid4().hex[:12]
-    return templates.TemplateResponse(
-        request,
-        "chat.html",
-        {"session_id": session_id},
-    )
+    return _serve_spa()
 
 
 @app.get("/health")
@@ -702,67 +622,72 @@ async def get_armor_sets() -> JSONResponse:
 # ── /agent/widget (Stage 5 issue #7) ───────────────────────────────────────
 
 
-class WidgetSubmission(BaseModel):
-    """Shared base for widget submissions.
+class ClassificationConfirmation(BaseModel):
+    """One row of the Phase 4A physics-classification widget.
 
-    Both physics-classification and material-mapping forms post flat dotted
-    keys (e.g. `type__hair_001`, `texmap__0__hair_mat`) alongside session_id.
-    Pydantic v2's `extra="allow"` exposes them via model_extra.
+    `chain_name` matches the head bone surfaced by `physics_classification`.
+    `inferred_type` is either an LLM-suggested preset or a user override;
+    the empty string marks "skipped, leave for the LLM to handle later".
+    `description` is an optional free-text override of the auto-classifier's
+    guessed nature. `merge_to_parent` requests bone consolidation before
+    `physics_chains` runs.
     """
 
-    model_config = ConfigDict(extra="allow")
+    chain_name: str
+    inferred_type: str = ""
+    description: str = ""
+    merge_to_parent: bool = False
+
+
+class ClassificationWidgetSubmit(BaseModel):
     session_id: str
+    confirmations: list[ClassificationConfirmation]
 
 
-def _normalize_value(v: Any) -> str:
-    """json-enc may serialize selects as nested arrays for repeated names."""
-    if isinstance(v, list):
-        return str(v[-1]) if v else ""
-    return str(v)
+class MaterialSlotMapping(BaseModel):
+    """One Principled-BSDF slot assignment from the Phase 5 widget."""
+
+    material: str
+    slot: str  # must be in PRINCIPLED_SLOTS
+    texture_path: str  # empty → drop
+
+
+class MaterialWidgetSubmit(BaseModel):
+    session_id: str
+    mappings: list[MaterialSlotMapping]
 
 
 @app.post("/agent/widget/classification")
-async def submit_classification_widget(body: WidgetSubmission) -> JSONResponse:
+async def submit_classification_widget(body: ClassificationWidgetSubmit) -> JSONResponse:
     """
     Receive user confirmations from the Phase 4A classification widget.
 
-    Form posts one `type__<chain_name>` field per chain head. We collect them
-    into a {chain_name: inferred_type} dict, JSON-encode it under a
-    `[CONFIRMED_CLASSIFICATIONS]` prefix, and feed it to loop.step() so the
-    LLM can call physics_chains with chain_classifications directly.
+    `confirmations` is a flat array — the FE owns the per-chain UI shape and
+    only sends rows with concrete decisions. We re-pack into a
+    `[CONFIRMED_CLASSIFICATIONS]`-prefixed JSON payload that loop.step()
+    consumes per the system-prompt protocol.
     """
-    extras = body.model_extra or {}
-    preset_candidates: dict[str, str] = {}
-    type_overrides: dict[str, str] = {}
+    inferred_types: dict[str, str] = {}
     descriptions: dict[str, str] = {}
     merges: list[str] = []
-    for k, v in extras.items():
-        if k.startswith("preset__"):
-            chain = k[len("preset__"):]
-            value = _normalize_value(v).strip()
-            if value:
-                preset_candidates[chain] = value
-        elif k.startswith("type__"):
-            chain = k[len("type__"):]
-            value = _normalize_value(v).strip()
-            if value:
-                type_overrides[chain] = value
-        elif k.startswith("desc__"):
-            chain = k[len("desc__"):]
-            value = _normalize_value(v).strip()
-            if value:
-                descriptions[chain] = value
-        elif k.startswith("merge__"):
-            chain = k[len("merge__"):]
-            # json-enc sends checked checkboxes as boolean true
-            if v is True or (isinstance(v, str) and v.lower() in ("true", "on", "1", "yes")):
-                merges.append(chain)
-    # type__ (explicit override) wins over preset__ (agent accept) for the same chain
-    inferred_types = {**preset_candidates, **type_overrides}
+    for c in body.confirmations:
+        chain = c.chain_name.strip()
+        if not chain:
+            continue
+        if c.inferred_type.strip():
+            inferred_types[chain] = c.inferred_type.strip()
+        if c.description.strip():
+            descriptions[chain] = c.description.strip()
+        if c.merge_to_parent:
+            merges.append(chain)
     if not inferred_types:
         raise HTTPException(status_code=422, detail="No classification rows submitted.")
 
-    data = {"inferred_types": inferred_types, "descriptions": descriptions, "bones_to_merge": merges}
+    data = {
+        "inferred_types": inferred_types,
+        "descriptions": descriptions,
+        "bones_to_merge": merges,
+    }
     formatted = "[CONFIRMED_CLASSIFICATIONS] " + json.dumps(data, ensure_ascii=False)
     loop = _get_or_create_session(body.session_id, with_sink=True)
     await _run_step_with_done_emit(loop, body.session_id, formatted)
@@ -770,32 +695,26 @@ async def submit_classification_widget(body: WidgetSubmission) -> JSONResponse:
 
 
 @app.post("/agent/widget/material")
-async def submit_material_widget(body: WidgetSubmission) -> JSONResponse:
+async def submit_material_widget(body: MaterialWidgetSubmit) -> JSONResponse:
     """
     Receive user confirmations from the Phase 5 material mapping widget.
 
-    Form posts one `texmap__<slot_idx>__<mat_name>` field per slot per
-    material. slot_idx indexes into PRINCIPLED_SLOTS. Empty values mean
-    "skip this slot". The result is shaped to match MaterialSetup's
-    texture_mapping param ({mat: {slot: path}}).
+    `mappings` is a flat list of (material, slot, texture_path). Unknown
+    slots and empty texture paths are dropped silently — the FE may emit
+    placeholder rows for slots the user opted out of, and we don't want
+    those to 422 the whole submission.
     """
-    extras = body.model_extra or {}
+    valid_slots = set(PRINCIPLED_SLOTS)
     mapping: dict[str, dict[str, str]] = {}
-    for k, v in extras.items():
-        if not k.startswith("texmap__"):
+    for m in body.mappings:
+        slot = m.slot
+        path = m.texture_path.strip()
+        if not path or slot not in valid_slots:
             continue
-        try:
-            _, slot_idx_str, mat_name = k.split("__", 2)
-            slot_idx = int(slot_idx_str)
-        except (ValueError, IndexError):
+        mat = m.material.strip()
+        if not mat:
             continue
-        if slot_idx < 0 or slot_idx >= len(PRINCIPLED_SLOTS):
-            continue
-        value = _normalize_value(v).strip()
-        if not value:
-            continue
-        slot_name = PRINCIPLED_SLOTS[slot_idx]
-        mapping.setdefault(mat_name, {})[slot_name] = value
+        mapping.setdefault(mat, {})[slot] = path
     if not mapping:
         raise HTTPException(status_code=422, detail="No material slots submitted.")
 
@@ -903,13 +822,10 @@ async def post_app_config(body: AppConfigUpdate) -> JSONResponse:
 
 
 @app.get("/config")
-async def config_page(request: Request):
-    """Render the global-config form page."""
-    return templates.TemplateResponse(
-        request,
-        "config.html",
-        {"persisted_fields": list(PERSISTED_FIELDS)},
-    )
+async def config_page():
+    """Serve the same SPA — the React app's client-side router renders the
+    settings page when the pathname is /config."""
+    return _serve_spa()
 
 
 @app.get("/agent/stream/{session_id}")
@@ -939,6 +855,9 @@ async def agent_stream(session_id: str, request: Request):
         existing_loop.emit_phase_sync()
 
     async def event_generator():
+        # Every event ships as JSON now — the FE owns rendering of widgets
+        # and error-choice buttons. (Legacy htmx fragments removed in the
+        # React migration.)
         while True:
             if await request.is_disconnected():
                 break
@@ -946,28 +865,7 @@ async def agent_stream(session_id: str, request: Request):
                 evt = await asyncio.wait_for(queue.get(), timeout=1.0)
             except TimeoutError:
                 continue
-            if evt["type"] == "error_choice":
-                # Ship raw HTML for htmx sse-swap to drop into #error-choice-slot.
-                # Issue #6: when the error came from setup_infer_model_type's
-                # 0-match path, the renderer adds the [Force Custom] button.
-                data = _render_error_choice_html(
-                    session_id, category=evt.get("category", "")
-                )
-            elif evt["type"] == "widget_classification":
-                data = _render_classification_widget_html(
-                    session_id, evt.get("chains", [])
-                )
-            elif evt["type"] == "widget_material":
-                data = _render_material_widget_html(
-                    session_id,
-                    evt.get("materials", []),
-                    evt.get("existing_connections", {}),
-                    evt.get("texture_files", []),
-                    evt.get("suggestions", {}),
-                )
-            else:
-                data = json.dumps(evt, ensure_ascii=False)
-            yield {"event": evt["type"], "data": data}
+            yield {"event": evt["type"], "data": json.dumps(evt, ensure_ascii=False)}
 
     return EventSourceResponse(event_generator(), ping=15)
 

@@ -1,0 +1,27 @@
+.stage {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  height: 100%;
+  min-height: 0;
+}
+
+.leftColumn {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.widgetArea {
+  padding: 0 1rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+@media (max-width: 900px) {
+  .stage {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 240px;
+  }
+}

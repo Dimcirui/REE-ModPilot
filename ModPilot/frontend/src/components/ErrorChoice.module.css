@@ -1,0 +1,59 @@
+.group {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 1rem;
+  background: var(--bg-elev);
+  border-top: 1px solid var(--border);
+}
+
+.button {
+  padding: 0.4rem 0.85rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  color: var(--fg);
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.button:hover {
+  background: var(--bg-soft);
+}
+
+.retry {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.retry:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.skip {
+  border-color: var(--warning);
+  color: var(--warning);
+}
+.skip:hover {
+  background: var(--warning);
+  color: #fff;
+}
+
+.ask {
+  border-color: var(--fg-muted);
+  color: var(--fg-muted);
+}
+.ask:hover {
+  background: var(--fg-muted);
+  color: #fff;
+}
+
+.force-custom {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.force-custom:hover {
+  background: var(--danger);
+  color: #fff;
+}

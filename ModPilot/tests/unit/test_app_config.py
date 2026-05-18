@@ -263,19 +263,42 @@ def test_root_redirects_to_config_when_unconfigured(monkeypatch, tmp_path):
 
 @pytest.mark.unit
 @pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
-def test_root_renders_chat_when_configured(monkeypatch, tmp_path):
-    """The redirect only fires for first-run users; configured users land
-    on the chat shell as before."""
+def test_root_serves_spa_when_configured_and_built(monkeypatch, tmp_path):
+    """The redirect only fires for first-run users; configured users get the
+    Vite-built index.html. When the build is missing we 503 with a build
+    hint so dev users know to run `pnpm build`."""
     _redirect_home(monkeypatch, tmp_path)
     _patch_blender(monkeypatch)
     _patch_llm_factory(monkeypatch)
     from app.config import settings as runtime_settings
     from app.main import app
+    from app import main as main_module
 
     runtime_settings.llm_api_key = "sk-configured"
+
+    # Build-missing path: 503 with the build-hint detail.
+    with TestClient(app) as client:
+        r = client.get("/")
+        if not main_module._STATIC_BUILT_DIR.joinpath("index.html").is_file():
+            assert r.status_code == 503
+            assert "pnpm build" in r.json()["detail"]
+        else:
+            # A real build is present — verify it serves index.html.
+            assert r.status_code == 200
+            assert "<!doctype html>" in r.text.lower()
+
+    # Synthesize a build by writing a tiny index.html into a tmp dir and
+    # pointing _STATIC_BUILT_DIR at it. This exercises the served-SPA path
+    # without needing a real Vite run.
+    fake_build = tmp_path / "static_built"
+    fake_build.mkdir()
+    (fake_build / "index.html").write_text(
+        "<!doctype html><html><body><div id='root'></div></body></html>",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(main_module, "_STATIC_BUILT_DIR", fake_build)
     with TestClient(app) as client:
         r = client.get("/")
         assert r.status_code == 200
-        assert "<!DOCTYPE html>" in r.text.lower() or "<!doctype html>" in r.text.lower()
-        # session_id is rendered into the chat shell
-        assert "data-session-id" in r.text
+        assert "<!doctype html>" in r.text.lower()
+        assert "id='root'" in r.text or 'id="root"' in r.text
