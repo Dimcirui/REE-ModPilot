@@ -19,8 +19,178 @@ from app.blender.state import SceneCache
 from app.phases.base import PhaseError, PhaseResult, PhaseTool
 
 _OP_IMPORT = "mbt.import_mhwilds_fmesh"
+_OP_FBX_IMPORT = "bpy.ops.import_scene.fbx"
 _MHWILDS_COLLECTION = "MHWilds_Female.mesh"
 _MHWILDS_ARMATURE = "MHWilds_Female Armature"
+
+
+class SetupImportSource(PhaseTool):
+    """
+    Import the user's source FBX (MMD / VRC rig) into the Blender scene.
+
+    Runs BEFORE setup_validate_scene so the agent can drive the full pipeline
+    starting from an empty Blender scene. Idempotent: if the scene already has
+    a source armature (outside the MHWilds_Female.mesh collection), reports
+    'already_imported' and does nothing — the user may have done File→Import
+    themselves before chatting with the agent.
+
+    FBX-only by design (issue: ds tool pool expansion). MMD and VRC source rigs
+    are essentially always FBX; supporting more formats would expand the test
+    surface without matching real workflows.
+    """
+
+    @property
+    def name(self) -> str:
+        return "setup_import_source"
+
+    @classmethod
+    def tool_schema(cls) -> dict[str, Any]:
+        return {
+            "name": "setup_import_source",
+            "description": (
+                "Setup step 0: import the user's source FBX into the Blender scene. "
+                "ALWAYS call this FIRST on any new session — it is idempotent, so if "
+                "a source armature is already present (outside the MHWilds_Female.mesh "
+                "collection) the tool reports 'already_imported' without re-importing. "
+                "Pass the session config's `model_path` as `file_path` "
+                "(see Pre-collected parameters in the system prompt). FBX-only."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": (
+                            "Absolute path to the source .fbx file. Typically the "
+                            "session config's `model_path` shown in the system prompt."
+                        ),
+                    },
+                },
+                "required": ["file_path"],
+            },
+        }
+
+    def run(self, client: BlenderClient, cache: SceneCache, params: dict) -> PhaseResult:
+        file_path = (params.get("file_path") or "").strip()
+        if not file_path:
+            return PhaseResult.fail(PhaseError(
+                category="precondition",
+                operator="setup_import_source",
+                message="Missing file_path parameter. Pass the session config's model_path.",
+            ))
+        if not file_path.lower().endswith(".fbx"):
+            return PhaseResult.fail(PhaseError(
+                category="precondition",
+                operator="setup_import_source",
+                message=(
+                    f"file_path must point to a .fbx file (got {file_path!r}). "
+                    "This tool is FBX-only."
+                ),
+                suggestion="Export your source rig as FBX from MMD / VRC tools.",
+            ))
+
+        # Detect existing source rig before importing — the user may have done
+        # File→Import themselves. Skip the operator in that case so re-running
+        # the agent from a half-set-up scene doesn't duplicate the armature.
+        code = (
+            "import bpy, os, json\n"
+            f"_SEN = {BLENDER_SENTINEL!r}\n"
+            f"_MHWILDS = {_MHWILDS_COLLECTION!r}\n"
+            f"_PATH = {file_path!r}\n"
+            "mhwilds_col = bpy.data.collections.get(_MHWILDS)\n"
+            "excluded = set()\n"
+            "if mhwilds_col:\n"
+            "    for _o in mhwilds_col.all_objects: excluded.add(_o.name)\n"
+            "src_arms = [o for o in bpy.context.scene.objects "
+            "if o.type == 'ARMATURE' and o.name not in excluded]\n"
+            "if src_arms:\n"
+            "    print(_SEN)\n"
+            "    print(json.dumps({'status': 'already_imported', "
+            "'source_armature': src_arms[0].name}))\n"
+            "elif not os.path.isfile(_PATH):\n"
+            "    print(_SEN)\n"
+            "    print(json.dumps({'status': 'file_not_found', 'file_path': _PATH}))\n"
+            "else:\n"
+            "    before = {o.name for o in bpy.data.objects}\n"
+            "    if bpy.context.mode != 'OBJECT':\n"
+            "        bpy.ops.object.mode_set(mode='OBJECT')\n"
+            "    ret = bpy.ops.import_scene.fbx(filepath=_PATH)\n"
+            "    ok = 'FINISHED' in str(ret)\n"
+            "    after = {o.name for o in bpy.data.objects}\n"
+            "    added = sorted(after - before)\n"
+            "    new_arms = [n for n in added "
+            "if bpy.data.objects[n].type == 'ARMATURE']\n"
+            "    src = new_arms[0] if new_arms else None\n"
+            "    print(_SEN)\n"
+            "    print(json.dumps({\n"
+            "        'status': 'imported' if ok else 'cancelled',\n"
+            "        'operator_result': str(ret),\n"
+            "        'imported_objects': added,\n"
+            "        'source_armature': src,\n"
+            "    }))\n"
+        )
+
+        try:
+            lines = client.execute_and_extract(code)
+        except BlenderError as exc:
+            return PhaseResult.fail(PhaseError(
+                category="unexpected",
+                operator=_OP_FBX_IMPORT,
+                message="Blender error during source FBX import.",
+                raw=str(exc),
+            ))
+        except OSError as exc:
+            return PhaseResult.fail(PhaseError(
+                category="timeout",
+                operator=_OP_FBX_IMPORT,
+                message="Lost connection to Blender during source FBX import.",
+                raw=str(exc),
+            ))
+
+        if not lines:
+            return PhaseResult.fail(PhaseError(
+                category="unexpected",
+                operator=_OP_FBX_IMPORT,
+                message="Blender returned no output from source FBX import.",
+            ))
+
+        try:
+            result = json.loads(lines[0])
+        except json.JSONDecodeError:
+            return PhaseResult.fail(PhaseError(
+                category="unexpected",
+                operator=_OP_FBX_IMPORT,
+                message=f"Unparseable import output: {lines[0]!r}",
+            ))
+
+        status = result.get("status")
+        if status == "file_not_found":
+            return PhaseResult.fail(PhaseError(
+                category="precondition",
+                operator="setup_import_source",
+                message=f"Source FBX not found at {result.get('file_path')!r}.",
+                suggestion=(
+                    "Verify the model_path on the session config form. "
+                    "Use an absolute path; relative paths resolve against Blender's CWD."
+                ),
+            ))
+        if status == "cancelled":
+            return PhaseResult.fail(PhaseError(
+                category="operator_failed",
+                operator=_OP_FBX_IMPORT,
+                message="Source FBX import was cancelled by Blender.",
+                suggestion="Check Blender's Info editor for the FBX importer's error message.",
+                raw=result.get("operator_result", ""),
+            ))
+
+        # 'imported' or 'already_imported' — both are success
+        diff: dict[str, Any] = {
+            "import_status": status,
+            "source_armature": result.get("source_armature"),
+        }
+        if status == "imported":
+            diff["imported_objects"] = result.get("imported_objects", [])
+        return PhaseResult.ok(diff)
 
 
 class SetupValidateScene(PhaseTool):
@@ -43,7 +213,7 @@ class SetupValidateScene(PhaseTool):
                 "Setup step 1: validate the Blender scene contains exactly one source model "
                 "(one ARMATURE with MESH children, no stray objects), excluding the "
                 "MHWilds_Female.mesh collection if already present. "
-                "Call this first on any session start. "
+                "Call AFTER setup_import_source has reported success. "
                 "Report the result to the user and wait for confirmation before calling "
                 "setup_import_mhwilds."
             ),

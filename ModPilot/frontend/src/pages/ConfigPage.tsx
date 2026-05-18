@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { LLM_PROVIDERS, type LlmProvider } from '@/types/domain';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 import styles from './ConfigPage.module.css';
 
 interface ConfigFormState {
@@ -26,6 +26,18 @@ const PROVIDER_LABELS: Record<LlmProvider, string> = {
   anthropic: 'Anthropic (Claude)',
   ollama: 'Ollama (Cloud or local daemon)',
 };
+
+// Known-good (model, base_url) per provider. Mirrors the server-side guardrail
+// in app/main.py (_validate_provider_model_combo): if you change a default
+// here, make sure the same combination still passes the backend check.
+const PROVIDER_DEFAULTS: Record<LlmProvider, { llm_model: string; llm_base_url: string }> = {
+  openai_compatible: { llm_model: 'deepseek-chat', llm_base_url: 'https://api.deepseek.com/v1' },
+  anthropic:         { llm_model: 'claude-sonnet-4-5', llm_base_url: '' },
+  ollama:            { llm_model: 'deepseek-v4-flash', llm_base_url: '' },
+};
+
+const _ALL_DEFAULT_MODELS = new Set(Object.values(PROVIDER_DEFAULTS).map((d) => d.llm_model));
+const _ALL_DEFAULT_BASE_URLS = new Set(Object.values(PROVIDER_DEFAULTS).map((d) => d.llm_base_url));
 
 export default function ConfigPage() {
   const [form, setForm] = useState<ConfigFormState>(DEFAULTS);
@@ -62,6 +74,26 @@ export default function ConfigPage() {
     setForm((prev) => ({ ...prev, [key]: value }));
   };
 
+  // Provider-aware reset: when the user switches Provider, swap Model + Base URL
+  // to the new provider's defaults — but ONLY if the current values are
+  // recognized defaults (or empty). A custom model the user typed manually is
+  // preserved. Without this, the stale model from the previous provider gets
+  // saved and the agent loop 404s at runtime (regression-protected by the
+  // backend guardrail, but the UI swap avoids the 422 round-trip).
+  const handleProviderChange = (next: LlmProvider) => {
+    setForm((prev) => {
+      const defaults = PROVIDER_DEFAULTS[next];
+      const modelIsDefault = prev.llm_model === '' || _ALL_DEFAULT_MODELS.has(prev.llm_model);
+      const baseUrlIsDefault = _ALL_DEFAULT_BASE_URLS.has(prev.llm_base_url);
+      return {
+        ...prev,
+        llm_provider: next,
+        llm_model: modelIsDefault ? defaults.llm_model : prev.llm_model,
+        llm_base_url: baseUrlIsDefault ? defaults.llm_base_url : prev.llm_base_url,
+      };
+    });
+  };
+
   const handleSubmit = async (ev: FormEvent<HTMLFormElement>) => {
     ev.preventDefault();
     setSaveState({ kind: 'saving' });
@@ -78,6 +110,16 @@ export default function ConfigPage() {
       setSaveState({ kind: 'ok', message: `Saved.${tail}` });
       if (form.llm_api_key) setHasKey(true);
     } catch (err) {
+      // 422 with field_errors → surface the specific message (e.g. the
+      // provider/model guardrail in app/main.py) instead of a generic
+      // "POST failed: 422".
+      if (err instanceof ApiError && err.status === 422) {
+        const body = err.body as { detail?: { field_errors?: Record<string, string> } } | null;
+        const fe = body?.detail?.field_errors;
+        const first = fe ? Object.values(fe)[0] : undefined;
+        setSaveState({ kind: 'error', message: first ?? err.message });
+        return;
+      }
       setSaveState({
         kind: 'error',
         message: err instanceof Error ? err.message : 'Save failed',
@@ -107,7 +149,7 @@ export default function ConfigPage() {
                 <span>Provider</span>
                 <select
                   value={form.llm_provider}
-                  onChange={(e) => setField('llm_provider', e.target.value as LlmProvider)}
+                  onChange={(e) => handleProviderChange(e.target.value as LlmProvider)}
                   required
                 >
                   {LLM_PROVIDERS.map((p) => (

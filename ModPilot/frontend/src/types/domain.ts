@@ -7,6 +7,7 @@
 //   - LLM_PROVIDERS:  app/main.py:AppConfigUpdate.llm_provider Literal
 
 export const PHASE_SEQUENCE = [
+  'setup_import_source',
   'setup_validate',
   'setup_infer',
   'setup_import',
@@ -23,6 +24,7 @@ export type PhaseName = (typeof PHASE_SEQUENCE)[number];
 
 // Phase labels for the stepper component (short = chip text, long = title attr).
 export const PHASE_LABELS: Record<PhaseName, { short: string; long: string }> = {
+  setup_import_source: { short: 'IS', long: 'setup_import_source (FBX)' },
   setup_validate: { short: 'SV', long: 'setup_validate' },
   setup_infer: { short: 'SI', long: 'setup_infer' },
   setup_import: { short: 'IM', long: 'setup_import' },

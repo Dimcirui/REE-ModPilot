@@ -239,6 +239,133 @@ def test_post_app_config_empty_api_key_preserves_existing(monkeypatch, tmp_path)
         assert persisted["llm_model"] == "deepseek-reasoner"
 
 
+# ── provider/model guardrail (matching UI presets) ────────────────────────
+#
+# The /config UI now prefills known-good (model, base_url) per provider, but
+# nothing stops a caller from POSTing a mismatched combo (model from one
+# provider while llm_provider is another). Catch the obvious traps server-side
+# so a stale persisted config can't 404 the agent loop the way it did before.
+
+
+def _post_config_payload(**overrides) -> dict:
+    base = {
+        "llm_provider": "openai_compatible",
+        "llm_api_key": "sk-test",
+        "llm_model": "deepseek-chat",
+        "llm_base_url": "https://api.deepseek.com/v1",
+        "blender_host": "127.0.0.1",
+        "blender_port": 9876,
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
+@pytest.mark.parametrize(
+    "bad_model",
+    ["deepseek-chat", "claude-sonnet-4-5", "gpt-4o"],
+)
+def test_post_app_config_rejects_ollama_with_foreign_model(monkeypatch, tmp_path, bad_model):
+    """Ollama Cloud doesn't serve deepseek-chat / Claude / GPT — guardrail
+    must return 422 with a field error pointing at llm_model so the UI can
+    pin the message to the right input."""
+    _redirect_home(monkeypatch, tmp_path)
+    _patch_blender(monkeypatch)
+    _patch_llm_factory(monkeypatch)
+    from app.main import app
+
+    with TestClient(app) as client:
+        r = client.post("/app/config", json=_post_config_payload(
+            llm_provider="ollama",
+            llm_model=bad_model,
+            llm_base_url="",
+        ))
+        assert r.status_code == 422, r.text
+        body = r.json()
+        assert "field_errors" in body["detail"]
+        assert "llm_model" in body["detail"]["field_errors"]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
+def test_post_app_config_accepts_ollama_with_native_model(monkeypatch, tmp_path):
+    """Ollama with a real Ollama Cloud model (no foreign prefix) saves cleanly."""
+    _redirect_home(monkeypatch, tmp_path)
+    _patch_blender(monkeypatch)
+    _patch_llm_factory(monkeypatch)
+    from app.main import app
+
+    with TestClient(app) as client:
+        r = client.post("/app/config", json=_post_config_payload(
+            llm_provider="ollama",
+            llm_model="deepseek-v4-flash",
+            llm_base_url="",
+        ))
+        assert r.status_code == 200, r.text
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
+def test_post_app_config_rejects_anthropic_with_non_claude_model(monkeypatch, tmp_path):
+    """Anthropic endpoint only serves Claude variants — reject anything else."""
+    _redirect_home(monkeypatch, tmp_path)
+    _patch_blender(monkeypatch)
+    _patch_llm_factory(monkeypatch)
+    from app.main import app
+
+    with TestClient(app) as client:
+        r = client.post("/app/config", json=_post_config_payload(
+            llm_provider="anthropic",
+            llm_model="deepseek-chat",
+            llm_base_url="",
+        ))
+        assert r.status_code == 422, r.text
+        assert "llm_model" in r.json()["detail"]["field_errors"]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
+def test_post_app_config_accepts_anthropic_with_claude_model(monkeypatch, tmp_path):
+    _redirect_home(monkeypatch, tmp_path)
+    _patch_blender(monkeypatch)
+    _patch_llm_factory(monkeypatch)
+    from app.main import app
+
+    with TestClient(app) as client:
+        r = client.post("/app/config", json=_post_config_payload(
+            llm_provider="anthropic",
+            llm_model="claude-sonnet-4-5",
+            llm_base_url="",
+        ))
+        assert r.status_code == 200, r.text
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
+@pytest.mark.parametrize(
+    "any_model",
+    ["deepseek-chat", "qwen-max", "glm-4-plus", "some-future-model-name"],
+)
+def test_post_app_config_accepts_openai_compatible_with_any_model(monkeypatch, tmp_path, any_model):
+    """openai_compatible is an open universe (DeepSeek, Qwen, ZhipuAI, Mistral, …).
+    Any model id is accepted — only the wire format is constrained."""
+    _redirect_home(monkeypatch, tmp_path)
+    _patch_blender(monkeypatch)
+    _patch_llm_factory(monkeypatch)
+    from app.main import app
+
+    with TestClient(app) as client:
+        r = client.post("/app/config", json=_post_config_payload(
+            llm_provider="openai_compatible",
+            llm_model=any_model,
+        ))
+        assert r.status_code == 200, r.text
+
+
+# ── existing tests ─────────────────────────────────────────────────────────
+
+
 @pytest.mark.unit
 @pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
 def test_root_redirects_to_config_when_unconfigured(monkeypatch, tmp_path):

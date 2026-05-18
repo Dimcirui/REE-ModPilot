@@ -255,7 +255,7 @@ async def test_phase_failure_emits_error_choice_event():
     assert evt["summary"] == "No armature named 'Body' in scene"
     assert "ts" in evt and isinstance(evt["ts"], float)
     assert evt["state"] == "error_handling"
-    assert evt["phase"] == "setup_validate"  # phase_idx hasn't advanced
+    assert evt["phase"] == "setup_import_source"  # phase_idx hasn't advanced (first phase)
 
     # Ordering: error_choice comes after the failure tool_result and after state(error_handling)
     types = _types(events)

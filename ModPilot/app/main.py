@@ -754,6 +754,49 @@ async def submit_material_widget(body: MaterialWidgetSubmit) -> JSONResponse:
 _API_KEY_MASK = "***"
 
 
+# Reject the most common copy-paste-from-wrong-provider traps. The /config UI
+# prefills sensible per-provider defaults, but a stale persisted config (or a
+# direct API caller) can still produce a mismatched combo that 404s on every
+# request. Catch those at save time with a 422 instead of letting the agent
+# loop blow up at runtime.
+_OPENAI_FAMILY_MODELS: frozenset[str] = frozenset({
+    "deepseek-chat", "deepseek-reasoner", "deepseek-v3", "deepseek-v3.1",
+})
+
+
+def _validate_provider_model_combo(provider: str, model: str) -> str | None:
+    """Return an error message when (provider, model) is an obvious mismatch.
+
+    Conservative: only flag combinations that are certain to fail (model
+    families that physically don't exist on the chosen provider). The
+    open-universe `openai_compatible` route accepts any string — we can't
+    enumerate every Qwen / GLM / Mistral / DeepSeek variant.
+    """
+    if provider == "ollama":
+        if model in _OPENAI_FAMILY_MODELS:
+            return (
+                f"Model {model!r} is served via OpenAI-compatible APIs (e.g. DeepSeek), "
+                "not Ollama Cloud. Pick an Ollama model like `deepseek-v4-flash` or "
+                "switch Provider to `OpenAI-compatible`."
+            )
+        if model.startswith("claude-"):
+            return (
+                f"Claude models like {model!r} run on the Anthropic API, not Ollama. "
+                "Switch Provider to `Anthropic`."
+            )
+        if model.startswith("gpt-"):
+            return (
+                f"GPT models like {model!r} run on OpenAI's API, not Ollama. "
+                "Switch Provider to `OpenAI-compatible` and set Base URL accordingly."
+            )
+    elif provider == "anthropic" and not model.startswith("claude"):
+        return (
+            f"Anthropic endpoint only serves Claude models — {model!r} is not one. "
+            "Pick `claude-sonnet-4-5` (or similar) or switch Provider."
+        )
+    return None
+
+
 class AppConfigUpdate(BaseModel):
     """Subset of app.config.Settings editable from the /config UI.
 
@@ -824,6 +867,14 @@ async def post_app_config(body: AppConfigUpdate) -> JSONResponse:
     Other empty strings overwrite normally (e.g. clearing llm_base_url).
     """
     incoming = body.model_dump()
+
+    err = _validate_provider_model_combo(body.llm_provider, body.llm_model)
+    if err is not None:
+        raise HTTPException(
+            status_code=422,
+            detail={"field_errors": {"llm_model": err}},
+        )
+
     if not incoming.get("llm_api_key"):
         # Preserve the existing key. Drop the empty value before persisting
         # so we don't accidentally clobber a previously-saved key.

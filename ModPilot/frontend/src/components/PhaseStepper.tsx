@@ -8,6 +8,7 @@ interface PhaseStepperProps {
 }
 
 const PHASE_GROUP: Record<PhaseName, string> = {
+  setup_import_source: 'setup',
   setup_validate: 'setup',
   setup_infer: 'setup',
   setup_import: 'setup',

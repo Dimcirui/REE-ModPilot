@@ -175,6 +175,7 @@ from app.phases.query_tools import QueryTool
 # ── constants ──────────────────────────────────────────────────────────────
 
 _PHASE_SEQUENCE: list[str] = [
+    "setup_import_source",  # SetupImportSource — FBX import from session.model_path
     "setup_validate",   # SetupValidateScene
     "setup_infer",      # InferModelType (issue #4 — auto-detect source model preset)
     "setup_import",     # SetupImportMHWilds
@@ -1532,12 +1533,13 @@ class AgentLoop:
         )
         from app.phases.infer_model_type import InferModelType
         from app.phases.preset_write import PresetCustomWrite, PresetSupplementWrite
-        from app.phases.setup import SetupImportMHWilds, SetupValidateScene
+        from app.phases.setup import SetupImportMHWilds, SetupImportSource, SetupValidateScene
         from app.phases.skeleton_align import SkeletonAlign
         from app.phases.vertex_groups import VertexGroups
 
         for tool in (
             # Phase tools (advance _phase_idx on success)
+            SetupImportSource(),
             SetupValidateScene(),
             InferModelType(),
             PresetSupplementWrite(),  # issue #5 — write _extended.json after user confirm
