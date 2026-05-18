@@ -240,6 +240,99 @@ def test_force_custom_overrides_exact(preset_dir: Path, cache: SceneCache) -> No
     assert result.state_diff["decision"] == "custom"
 
 
+# ── forced_preset user-override (restores session_config.model_type meaning) ──
+#
+# When the user picks a specific preset on the session config form (anything
+# other than "Auto-detect"), the agent should pass it as `forced_preset` and
+# this tool should short-circuit — skip the bone-read + coverage scoring
+# entirely and report the user's pick as the winner with decision="user_specified".
+
+
+def _build_client_skip_bones(preset_dir: Path) -> MagicMock:
+    """Mock that ONLY answers the discover_preset_dir call — asserts the tool
+    never asks for the bone list (because forced_preset skips that step)."""
+    client = MagicMock()
+    client.execute_and_extract.side_effect = [[str(preset_dir)]]
+    return client
+
+
+@pytest.mark.unit
+def test_forced_preset_short_circuits_inference(preset_dir: Path, cache: SceneCache) -> None:
+    """User-specified preset on the form → skip bone scan + coverage scoring."""
+    client = _build_client_skip_bones(preset_dir)
+    result = InferModelType().run(
+        client, cache,
+        {"source_armature": "MyRig", "forced_preset": "FullMatch"},
+    )
+    assert result.success
+    diff = result.state_diff
+    assert diff["inferred_preset"] == "FullMatch"
+    assert diff["decision"] == "user_specified"
+    assert diff["coverage"] == 1.0  # trust the user's pick
+
+
+@pytest.mark.unit
+def test_forced_preset_unknown_preset_falls_back_to_inference(
+    preset_dir: Path, cache: SceneCache
+) -> None:
+    """If the user-specified preset doesn't exist in the catalog (deleted between
+    sessions?), fall back to normal inference rather than failing the phase —
+    less surprising than blocking the run on a stale form value."""
+    bones = ["Hips", "Spine", "Head", "Neck"]
+    # Forced-preset check calls discover_preset_dir once before falling through;
+    # the inference path then calls bone-read + discover_preset_dir again.
+    client = MagicMock()
+    client.execute_and_extract.side_effect = [
+        [str(preset_dir)],          # forced_preset's discover call
+        [json.dumps({"bones": bones})],  # inference: bone read
+        [str(preset_dir)],          # inference: discover again
+    ]
+    result = InferModelType().run(
+        client, cache,
+        {"source_armature": "MyRig", "forced_preset": "DoesNotExist"},
+    )
+    assert result.success
+    # Decision should be one of the inferred branches, not user_specified
+    assert result.state_diff["decision"] in ("exact", "supplement", "custom")
+    assert result.state_diff["inferred_preset"] != "DoesNotExist"
+
+
+@pytest.mark.unit
+def test_forced_preset_auto_detect_sentinel_runs_inference(
+    preset_dir: Path, cache: SceneCache
+) -> None:
+    """The form's 'Auto-detect' default value should NOT be treated as a forced
+    pick — it's the explicit signal to run inference."""
+    bones = ["Hips", "Spine", "Head", "Neck"]
+    client = _build_client(bones, preset_dir)
+    result = InferModelType().run(
+        client, cache,
+        {"source_armature": "MyRig", "forced_preset": "Auto-detect"},
+    )
+    assert result.success
+    assert result.state_diff["decision"] != "user_specified"
+
+
+@pytest.mark.unit
+def test_forced_preset_with_force_custom_force_custom_wins(
+    preset_dir: Path, cache: SceneCache
+) -> None:
+    """[Force Custom] is the error-recovery entry point — explicit click should
+    beat a stale form pick."""
+    bones = ["Hips", "Spine", "Head", "Neck"]
+    client = _build_client(bones, preset_dir)
+    result = InferModelType().run(
+        client, cache,
+        {
+            "source_armature": "MyRig",
+            "forced_preset": "FullMatch",
+            "force_custom": True,
+        },
+    )
+    assert result.success
+    assert result.state_diff["decision"] == "custom"
+
+
 # ── tool schema sanity ────────────────────────────────────────────────────
 
 
@@ -250,3 +343,4 @@ def test_tool_schema_shape() -> None:
     assert "description" in schema and len(schema["description"]) > 50
     assert schema["input_schema"]["required"] == ["source_armature"]
     assert "force_custom" in schema["input_schema"]["properties"]
+    assert "forced_preset" in schema["input_schema"]["properties"]

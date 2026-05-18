@@ -95,6 +95,19 @@ class InferModelType(PhaseTool):
                             "error_choice button when no preset matches at all)."
                         ),
                     },
+                    "forced_preset": {
+                        "type": "string",
+                        "description": (
+                            "User-specified preset name from the session config "
+                            "form's Model type field. When set to anything other "
+                            "than 'Auto-detect', short-circuits inference: skip "
+                            "bone scan + coverage scoring, trust the user's pick "
+                            "as a hard override. Falls back to inference if the "
+                            "named preset is no longer in the catalog. "
+                            "Mutually exclusive with force_custom — force_custom "
+                            "wins when both are set (it's the error-recovery path)."
+                        ),
+                    },
                 },
                 "required": ["source_armature"],
             },
@@ -103,6 +116,7 @@ class InferModelType(PhaseTool):
     def run(self, client: BlenderClient, cache: SceneCache, params: dict) -> PhaseResult:
         source_arm = params.get("source_armature", "")
         force_custom = bool(params.get("force_custom", False))
+        forced_preset = (params.get("forced_preset") or "").strip()
         if not source_arm:
             return PhaseResult.fail(
                 PhaseError(
@@ -115,6 +129,32 @@ class InferModelType(PhaseTool):
                     ),
                 )
             )
+
+        # User-specified override path: short-circuit inference when the form's
+        # Model type field is anything other than 'Auto-detect' AND force_custom
+        # isn't set (force_custom is the [Force Custom] error-recovery button —
+        # an explicit click should beat a stale form value).
+        if forced_preset and forced_preset != "Auto-detect" and not force_custom:
+            try:
+                preset_dir = discover_preset_dir(client)
+                catalog = enumerate_x_presets(preset_dir)
+            except (FileNotFoundError, BlenderError, OSError):
+                catalog = {}
+            if forced_preset in catalog:
+                return PhaseResult.ok({
+                    "inferred_preset": forced_preset,
+                    "coverage": 1.0,
+                    "decision": "user_specified",
+                    "covered_slots": [],
+                    "uncovered_slots": [],
+                    "optional_skipped_slots": [],
+                    "total_slots": 0,
+                    "candidates": [{"preset": forced_preset, "coverage": 1.0}],
+                    "preset_path": str(catalog[forced_preset].path),
+                    "rig_bone_count": 0,
+                })
+            # Unknown preset → fall through to inference (preset may have been
+            # deleted between session save and run; less surprising than failing).
 
         # 1. Read source rig bone names
         bones, err = self._read_armature_bones(client, source_arm)

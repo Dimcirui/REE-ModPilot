@@ -1,6 +1,5 @@
 import { AnimatePresence } from 'motion/react';
 import { SessionConfigForm } from '@/components/SessionConfigForm';
-import { PhaseStepper } from '@/components/PhaseStepper';
 import { ViewportPane } from '@/components/ViewportPane';
 import { ClassificationWidget } from '@/components/ClassificationWidget';
 import { MaterialWidget } from '@/components/MaterialWidget';
@@ -10,7 +9,8 @@ import styles from './FallbackStage.module.css';
 
 // Generic stage used for any phase that doesn't have a dedicated rebuild yet
 // (setup_*, phase_2/3/35/4a/4b/5/6 until they're migrated). Keeps the form +
-// stepper + viewport + widget slots, minus the chat (now lives in ChatStrip).
+// viewport + widget slots, minus the chat (now lives in ChatStrip) and the
+// phase stepper (now persistent in Shell.tsx above all stages).
 export function FallbackStage({
   sessionId,
   state,
@@ -23,7 +23,6 @@ export function FallbackStage({
     <div className={styles.stage}>
       <div className={styles.leftColumn}>
         <SessionConfigForm sessionId={sessionId} inferredModelType={inferredModelType} />
-        <PhaseStepper status={state.phaseStatus} />
         <div className={styles.widgetArea}>
           <AnimatePresence>
             {state.errorChoice && (

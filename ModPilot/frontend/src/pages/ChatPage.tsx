@@ -3,6 +3,7 @@ import { Header } from '@/components/Header';
 import { Shell } from '@/components/Shell';
 import { ChatStrip } from '@/components/ChatStrip';
 import { InterruptBanner } from '@/components/InterruptBanner';
+import { PhaseStepper } from '@/components/PhaseStepper';
 import { StageRouter } from '@/stages/StageRouter';
 import { useChatState, nextBubbleId } from '@/hooks/useChatState';
 import { useSSE, type SseDispatchers } from '@/hooks/useSSE';
@@ -212,6 +213,7 @@ export default function ChatPage() {
           />
         }
         stage={<StageRouter {...stageProps} />}
+        phaseStepper={<PhaseStepper status={state.phaseStatus} />}
         banner={
           <InterruptBanner
             visible={state.interruptVisible}

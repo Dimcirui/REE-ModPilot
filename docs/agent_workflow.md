@@ -207,6 +207,16 @@ AFTER Step 1.5 reports the inferred preset, before Step 2 imports MHWilds.
 automatic detection step that compares the source rig's bone names against
 every X-preset shipped with (or supplemented by) Modding-Toolkit.
 
+**User override**: if the Pre-collected parameters block shows
+`model_type` set to anything other than `"Auto-detect"` (e.g. `"MMD"`,
+`"VRChat"`), pass that value as `forced_preset` so the tool short-circuits
+inference and trusts the user's pick. The user explicitly chose it on the
+session config form — do not run coverage scoring against their wishes.
+When the form value IS `"Auto-detect"`, omit `forced_preset` and run normal
+inference. Output `decision="user_specified"` is the success signal for
+this path; treat it the same as `"exact"` for subsequent flow control
+(report + continue to Step 2 after user confirms).
+
 **Inputs**: `source_armature` = the armature name reported by
 `setup_validate_scene`'s `source_armature` field.
 
@@ -222,6 +232,7 @@ every X-preset shipped with (or supplemented by) Modding-Toolkit.
 
 | Decision | Coverage | Action |
 |---|---|---|
+| `user_specified` | n/a | User picked a specific preset on the session config form (not "Auto-detect"). Trust their pick. Report `"使用用户指定的 <preset>"`, ask user to confirm and proceed to Step 2. |
 | `exact` | 100 % | Report `"已识别为 <preset> (100% 匹配)"`, ask user to confirm and proceed to Step 2. |
 | `supplement` | 80 % ≤ × < 100 % | Trigger the **issue #5 supplement flow** (see below). |
 | `custom` | 0 % < × < 80 % | Trigger the **issue #6 custom flow** (see below). |
