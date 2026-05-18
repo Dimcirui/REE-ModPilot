@@ -24,7 +24,7 @@ How to run
    RE Mesh Editor + RE Chain Editor, open BlenderMCP and click
    "Connect to Claude".
 2. Open a .blend that already has the source model loaded (see
-   docs/demo_setup.md).
+    docs/user/demo_setup.md).
 3. Copy verify_mvp_config.example.json -> verify_mvp_config.json,
    fill in paths + classification mappings.
 4. From repo root:
