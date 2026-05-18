@@ -33,136 +33,11 @@ from __future__ import annotations
 import asyncio
 import enum
 import json
-import re
 import time
 from collections.abc import Callable
 from typing import Any
 
-# DeepSeek-specific markup patterns.
-# DeepSeek V4 sometimes emits tool calls as inline XML-like markup in the text
-# content instead of using the OpenAI API's function-call fields.  We strip this
-# markup in NEGOTIATING mode (no tools available) and *parse + execute* it in
-# RUNNING_PHASE mode so the tool call is not silently dropped.
-
-_RAW_TOOL_CALL_RE = re.compile(
-    r"<｜｜DSML｜｜tool_calls>.*?</｜｜DSML｜｜tool_calls>",
-    re.DOTALL,
-)
-_DSML_INVOKE_RE = re.compile(
-    r'<｜｜DSML｜｜invoke name="(?P<name>[^"]+)">(?P<body>.*?)</｜｜DSML｜｜invoke>',
-    re.DOTALL,
-)
-_DSML_PARAM_RE = re.compile(
-    r'<｜｜DSML｜｜parameter name="(?P<name>[^"]+)" string="(?P<is_str>true|false)">'
-    r"(?P<value>.*?)</｜｜DSML｜｜parameter>",
-    re.DOTALL,
-)
-
-
-_DSML_OPEN_TAG = "<｜｜DSML｜｜tool_calls>"
-_DSML_CLOSE_TAG = "</｜｜DSML｜｜tool_calls>"
-
-
-def _strip_dsml_block(text: str) -> str:
-    """
-    Remove the DSML tool-call block from text, returning only the prose part.
-
-    Tries regex first; if it leaves any DSML behind (due to invisible Unicode
-    differences), falls back to plain-string truncation at the open tag.
-    """
-    text = _RAW_TOOL_CALL_RE.sub("", text).strip()
-    # Greedy fallback: regex may miss the block if chars look identical but differ
-    start = text.find(_DSML_OPEN_TAG)
-    if start != -1:
-        text = text[:start].rstrip()
-    return text
-
-
-def _parse_dsml_tool_calls(content: str) -> list[dict]:
-    """
-    Extract tool calls from DeepSeek DSML markup embedded in text content.
-
-    Returns a list of canonical tool-call dicts ({id, name, input}) that can
-    be passed directly to AgentLoop._execute_tool_call().  Returns [] when
-    no DSML markup block is found.
-
-    Uses regex first; falls back to plain str.find() when the outer block
-    regex fails (e.g. due to invisible Unicode differences between the source
-    pattern and the model's output that visually appear identical).
-    """
-    tc_match = _RAW_TOOL_CALL_RE.search(content)
-    if tc_match:
-        block = tc_match.group(0)
-    else:
-        # Plain-string fallback — tolerates invisible character differences
-        start = content.find(_DSML_OPEN_TAG)
-        end = content.find(_DSML_CLOSE_TAG)
-        if start == -1 or end == -1 or end < start:
-            return []
-        block = content[start : end + len(_DSML_CLOSE_TAG)]
-
-    calls = []
-    for i, invoke in enumerate(_DSML_INVOKE_RE.finditer(block)):
-        tool_name = invoke.group("name")
-        params: dict = {}
-        for pm in _DSML_PARAM_RE.finditer(invoke.group("body")):
-            raw = pm.group("value").strip()
-            if pm.group("is_str") == "true":
-                params[pm.group("name")] = raw
-            else:
-                try:
-                    params[pm.group("name")] = json.loads(raw)
-                except json.JSONDecodeError:
-                    params[pm.group("name")] = raw
-        calls.append({"id": f"dsml_{i}_{tool_name}", "name": tool_name, "input": params})
-    return calls
-
-_GROUP_FALLBACK_NATURE: dict[str, str] = {
-    "hair":        "头发",
-    "cloth":       "布料",
-    "ribbon":      "飘带",
-    "tail":        "尾巴",
-    "non_physics": "辅助骨",
-}
-
-
-def _apply_merge_rules(chain: dict) -> dict:
-    """Apply deterministic post-processing after LLM annotation.
-
-    1. suggest_merge: derived from group and depth — not left to the LLM.
-    2. guessed_nature fallback: if the LLM omitted it but group is known,
-       substitute a generic label so the UI never shows a bare dash.
-    """
-    grp = chain.get("group", "other")
-    should_merge = grp == "non_physics" or int(chain.get("depth", 0)) <= 1
-    nature = chain.get("guessed_nature") or _GROUP_FALLBACK_NATURE.get(grp, "")
-    return {**chain, "suggest_merge": should_merge, "guessed_nature": nature}
-
-
-def _extract_partial_json_objects(text: str) -> list[dict]:
-    """Extract all complete JSON objects from potentially truncated or malformed text.
-
-    Uses JSONDecoder.raw_decode to scan forward from each '{', collecting every
-    successfully-parsed object.  Objects after the truncation point are silently
-    skipped, so callers get the best partial result available.
-    """
-    results: list[dict] = []
-    decoder = json.JSONDecoder()
-    idx = 0
-    while idx < len(text):
-        start = text.find("{", idx)
-        if start == -1:
-            break
-        try:
-            obj, end_idx = decoder.raw_decode(text, start)
-            if isinstance(obj, dict):
-                results.append(obj)
-            idx = end_idx
-        except json.JSONDecodeError:
-            idx = start + 1
-    return results
-
-
+from app.agent.dsml import parse_dsml_tool_calls, strip_dsml_block
 from app.agent.error_handler import ErrorHandler
 from app.agent.history import (
     COMPACT_MARKER,
@@ -173,12 +48,14 @@ from app.agent.history import (
     MoveLog,
     compact_phase_range,
 )
+from app.agent.history_heal import heal_history
 from app.agent.prompts import build_phase_prompt, build_system_prompt
 from app.blender.client import BlenderClient
 from app.blender.state import SceneCache
 from app.llm.client import LLMClient, LLMResponse, Message
 from app.phases.base import PhaseError, PhaseResult, PhaseTool
-from app.phases.material import PRINCIPLED_SLOTS
+from app.phases.material import suggest_texture_mapping
+from app.phases.physics_annotate import annotate_chains
 from app.phases.query_tools import QueryTool
 
 # ── constants ──────────────────────────────────────────────────────────────
@@ -232,141 +109,6 @@ _MAX_ASK_ROUNDS = 6  # raised from 3: user-facing ASK_MODE often needs 4-5 queri
                      # for a thorough diagnosis (list_objects + scene_info +
                      # get_mesh_info + get_material_info + a follow-up call).
 _MAX_QUERY_ONLY_ROUNDS = 2  # after this many consecutive query-only rounds, drop query tools
-
-
-# ── history self-heal ──────────────────────────────────────────────────────
-
-
-def _heal_history(history: list[dict]) -> int:
-    """Defensive: ensure assistant `tool_use` blocks and the user `tool_result`
-    blocks immediately after them are id-consistent.  Anthropic rejects
-    requests violating EITHER direction with a 400:
-
-      - "tool_use ids were found without `tool_result` blocks immediately after"
-        — orphan tool_use (no following tool_result for some id)
-      - "unexpected `tool_use_id` found in `tool_result` blocks: ... Each
-        `tool_result` block must have a corresponding `tool_use` block in the
-        previous message"
-        — orphan tool_result (id doesn't match any preceding tool_use)
-
-    The exact code path that produces orphan blocks has not been pinned down
-    (suspected provider-side `response.content_blocks` vs `response.tool_calls`
-    id mismatch when ids are synthesized client-side).  This runs as a backstop
-    before every LLM call so the API never sees a malformed history regardless
-    of how it got that way.
-
-    Returns the total number of repairs performed (0 = clean history).
-    Idempotent and in-place.
-
-    Heuristics:
-      - Missing tool_result for a tool_use_id → inject a placeholder.
-      - tool_result for an id with no matching tool_use → DROP that block (the
-        alternative — synthesize a fake tool_use — would corrupt the LLM's
-        view of what it actually called).
-      - tool_use with no following user message at all → insert a synthetic
-        user message with placeholder tool_results.
-      - Plain-text user message immediately after tool_use → insert synthetic
-        tool_result message in between (the plain text otherwise gets parsed
-        as the "next message" slot that Anthropic checks against tool_use).
-    """
-    healed = 0
-    i = 0
-    while i < len(history):
-        msg = history[i]
-        if msg.get("role") != "assistant":
-            i += 1
-            continue
-        content = msg.get("content")
-        if not isinstance(content, list):
-            i += 1
-            continue
-        tool_use_ids = [
-            blk.get("id")
-            for blk in content
-            if isinstance(blk, dict) and blk.get("type") == "tool_use" and blk.get("id")
-        ]
-
-        next_msg = history[i + 1] if i + 1 < len(history) else None
-        next_is_user_blocks = (
-            next_msg is not None
-            and next_msg.get("role") == "user"
-            and isinstance(next_msg.get("content"), list)
-        )
-
-        if not tool_use_ids:
-            # Assistant message without tool_use — but next user message might
-            # still carry orphan tool_result blocks (e.g. leaked from a prior
-            # round when provider ids got desynced).  Drop them.
-            if next_is_user_blocks:
-                kept = [
-                    blk
-                    for blk in next_msg["content"]
-                    if not (
-                        isinstance(blk, dict)
-                        and blk.get("type") == "tool_result"
-                    )
-                ]
-                if len(kept) != len(next_msg["content"]):
-                    healed += len(next_msg["content"]) - len(kept)
-                    # Preserve a non-empty content list so Anthropic doesn't
-                    # reject "empty content"; if everything was orphan
-                    # tool_results, leave a marker text block.
-                    next_msg["content"] = kept or [
-                        {"type": "text", "text": "[orphan tool_results dropped by _heal_history]"}
-                    ]
-            i += 1
-            continue
-
-        # Assistant message HAS tool_use blocks — next user message must have
-        # exactly-matching tool_result blocks (and nothing else of the type).
-        if next_is_user_blocks:
-            assert next_msg is not None
-            valid_blocks: list[dict] = []
-            present_ids: set[str] = set()
-            for blk in next_msg["content"]:
-                if isinstance(blk, dict) and blk.get("type") == "tool_result":
-                    tid = blk.get("tool_use_id")
-                    if tid in tool_use_ids:
-                        valid_blocks.append(blk)
-                        present_ids.add(tid)
-                    else:
-                        # Orphan tool_result — drop it (would trip the
-                        # "unexpected tool_use_id" 400).
-                        healed += 1
-                else:
-                    valid_blocks.append(blk)
-            # Inject placeholders for any tool_use_ids without a result.
-            missing = [tid for tid in tool_use_ids if tid not in present_ids]
-            for tid in missing:
-                valid_blocks.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tid,
-                        "content": "[orphaned tool_use — placeholder result injected by _heal_history]",
-                    }
-                )
-                healed += 1
-            next_msg["content"] = valid_blocks
-        else:
-            # No following user-tool_result message at all (next is either
-            # missing, plain-text user, or assistant) — insert one.
-            history.insert(
-                i + 1,
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": tid,
-                            "content": "[orphaned tool_use — placeholder result injected by _heal_history]",
-                        }
-                        for tid in tool_use_ids
-                    ],
-                },
-            )
-            healed += len(tool_use_ids)
-        i += 1
-    return healed
 
 
 # ── state enum ─────────────────────────────────────────────────────────────
@@ -646,7 +388,7 @@ class AgentLoop:
 
             # Defensive: backstop any unmatched assistant tool_use blocks
             # before sending to the LLM API (Anthropic 400 on mismatched ids).
-            _heal_history(history)
+            heal_history(history)
 
             response = await asyncio.to_thread(
                 self._llm.chat,
@@ -660,9 +402,9 @@ class AgentLoop:
                 # DeepSeek fallback: DSML markup in text instead of API tool_calls.
                 # Parse the markup directly and execute — retrying doesn't help
                 # because DeepSeek repeatedly outputs markup when in thinking mode.
-                dsml_calls = _parse_dsml_tool_calls(content)
+                dsml_calls = parse_dsml_tool_calls(content)
                 if dsml_calls:
-                    clean = _strip_dsml_block(content)
+                    clean = strip_dsml_block(content)
                     history.append({
                         "role": "assistant",
                         "content": clean or "[tool call via inline markup]",
@@ -768,7 +510,7 @@ class AgentLoop:
                 # (tools=None), return it as the assistant reply, and let the
                 # next user message re-enter the loop.
                 self._phase_just_advanced = False
-                _heal_history(history)
+                heal_history(history)
                 final = await asyncio.to_thread(
                     self._llm.chat,
                     history,
@@ -1125,258 +867,12 @@ class AgentLoop:
             return f"Phase failed: {result.error.message}", error_reply
 
     async def _annotate_chains(self, chains: list[dict]) -> list[dict]:
-        """Call LLM to add guessed_category, suggested_type, suggest_merge to each chain.
-
-        Falls back to original chains (with safe defaults applied) on any error.
+        """Thin wrapper around `physics_annotate.annotate_chains` so tests can
+        still `patch.object(loop, "_annotate_chains", ...)` and so the call
+        site reads naturally. All prompt-engineering and JSON-recovery lives
+        in `app.phases.physics_annotate`.
         """
-        from app.phases.physics_bones import list_inferred_types  # local import avoids cycle
-        known_types = list_inferred_types()
-        _defaults: dict = {
-            "guessed_nature": "",
-            "group": "other",
-            "suggested_type": "",
-            "suggest_merge": False,
-        }
-
-        if not chains:
-            return chains
-
-        chain_summary = json.dumps(chains, ensure_ascii=False, indent=2)
-        prompt = (
-            "You are annotating physics chain heads for a character mod.\n"
-            "For each chain, infer the following THREE fields in ORDER:\n\n"
-            '1. "guessed_nature": What this chain physically IS (specific, Chinese or English).\n'
-            "   Examples: '头发' for hair, '眼睛' for eye, '带子' for belt/ribbon, '裙子' for skirt,\n"
-            "   '布料' for generic cloth, '尾巴' for tail, '袖子' for sleeve.\n"
-            "   Base this on the bone name, depth, parent, and role — be specific to each chain.\n\n"
-            '2. "group": The physics simulation category (for UI grouping). '
-            "Use EXACTLY one of:\n"
-            "   'hair'        — hair chains\n"
-            "   'cloth'       — cloth / skirt / dress chains\n"
-            "   'ribbon'      — belt / sash / ribbon chains\n"
-            "   'tail'        — tail chains\n"
-            "   'non_physics' — bones that should NOT have physics "
-            "(eyes, face accessories, minor helpers)\n"
-            "   'other'       — anything else\n\n"
-            '3. "suggested_type": The best-matching physics preset key, '
-            "derived FROM guessed_nature.\n"
-            f"   Must be one of: {json.dumps(known_types)}\n"
-            "   For non_physics chains use the closest available or 'body_jiggle'.\n\n"
-            "Chain heads (JSON array):\n"
-            f"{chain_summary}\n\n"
-            "Reply ONLY with a JSON array in the SAME ORDER as the input. "
-            "Each element must include ALL original keys plus the three new fields."
-        )
-        raw_response = ""
-        try:
-            response = await asyncio.to_thread(
-                self._llm.chat,
-                [{"role": "user", "content": prompt}],
-                system="You are a concise JSON assistant. Output only valid JSON, no markdown fences.",
-                max_tokens=8192,
-            )
-            raw_response = response.content.strip()
-            content = raw_response
-
-            # Robust extraction:
-            # 1. Direct: already starts with "["
-            # 2. Markdown fence: ```json ... ```
-            # 3. Regex: find first [...] block (handles any preamble text)
-            # 4. Dict wrapper: {"result": [...]} or similar
-            if not content.startswith("["):
-                fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
-                if fence_match:
-                    content = fence_match.group(1).strip()
-            if not content.startswith("["):
-                arr_match = re.search(r"\[[\s\S]*\]", content)
-                if arr_match:
-                    content = arr_match.group(0)
-
-            try:
-                parsed = json.loads(content)
-            except json.JSONDecodeError:
-                # Truncated / partially-malformed array: scan for individual objects.
-                # This recovers all chains that were successfully generated before
-                # the LLM truncated or introduced a syntax error.
-                parsed = _extract_partial_json_objects(content)
-
-            # Unwrap dict if LLM returned {"chains": [...]} or similar
-            if isinstance(parsed, dict):
-                for v in parsed.values():
-                    if isinstance(v, list):
-                        parsed = v
-                        break
-
-            if isinstance(parsed, list):
-                # Exact length match: zip by position
-                if len(parsed) == len(chains):
-                    result = [{**_defaults, **orig, **anno}
-                              for orig, anno in zip(chains, parsed)]
-                else:
-                    # Length mismatch: match by "name" field so partial results still help
-                    name_to_anno: dict[str, dict] = {
-                        item.get("name"): item
-                        for item in parsed
-                        if isinstance(item, dict) and item.get("name")
-                    }
-                    result = [{**_defaults, **c, **name_to_anno.get(c.get("name", ""), {})}
-                              for c in chains]
-                # Propagate annotation to same-base-name variants still at defaults.
-                # LLMs often group numbered siblings (Skirt_L.001/006/011…) under one
-                # representative entry, so exact name matching leaves them blank.
-                # Strip trailing variant suffixes — any combination of .NNN, .L/.R,
-                # _L/_R, _End — to derive a common base name, then copy the first
-                # matched annotation to all unannotated siblings.
-                #
-                # Examples (covers real bone names from Phase 3.5 + MMD/VRC sources):
-                #   "Skirt_L.001"            → "Skirt"           (strip .001, then _L)
-                #   "Shoes ribbon_L.001.L"   → "Shoes ribbon"    (strip .L, .001, _L)
-                #   "Shoes ribbon.L_End"     → "Shoes ribbon"    (strip _End, then .L)
-                #   "Half twin tail_R.007"   → "Half twin tail"
-                # Lateral specificity (L vs R) is intentionally lost: physics type
-                # for left/right mirrored chains is always identical anyway.
-                _variant_suffix = re.compile(r'(\.\d+|[._][LR]|_End)+$')
-                _anno_fields = ("guessed_nature", "group", "suggested_type")
-                base_to_anno: dict[str, dict] = {}
-                for c in result:
-                    if c.get("suggested_type"):
-                        base = _variant_suffix.sub('', c.get("name", ""))
-                        base_to_anno.setdefault(base, {k: c[k] for k in _anno_fields if k in c})
-                result = [
-                    {**c, **base_to_anno[_variant_suffix.sub('', c.get("name", ""))]}
-                    if not c.get("suggested_type") and _variant_suffix.sub('', c.get("name", "")) in base_to_anno
-                    else c
-                    for c in result
-                ]
-                # Single-condition fallback retry: scan for chains the LLM
-                # silently dropped (no sibling for propagation either — typical
-                # case is a lone bone like "Tail.001" that gets overlooked when
-                # buried among 60+ chains).  Make ONE small targeted LLM call
-                # for the remaining empties.  Non-fatal — keep going on any error.
-                still_empty = [c for c in result if not c.get("suggested_type")]
-                if still_empty:
-                    fb_anno = await self._fallback_annotate_individual(
-                        still_empty, known_types
-                    )
-                    if fb_anno:
-                        result = [
-                            {**c, **fb_anno[c["name"]]}
-                            if not c.get("suggested_type") and c.get("name") in fb_anno
-                            else c
-                            for c in result
-                        ]
-                # Derive suggest_merge deterministically from group and depth.
-                # The LLM is not asked to set this field; rules are applied here
-                # so the result is predictable regardless of LLM output.
-                result = [_apply_merge_rules(c) for c in result]
-                # Debug trace: emit first annotated chain so mismatch is visible in debug mode
-                self._emit(
-                    "tool_result",
-                    id="annotate_chains",
-                    name="_annotate_chains",
-                    success=True,
-                    summary=f"annotated {len(result)} chains; sample={json.dumps(result[0] if result else {})[:200]}",
-                )
-                return result
-
-        except Exception as exc:
-            # Non-fatal: emit as debug-only tool_result so it's visible in debug mode
-            # without triggering the frontend error state.
-            self._emit(
-                "tool_result",
-                id="annotate_chains",
-                name="_annotate_chains",
-                success=False,
-                summary=f"annotation LLM call failed ({type(exc).__name__}: {exc}); raw={raw_response[:300]}",
-            )
-        return [_apply_merge_rules({**_defaults, **c}) for c in chains]
-
-    async def _fallback_annotate_individual(
-        self, missing: list[dict], known_types: list[str]
-    ) -> dict[str, dict]:
-        """Targeted second-pass LLM call for chains the main annotation pass
-        dropped (no sibling for base-name propagation to copy from).
-
-        Returns a dict keyed by chain `name` → annotation dict containing
-        guessed_nature/group/suggested_type.  Returns {} on any error.
-        Non-fatal — caller falls back to `_defaults` if this returns empty.
-        """
-        if not missing:
-            return {}
-
-        chain_summary = json.dumps(missing, ensure_ascii=False, indent=2)
-        prompt = (
-            "The PRIOR annotation pass missed these chain heads. "
-            "Output a JSON array with ONE entry per input — preserve the original "
-            "`name` field exactly, and add the three fields below:\n"
-            '  "guessed_nature": Chinese or English noun for what this chain physically is.\n'
-            '  "group": one of "hair" / "cloth" / "ribbon" / "tail" / "non_physics" / "other".\n'
-            f'  "suggested_type": one of {json.dumps(known_types)}.\n'
-            "DO NOT skip any entry. Reply ONLY with a JSON array, no markdown.\n\n"
-            "Chains needing annotation:\n"
-            f"{chain_summary}"
-        )
-        try:
-            response = await asyncio.to_thread(
-                self._llm.chat,
-                [{"role": "user", "content": prompt}],
-                system="You are a concise JSON assistant. Output only valid JSON, no markdown fences.",
-                max_tokens=2048,
-            )
-            content = response.content.strip()
-            # Same extraction logic as the main pass.
-            if not content.startswith("["):
-                fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
-                if fence:
-                    content = fence.group(1).strip()
-            if not content.startswith("["):
-                arr = re.search(r"\[[\s\S]*\]", content)
-                if arr:
-                    content = arr.group(0)
-            try:
-                parsed = json.loads(content)
-            except json.JSONDecodeError:
-                parsed = _extract_partial_json_objects(content)
-            if isinstance(parsed, dict):
-                for v in parsed.values():
-                    if isinstance(v, list):
-                        parsed = v
-                        break
-            if not isinstance(parsed, list):
-                return {}
-            result: dict[str, dict] = {}
-            for item in parsed:
-                if not isinstance(item, dict):
-                    continue
-                name = item.get("name")
-                if not name:
-                    continue
-                # Only carry forward the three annotation fields — don't let
-                # the LLM overwrite role/depth/parent etc.
-                annotation = {
-                    k: item[k]
-                    for k in ("guessed_nature", "group", "suggested_type")
-                    if k in item and item[k]
-                }
-                if annotation.get("suggested_type"):
-                    result[name] = annotation
-            self._emit(
-                "tool_result",
-                id="annotate_chains_fallback",
-                name="_fallback_annotate_individual",
-                success=True,
-                summary=f"recovered {len(result)}/{len(missing)} dropped annotations",
-            )
-            return result
-        except Exception as exc:
-            self._emit(
-                "tool_result",
-                id="annotate_chains_fallback",
-                name="_fallback_annotate_individual",
-                success=False,
-                summary=f"fallback failed ({type(exc).__name__}: {exc})",
-            )
-            return {}
+        return await annotate_chains(self._llm, chains, emit=self._emit)
 
     async def _emit_widget_if_inspector(self, tool_name: str, state_diff: dict | None) -> None:
         """Stage a widget event for tools whose result needs user confirmation.
@@ -1473,88 +969,14 @@ class AgentLoop:
         texture_files: list[str],
         existing_connections: dict[str, dict[str, str]],
     ) -> dict[str, dict[str, str]]:
-        """Ask the LLM to pre-fill slot→texture suggestions for the Phase 5
-        material confirmation widget (issue #11).
-
-        Returns a {material_name: {slot_name: file_path}} dict; missing keys
-        mean "no suggestion, leave the row blank". The user can accept or
-        override each cell in the widget UI.
-
-        Best-effort: if there are no texture files, the LLM call is skipped
-        (nothing to pick from). Any LLM exception or non-JSON reply returns
-        {} so the widget still renders with bare rows — equivalent to the
-        pre-issue-#11 behavior.
-
-        Note: file_path values are full paths from texture_files; the widget
-        template still resolves them against the <option value="..."> list.
+        """Thin wrapper around `material.suggest_texture_mapping` so tests can
+        still `patch.object(AgentLoop, "_suggest_texture_mapping", ...)` and
+        the call site reads naturally. Prompt + filtering live in
+        `app.phases.material`.
         """
-        if not texture_files or not materials:
-            return {}
-
-        prompt = (
-            "You are matching mesh materials to texture files for a Blender "
-            "Principled BSDF setup. Pick the most plausible texture for each "
-            "slot of each material, using the candidate file list. Conventions:\n"
-            "- Base Color: 'diffuse' / 'albedo' / 'basecolor' / 'col'\n"
-            "- Normal: 'normal' / 'nrm' / 'nm'\n"
-            "- Roughness: 'roughness' / 'rgh' / 'gloss' (invert mentally)\n"
-            "- Metallic: 'metallic' / 'mtl' / 'metal'\n"
-            "- Emission: 'emission' / 'emit' / 'glow'\n"
-            "- Alpha: 'alpha' / 'opacity' / 'mask'\n"
-            "Match by material-name prefix when possible (e.g. material "
-            "'Body.001' pairs with files containing 'body'). Omit a slot when "
-            "no file plausibly matches — do NOT invent.\n"
-            "\n"
-            f"Materials: {json.dumps(materials, ensure_ascii=False)}\n"
-            f"Principled BSDF slots: {json.dumps(list(PRINCIPLED_SLOTS))}\n"
-            f"Existing wired connections: {json.dumps(existing_connections, ensure_ascii=False)}\n"
-            f"Candidate texture files (use these exact strings as values):\n"
-            f"{json.dumps(texture_files, ensure_ascii=False)}\n"
-            "\n"
-            "Reply with ONLY a JSON object of shape "
-            '{"material_name": {"slot_name": "file_path", ...}, ...}. '
-            "Use exactly the file paths from the candidate list — no renames, "
-            "no inventions. No prose, no markdown, no code fences."
+        return await suggest_texture_mapping(
+            self._llm, materials, texture_files, existing_connections,
         )
-        messages: list[Message] = [{"role": "user", "content": prompt}]
-        try:
-            response: LLMResponse = await asyncio.to_thread(
-                self._llm.chat, messages, system="", tools=None
-            )
-        except Exception:
-            return {}
-
-        text = (response.content or "").strip()
-        # Strip a ```json ... ``` fence if the model added one despite the
-        # instruction — common with smaller models.
-        if text.startswith("```"):
-            text = text.strip("`").lstrip("json").strip()
-        try:
-            parsed = json.loads(text)
-        except (json.JSONDecodeError, ValueError):
-            return {}
-        if not isinstance(parsed, dict):
-            return {}
-
-        # Filter: drop entries for unknown materials/slots; keep only file paths
-        # the inspector actually surfaced (LLM occasionally invents).
-        material_set = set(materials)
-        slot_set = set(PRINCIPLED_SLOTS)
-        file_set = set(texture_files)
-        clean: dict[str, dict[str, str]] = {}
-        for mat, slots in parsed.items():
-            if mat not in material_set or not isinstance(slots, dict):
-                continue
-            row: dict[str, str] = {}
-            for slot, path in slots.items():
-                if slot not in slot_set:
-                    continue
-                if not isinstance(path, str) or path not in file_set:
-                    continue
-                row[slot] = path
-            if row:
-                clean[mat] = row
-        return clean
 
     def _on_phase_advance(self, completed_phase: str | None = None) -> None:
         """Update state after a phase completes successfully."""
@@ -1607,14 +1029,14 @@ class AgentLoop:
 
         self._phase_history.append({"role": "user", "content": user_message})
 
-        _heal_history(self._phase_history)
+        heal_history(self._phase_history)
         response = await asyncio.to_thread(
             self._llm.chat,
             self._phase_history,
             system=self._system_prompt,
         )
 
-        reply = _strip_dsml_block(response.content)
+        reply = strip_dsml_block(response.content)
         self._phase_history.append({"role": "assistant", "content": reply})
 
         # Detect structured proposal from LLM (propose_and_confirm protocol)
@@ -1718,7 +1140,7 @@ class AgentLoop:
         history = self._global_history
 
         for _ in range(_MAX_ASK_ROUNDS):
-            _heal_history(history)
+            heal_history(history)
             response = await asyncio.to_thread(
                 self._llm.chat,
                 history,
@@ -1728,13 +1150,13 @@ class AgentLoop:
 
             if not response.has_tool_calls:
                 # Check for DSML markup even in ASK_MODE (DeepSeek fallback)
-                dsml_calls = _parse_dsml_tool_calls(response.content)
+                dsml_calls = parse_dsml_tool_calls(response.content)
                 if dsml_calls:
                     # Filter to query tools only; reject phase tools silently
                     query_names = {t["name"] for t in query_tools}
                     dsml_calls = [c for c in dsml_calls if c["name"] in query_names]
                 if dsml_calls:
-                    clean = _strip_dsml_block(response.content)
+                    clean = strip_dsml_block(response.content)
                     history.append({
                         "role": "assistant",
                         "content": clean or "[querying scene]",
@@ -1746,7 +1168,7 @@ class AgentLoop:
                     history.append({"role": "user", "content": "\n".join(results)})
                     continue
                 # Plain text answer — done
-                reply = _strip_dsml_block(response.content)
+                reply = strip_dsml_block(response.content)
                 break
 
             # Structured tool calls

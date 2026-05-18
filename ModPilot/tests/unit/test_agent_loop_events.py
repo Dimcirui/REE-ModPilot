@@ -22,7 +22,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.agent.loop import _PHASE_SEQUENCE, AgentLoop, LoopState, _heal_history
+from app.agent.history_heal import heal_history
+from app.agent.loop import _PHASE_SEQUENCE, AgentLoop, LoopState
 from app.phases.base import PhaseError, PhaseResult
 
 
@@ -746,13 +747,13 @@ async def test_annotate_chains_skips_fallback_when_all_annotated():
     assert llm.chat.call_count == 1
 
 
-# ── _heal_history defensive self-heal ─────────────────────────────────────
+# ── heal_history defensive self-heal ──────────────────────────────────────
 
 
 @pytest.mark.unit
 class TestHealHistory:
     """Regression tests for the Anthropic 400 'tool_use without tool_result'
-    backstop.  _heal_history must inject placeholder tool_results for any
+    backstop.  heal_history must inject placeholder tool_results for any
     orphan tool_use blocks before the history is sent to the LLM."""
 
     def test_clean_history_unchanged(self):
@@ -771,7 +772,7 @@ class TestHealHistory:
             },
         ]
         snapshot = [dict(m) for m in history]
-        injected = _heal_history(history)
+        injected = heal_history(history)
         assert injected == 0
         assert history == snapshot
 
@@ -786,7 +787,7 @@ class TestHealHistory:
                 ],
             },
         ]
-        injected = _heal_history(history)
+        injected = heal_history(history)
         assert injected == 1
         assert len(history) == 3
         assert history[2]["role"] == "user"
@@ -811,7 +812,7 @@ class TestHealHistory:
                 "content": [{"type": "tool_result", "tool_use_id": "a", "content": "ok"}],
             },
         ]
-        injected = _heal_history(history)
+        injected = heal_history(history)
         assert injected == 1
         ids = {
             b["tool_use_id"]
@@ -833,7 +834,7 @@ class TestHealHistory:
             },
             {"role": "user", "content": "retry please"},
         ]
-        injected = _heal_history(history)
+        injected = heal_history(history)
         assert injected == 1
         # The synthetic user message gets inserted at index 1; the original
         # plain-text user message slides to index 2.
@@ -866,7 +867,7 @@ class TestHealHistory:
                 ],
             },
         ]
-        injected = _heal_history(history)
+        injected = heal_history(history)
         assert injected == 1
         remaining_ids = [
             b["tool_use_id"] for b in history[1]["content"] if b.get("type") == "tool_result"
@@ -885,7 +886,7 @@ class TestHealHistory:
                 ],
             },
         ]
-        injected = _heal_history(history)
+        injected = heal_history(history)
         assert injected == 1
         # Empty content list would itself be a 400 — must leave a marker block.
         assert history[1]["content"]

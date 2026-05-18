@@ -24,6 +24,7 @@ for the RE Mesh Editor addon function; falls back to empty lookup on import fail
 
 from __future__ import annotations
 
+import asyncio
 import json
 import textwrap
 from pathlib import Path
@@ -31,6 +32,7 @@ from typing import Any
 
 from app.blender.client import BLENDER_SENTINEL, BlenderClient, BlenderError
 from app.blender.state import SceneCache
+from app.llm.client import LLMClient, LLMResponse, Message
 from app.phases.base import PhaseError, PhaseResult, PhaseTool
 
 # ── constants ─────────────────────────────────────────────────────────────────
@@ -71,6 +73,99 @@ _VCHAT_NORMAL_CHAIN: str = (
 _ZENMO_NORMAL_CHAIN: str = (
     f"{_I20}links.new(tex.outputs['Color'], nm.inputs['Color'])\n"
 )
+
+
+# ── Phase 5 LLM pre-fill ──────────────────────────────────────────────────────
+
+
+async def suggest_texture_mapping(
+    llm: LLMClient,
+    materials: list[str],
+    texture_files: list[str],
+    existing_connections: dict[str, dict[str, str]],
+) -> dict[str, dict[str, str]]:
+    """Ask the LLM to pre-fill slot→texture suggestions for the Phase 5
+    material confirmation widget (issue #11).
+
+    Returns a {material_name: {slot_name: file_path}} dict; missing keys
+    mean "no suggestion, leave the row blank". The user can accept or
+    override each cell in the widget UI.
+
+    Best-effort: if there are no texture files, the LLM call is skipped
+    (nothing to pick from). Any LLM exception or non-JSON reply returns
+    {} so the widget still renders with bare rows — equivalent to the
+    pre-issue-#11 behavior.
+
+    Note: file_path values are full paths from texture_files; the widget
+    template still resolves them against the <option value="..."> list.
+    """
+    if not texture_files or not materials:
+        return {}
+
+    prompt = (
+        "You are matching mesh materials to texture files for a Blender "
+        "Principled BSDF setup. Pick the most plausible texture for each "
+        "slot of each material, using the candidate file list. Conventions:\n"
+        "- Base Color: 'diffuse' / 'albedo' / 'basecolor' / 'col'\n"
+        "- Normal: 'normal' / 'nrm' / 'nm'\n"
+        "- Roughness: 'roughness' / 'rgh' / 'gloss' (invert mentally)\n"
+        "- Metallic: 'metallic' / 'mtl' / 'metal'\n"
+        "- Emission: 'emission' / 'emit' / 'glow'\n"
+        "- Alpha: 'alpha' / 'opacity' / 'mask'\n"
+        "Match by material-name prefix when possible (e.g. material "
+        "'Body.001' pairs with files containing 'body'). Omit a slot when "
+        "no file plausibly matches — do NOT invent.\n"
+        "\n"
+        f"Materials: {json.dumps(materials, ensure_ascii=False)}\n"
+        f"Principled BSDF slots: {json.dumps(list(PRINCIPLED_SLOTS))}\n"
+        f"Existing wired connections: {json.dumps(existing_connections, ensure_ascii=False)}\n"
+        f"Candidate texture files (use these exact strings as values):\n"
+        f"{json.dumps(texture_files, ensure_ascii=False)}\n"
+        "\n"
+        "Reply with ONLY a JSON object of shape "
+        '{"material_name": {"slot_name": "file_path", ...}, ...}. '
+        "Use exactly the file paths from the candidate list — no renames, "
+        "no inventions. No prose, no markdown, no code fences."
+    )
+    messages: list[Message] = [{"role": "user", "content": prompt}]
+    try:
+        response: LLMResponse = await asyncio.to_thread(
+            llm.chat, messages, system="", tools=None
+        )
+    except Exception:
+        return {}
+
+    text = (response.content or "").strip()
+    # Strip a ```json ... ``` fence if the model added one despite the
+    # instruction — common with smaller models.
+    if text.startswith("```"):
+        text = text.strip("`").lstrip("json").strip()
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+
+    # Filter: drop entries for unknown materials/slots; keep only file paths
+    # the inspector actually surfaced (LLM occasionally invents).
+    material_set = set(materials)
+    slot_set = set(PRINCIPLED_SLOTS)
+    file_set = set(texture_files)
+    clean: dict[str, dict[str, str]] = {}
+    for mat, slots in parsed.items():
+        if mat not in material_set or not isinstance(slots, dict):
+            continue
+        row: dict[str, str] = {}
+        for slot, path in slots.items():
+            if slot not in slot_set:
+                continue
+            if not isinstance(path, str) or path not in file_set:
+                continue
+            row[slot] = path
+        if row:
+            clean[mat] = row
+    return clean
 
 
 # ── Phase 5pre ────────────────────────────────────────────────────────────────
