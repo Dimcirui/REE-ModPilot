@@ -164,9 +164,29 @@ Phases 4A-6 each contain one or more NEGOTIATING loops.
 
 **Do NOT delete, rename, or move this collection at any point in the pipeline.**
 
+### Step 0: Import Source FBX (`setup_import_source`)
+
+**ALWAYS call this first on any new session.** Idempotent — if a source armature is already present in the scene (outside the `MHWilds_Female.mesh` collection), the tool reports `status="already_imported"` and the bubble auto-advances without re-importing.
+
+**Inputs**:
+- `file_path` (required) — absolute path to the source `.fbx`. Use the `model_path` value from the **Pre-collected parameters** block of this system prompt; do not ask the user to re-type it.
+
+**Behavior**:
+- Skips the operator entirely when the scene already contains a non-MHWilds armature.
+- Else verifies the file exists (`os.path.isfile`), runs `bpy.ops.import_scene.fbx(filepath=...)` in Object mode, and reports the new source armature name + imported object list.
+
+**Scope**: FBX-only. The tool rejects `.obj` / `.glb` / `.blend` paths at the precondition layer — MMD / VRC source rigs are FBX in practice, and supporting more formats would expand the test surface without matching real workflows.
+
+**Failure modes** (all surface as the standard `[Retry][Skip][Ask]` error_choice widget):
+- `precondition` — empty `file_path`, non-`.fbx` extension, or file not on disk. Re-ask the user for the correct absolute path.
+- `operator_failed` — Blender's FBX importer returned `CANCELLED` (malformed file, missing addon dependency). Surface Blender's Info-editor message via `[Ask]`.
+- `timeout` / `unexpected` — Blender disconnected during import; reconnect and retry.
+
+**On success**: report the imported armature name to the user, then continue to Step 1 (scene validation) without waiting for confirmation — Step 0→1 run as one setup turn.
+
 ### Step 1: Validate Scene (`setup_validate_scene`)
 
-Call this tool with no parameters on the first user message. No parameters needed.
+Call this tool with no parameters AFTER `setup_import_source` has reported success. No parameters needed.
 
 The tool checks (after excluding objects inside `MHWilds_Female.mesh` if present):
 - Exactly **1 ARMATURE** object exists.

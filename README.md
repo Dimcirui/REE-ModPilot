@@ -18,7 +18,7 @@
 | Stage 4 — phase tools (videos 4-7) | 🟢 done: physics_bones + material + batch_export + mesh_cleanup + query tools; E2E verified (Phase 1→6 full run); advanced out of MVP scope |
 | Stage 5 — frontend (React 19 + TS + Vite + motion) | 🟢 done. Rebuilt from htmx (2026-05-18, C25). Same SSE/widget/config surfaces; ports: dev `:5173` proxied → backend `:8000`. Tauri v2 desktop shell layered on top (optional) provides native drag-and-drop file/dir paths through `PathField`. Stage-driven UI under `src/stages/` — `StageRouter` cross-fades a per-phase component (`Phase1Stage`, `Phase23Stage` shared by phase_2+3, `Phase4Stage` shared by phase_35+4a+4b, `Phase5Stage`, `Phase6Stage`, `DoneStage`), chat moved to a collapsible bottom `ChatStrip`. |
 | Stage MVP — verification | 🟢 done (L3 in-game acceptance: 3-4 MMD/VRC models verified; `verify_mvp.py` script + `docs/demo_setup.md` walkthrough) |
-| Post-MVP polish | ongoing — #13 arm-bone scale, #14 interrupt, #15 phase transition pause, #16 Phase 5A small-loop architecture, frontend React/Tauri rebuild, single-pick Body part radio (default `Body`), "Mod Output" rename. **453 unit tests, 70+ Playwright checks.** |
+| Post-MVP polish | ongoing — #13 arm-bone scale, #14 interrupt, #15 phase transition pause, #16 Phase 5A small-loop architecture, frontend React/Tauri rebuild, single-pick Body part radio (default `Body`), "Mod Output" rename. 2026-05-19: `setup_import_source` FBX phase tool + LLM provider/model guardrail. **476 unit tests, 70+ Playwright checks.** |
 
 All design items in [docs/design.md](docs/design.md) (A/B/C/D/E layers) are 🟢 decided.
 
@@ -55,7 +55,7 @@ Tauri desktop shell (modpilot.exe) ─────────┤  (browser-mode
                                             │
                           FastAPI backend (CORS / Vite proxy)
                             ├── Agent loop          (ReAct, hand-rolled, ~600 lines)
-                            ├── Phase tools         (15 tools across setup + phases 1-6)
+                            ├── Phase tools         (16 tools across setup + phases 1-6)
                             ├── LLM client          (provider-agnostic: Anthropic / OpenAI-compatible / Ollama)
                             └── Blender client      (TCP socket, thread-safe RLock)
                                             ↓
@@ -213,7 +213,7 @@ Fill in the session-config form (source file path, mod root, character name, bod
 **5. Run unit tests**
 
 ```bash
-uv run pytest -m unit -v   # 453+ tests, no Blender required
+uv run pytest -m unit -v   # 476+ tests, no Blender required
 ```
 
 **6. (Optional) Headless MVP verification**

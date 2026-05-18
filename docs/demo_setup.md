@@ -108,6 +108,15 @@ Open it in Blender via the **mmd_tools** addon (or any PMX importer) so
 the result is a single `Armature` with mesh children. Save the scene
 as `demo.blend` in the same folder.
 
+> **FBX sources**: if your source rig is already `.fbx` (most VRChat avatars,
+> a lot of MMD re-exports), you can skip the manual import — the agent's
+> `setup_import_source` phase tool calls `bpy.ops.import_scene.fbx` itself
+> using the `model_path` you fill into the session-config form. It runs as
+> Step 0, before `setup_validate_scene`, and is idempotent (skips
+> re-importing if the scene already has a source armature). PMX still
+> requires manual import via mmd_tools because the agent is FBX-only by
+> design.
+
 ### MHWs reference skeleton
 
 `SetupImportMHWilds` calls `mbt.import_mhwilds_fmesh` which loads the

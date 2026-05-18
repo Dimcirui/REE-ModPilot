@@ -24,11 +24,11 @@ For agent baseline rules (commands, hard rules, code style, conventions) see [AG
 ## Current Stage
 
 **MVP shipped.** All P0 work in [docs/backlog.md](docs/backlog.md) is 🟢: Stages 0 / Setup / 1 / 2 / 3 / 4 / 5 / MVP-verification.
-Backend (FastAPI + hand-rolled ReAct + 15 phase tools), frontend (React 19 + TypeScript + Vite + motion SPA under `ModPilot/frontend/`, with optional Tauri v2 desktop shell; same SSE + widget + viewport surfaces, now driven by per-phase stages — see C25), LLM provider abstraction (Anthropic + OpenAI-compatible + Ollama), and `verify_mvp.py` headless harness all live.
-Live with **453+ unit tests** and 70+ Playwright e2e checks. L3 acceptance achieved against MMD/VRC source models.
+Backend (FastAPI + hand-rolled ReAct + 16 phase tools), frontend (React 19 + TypeScript + Vite + motion SPA under `ModPilot/frontend/`, with optional Tauri v2 desktop shell; same SSE + widget + viewport surfaces, now driven by per-phase stages — see C25), LLM provider abstraction (Anthropic + OpenAI-compatible + Ollama), and `verify_mvp.py` headless harness all live.
+Live with **476+ unit tests** and 70+ Playwright e2e checks. L3 acceptance achieved against MMD/VRC source models.
 
 Current work is post-MVP polish — backlog item priorities P1 → P3.
-Recently shipped: #10 (config hoist) → #11 (material widget pre-fill) → #13 (arm-bone scale) → #14 (interrupt) → #15 (phase transition pause) → #16 (Phase 5A small loop).
+Recently shipped: #10 (config hoist) → #11 (material widget pre-fill) → #13 (arm-bone scale) → #14 (interrupt) → #15 (phase transition pause) → #16 (Phase 5A small loop) → 2026-05-19: `setup_import_source` FBX tool + LLM provider/model guardrail.
 
 ---
 
