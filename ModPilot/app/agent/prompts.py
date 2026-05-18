@@ -18,6 +18,45 @@ from app.resources import docs_dir
 _WORKFLOW_PATH = docs_dir() / "agent_workflow.md"
 _WORKFLOW_TEXT: str = _WORKFLOW_PATH.read_text(encoding="utf-8")
 
+_CONTEXT_MANAGEMENT_PROTOCOL: str = (
+    "## Context Management Protocol\n"
+    "After each phase completes, the verbose tool_use / tool_result / narration "
+    "messages from that phase are collapsed in your visible chat history to a "
+    "single summary message marked `[compacted]`. The full record (every tool "
+    "call with its arguments and result, every user reply, every widget "
+    "confirmation, every error choice, every interrupt) is preserved off-prompt "
+    "in the session's move log on disk.\n"
+    "\n"
+    "When you need detail older than the current phase — for example, the exact "
+    "`inferred_types` you confirmed in Phase 4A while now wiring Phase 4B, or "
+    "which textures the user mapped in a Phase 5 widget — call the "
+    "`query_history` meta-tool to retrieve it. Examples:\n"
+    "\n"
+    "- `query_history(phase=\"phase_4a\", kind=\"tool\")` → all tool calls "
+    "recorded while Phase 4A was active.\n"
+    "- `query_history(name=\"physics_classification\")` → every call to that "
+    "tool, regardless of phase.\n"
+    "- `query_history(kind=\"widget\", last_n=5)` → the five most recent widget "
+    "confirmations and their JSON payloads.\n"
+    "- `query_history()` → the most recent moves across all kinds and phases.\n"
+    "\n"
+    "Decision guide:\n"
+    "- For CURRENT scene state (what bones exist now, what materials are now "
+    "wired, what objects are selected), prefer the existing read-only Blender "
+    "query tools (`scene_info`, `get_bone_info`, `get_material_info`, "
+    "`list_objects`, etc.). They reflect live Blender, not the historical "
+    "decision log.\n"
+    "- For PAST decisions and arguments (what the user picked in a widget, what "
+    "you classified in an earlier phase, what `inferred_types` dict you passed "
+    "to `physics_chains`), use `query_history`.\n"
+    "- Set `last_n` to a small value (e.g. 5-10) when you do not know the "
+    "specific phase or tool to filter on. The server applies a default cap "
+    "when you omit `last_n` and a hard ceiling when you pass a large value, "
+    "so a no-args call cannot dump the whole log — but filtering narrowly "
+    "still wastes fewer tokens than blanket scans."
+)
+
+
 _WIDGET_PROTOCOL: str = (
     "## Confirmation Widget Protocol (issue #7)\n"
     "Two inspector tools surface their results to the user via structured UI "
@@ -203,6 +242,8 @@ def build_system_prompt(
         assessment_protocol,
         "",
         transition_protocol,
+        "",
+        _CONTEXT_MANAGEMENT_PROTOCOL,
         "",
         _WIDGET_PROTOCOL,
         "",

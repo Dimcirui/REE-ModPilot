@@ -164,6 +164,15 @@ def _extract_partial_json_objects(text: str) -> list[dict]:
 
 
 from app.agent.error_handler import ErrorHandler
+from app.agent.history import (
+    COMPACT_MARKER,
+    QUERY_HISTORY_DEFAULT_LAST_N,
+    QUERY_HISTORY_MAX_LAST_N,
+    QUERY_HISTORY_TOOL_NAME,
+    QUERY_HISTORY_TOOL_SCHEMA,
+    MoveLog,
+    compact_phase_range,
+)
 from app.agent.prompts import build_phase_prompt, build_system_prompt
 from app.blender.client import BlenderClient
 from app.blender.state import SceneCache
@@ -392,6 +401,7 @@ class AgentLoop:
         physics_presets: dict | None = None,
         event_sink: Callable[[dict], None] | None = None,
         session_config: dict | None = None,
+        session_id: str | None = None,
     ) -> None:
         self._llm = llm
         self._blender = blender
@@ -399,6 +409,18 @@ class AgentLoop:
         self._error_handler = ErrorHandler()
         self._event_sink = event_sink
         self._session_config = session_config or {}
+
+        # Off-prompt move log + phase-boundary compaction state.
+        # session_id is optional: existing tests that don't care about
+        # persistence pass nothing and disable the whole subsystem.
+        self._move_log: MoveLog | None = MoveLog(session_id) if session_id else None
+        # _phase_start_idx_global tracks the index in _global_history where the
+        # current phase's messages begin. Updated on every compaction so the
+        # next compact_phase_range call collapses only the new phase's span.
+        self._phase_start_idx_global: int = 0
+        # Set when _execute_tool_call advances _phase_idx; consumed at the top
+        # of the NEXT _run_react_turn to trigger compaction. Cleared after.
+        self._just_completed_phase: str | None = None
 
         self._phase_tools: dict[str, PhaseTool] = {}
         self._register_available_phases()
@@ -440,6 +462,13 @@ class AgentLoop:
 
         self._system_prompt = build_system_prompt(physics_presets, session_config)
 
+        # Session recovery: if a move log already exists on disk for this
+        # session_id, rebuild _phase_idx and a phase-granular _global_history
+        # from it. Mid-phase detail is intentionally NOT replayed — the agent
+        # re-queries Blender for live scene state and uses `query_history`
+        # for past decisions. See _hydrate_from_move_log for the contract.
+        self._hydrate_from_move_log()
+
     def _emit(self, event_type: str, **payload: Any) -> None:
         """Publish one structured event to the sink, if any.
 
@@ -473,6 +502,32 @@ class AgentLoop:
             return
         self._interrupted = True
         self._emit("interrupted")
+        self._log_move({"kind": "interrupt", "phase": self.current_phase})
+
+    def _log_move(self, move: dict[str, Any]) -> None:
+        """Append a move to the persistent log if one is configured.
+
+        No-op when session_id was not supplied at construction. All log
+        writes go through this helper so the None-check lives in one place.
+        """
+        if self._move_log is not None:
+            self._move_log.append(move)
+
+    def _classify_user_move_kind(self, user_message: str) -> str:
+        """Map an incoming user message to the right `kind` field for the log.
+
+        Widget-confirm and error-choice prefixes are protocol-level, not
+        free-form chat. Surfacing them as distinct kinds lets the LLM
+        (via query_history) page through past widget submissions and
+        retry/skip decisions without first parsing every user message.
+        """
+        if self.state == LoopState.ERROR_HANDLING:
+            return "error_choice"
+        if user_message.startswith("[CONFIRMED_CLASSIFICATIONS]") or user_message.startswith(
+            "[CONFIRMED_MATERIAL_MAPPING]"
+        ):
+            return "widget"
+        return "user"
 
     @property
     def current_phase(self) -> str | None:
@@ -486,12 +541,25 @@ class AgentLoop:
         # already clears this flag; reset here too so a leaked True from a
         # prior turn can't short-circuit the new one.
         self._phase_just_advanced = False
+        # Classify BEFORE appending — _classify_user_move_kind reads self.state,
+        # and _dispatch may transition state before the assistant reply lands.
+        user_kind = self._classify_user_move_kind(user_message)
         self._global_history.append({"role": "user", "content": user_message})
         self._emit("message", role="user", content=user_message)
+        self._log_move({
+            "kind": user_kind,
+            "phase": self.current_phase,
+            "content": user_message,
+        })
         try:
             reply = await self._dispatch(user_message)
             self._global_history.append({"role": "assistant", "content": reply})
             self._emit("message", role="assistant", content=reply)
+            self._log_move({
+                "kind": "assistant",
+                "phase": self.current_phase,
+                "content": reply,
+            })
             return reply
         finally:
             # Issue 3: deferred widget emit.  Inspector tools stash their
@@ -544,6 +612,15 @@ class AgentLoop:
         is restricted to phase tools only. This forces the LLM to commit to a phase
         tool call instead of indefinitely querying scene state.
         """
+        # Phase-boundary compaction (context management). If the previous turn
+        # ended with a phase advance, the now-stale tool_use / tool_result /
+        # narration / wrap-up messages still sit in _global_history and will
+        # be sent to the LLM on every subsequent call. Collapse that span to
+        # a single summary message reusing the wrap-up text the LLM already
+        # produced for the user. Detail remains queryable via the
+        # `query_history` tool — the on-disk MoveLog is the ground truth.
+        self._compact_completed_phase_if_pending()
+
         history = self._global_history
         query_tool_names = {
             name for name, t in self._phase_tools.items() if isinstance(t, QueryTool)
@@ -701,6 +778,104 @@ class AgentLoop:
 
         return "Reached the maximum number of tool-call rounds. Please try again."
 
+    def _hydrate_from_move_log(self) -> None:
+        """Rebuild _phase_idx and _global_history from the on-disk move log.
+
+        Called once at the end of __init__. Idempotent and no-op when no log
+        exists (cold-start new session).
+
+        Recovery is intentionally phase-granular, not turn-granular:
+
+          - `_phase_idx` ← count of `phase_advance` moves in the log
+          - For each `phase_advance`, find the first `assistant` move logged
+            AFTER it and inject a single `[compacted]` summary message into
+            `_global_history` using that text as the summary
+          - If a phase_advance has no following assistant move (backend
+            crashed mid-wrap-up), use a generic "Phase X completed." text so
+            the phase still appears in history
+          - `_phase_start_idx_global` ← `len(_global_history)` so the next
+            real turn starts a fresh span
+          - Mid-phase work (tool moves without a following phase_advance) is
+            NOT replayed into history. The agent recovers live scene state
+            via Blender query tools next turn; past decisions are reachable
+            via `query_history`.
+
+        Why phase-granular: faithfully replaying tool_use/tool_result blocks
+        requires preserving the exact tool_use_id strings the LLM generated.
+        Anthropic API 400s on any id mismatch, so reconstructing them is
+        fragile. Compacted summaries are flat strings and align with the
+        steady-state shape of live `_global_history` after compaction runs.
+        """
+        if self._move_log is None:
+            return
+        moves = self._move_log.read()
+        if not moves:
+            return
+
+        # Index by turn for the "next assistant after this phase_advance" lookup.
+        # `read()` already returns moves in append order, so a single pass works.
+        for i, move in enumerate(moves):
+            if move.get("kind") != "phase_advance":
+                continue
+            completed = move.get("phase") or "unknown"
+            # Find the first assistant move after this advance.
+            summary = f"Phase {completed} completed."
+            for follow in moves[i + 1 :]:
+                if follow.get("kind") == "assistant":
+                    content = follow.get("content")
+                    if isinstance(content, str) and content.strip():
+                        summary = content
+                    break
+            self._global_history.append({
+                "role": "assistant",
+                "content": f"{COMPACT_MARKER} {summary}",
+            })
+            self._phase_idx += 1
+
+        self._phase_start_idx_global = len(self._global_history)
+
+    def _compact_completed_phase_if_pending(self) -> None:
+        """Collapse the just-completed phase's history span into one summary.
+
+        Invariants relied on:
+          - Called at the top of _run_react_turn, BEFORE any LLM call this
+            turn. At this point history is balanced (no orphan tool_use), and
+            the only message after the phase's span is the user message that
+            step() just appended.
+          - The last assistant message in the span is the wrap-up text
+            (Issue #15) — already a natural-language summary of what the
+            phase did. We reuse it as the compact summary so no extra LLM
+            call is needed.
+        """
+        if self._just_completed_phase is None:
+            return
+        history = self._global_history
+        # End is exclusive of the user message just appended by step().
+        end_idx = len(history) - 1
+        start_idx = self._phase_start_idx_global
+        if start_idx >= end_idx:
+            # Nothing to compact (e.g. NEGOTIATING phase never wrote to
+            # _global_history). Just clear state.
+            self._just_completed_phase = None
+            return
+        # Find the trailing wrap-up text. Walk backwards within the span for
+        # the last assistant message whose content is a plain string — that
+        # is the wrap-up llm.chat output. Tool_use blocks are list content.
+        summary = f"Phase {self._just_completed_phase} completed."
+        for i in range(end_idx - 1, start_idx - 1, -1):
+            msg = history[i]
+            if msg.get("role") == "assistant" and isinstance(msg.get("content"), str):
+                summary = msg["content"]
+                break
+        self._global_history = compact_phase_range(
+            history, start_idx, end_idx, summary,
+        )
+        # After compaction the span is one message at start_idx. The user
+        # message that was at end_idx is now at start_idx + 1 → next phase
+        # begins one slot past that.
+        self._phase_start_idx_global = start_idx + 1
+        self._just_completed_phase = None
+
     def _handle_interrupt_bailout(self) -> str:
         """Clean-shutdown path for an interrupt observed in `_run_react_turn`.
 
@@ -741,7 +916,58 @@ class AgentLoop:
                 success=True,
                 summary=f"Phase synced to: {phase_name}",
             )
+            self._log_move({
+                "kind": "tool",
+                "phase": self.current_phase,
+                "name": tool_name,
+                "args": params,
+                "result_summary": f"synced to {phase_name}",
+                "success": True,
+            })
             return f"Frontend phase state synced to '{phase_name}'.", None
+
+        # Meta-tool: read from the off-prompt MoveLog. Re-injects detail the
+        # LLM compacted away — never advances phase state, never touches
+        # Blender. Schema lives in app.agent.history.
+        if tool_name == QUERY_HISTORY_TOOL_NAME:
+            if self._move_log is None:
+                result_str = json.dumps({
+                    "error": "Move log is not enabled for this session.",
+                    "moves": [],
+                })
+            else:
+                # Backstop the LLM-controlled `last_n` so a no-args call (or
+                # one with an absurd value) cannot defeat compaction by yanking
+                # the entire log back into the prompt. The system prompt asks
+                # the LLM to keep last_n small; this enforces it.
+                raw_last_n = params.get("last_n")
+                if not isinstance(raw_last_n, int) or raw_last_n <= 0:
+                    capped_last_n = QUERY_HISTORY_DEFAULT_LAST_N
+                else:
+                    capped_last_n = min(raw_last_n, QUERY_HISTORY_MAX_LAST_N)
+                moves = self._move_log.read(
+                    phase=params.get("phase"),
+                    kind=params.get("kind"),
+                    name=params.get("name"),
+                    last_n=capped_last_n,
+                )
+                result_str = json.dumps(moves, ensure_ascii=False)
+            self._emit(
+                "tool_result",
+                id=tc.get("id"),
+                name=tool_name,
+                success=True,
+                summary=f"{result_str[:200]}",
+            )
+            self._log_move({
+                "kind": "tool",
+                "phase": self.current_phase,
+                "name": tool_name,
+                "args": params,
+                "result_summary": f"{len(result_str)} bytes",
+                "success": True,
+            })
+            return result_str, None
 
         tool = self._phase_tools.get(tool_name)
         if tool is None:
@@ -764,6 +990,14 @@ class AgentLoop:
                 success=True,
                 summary=result_str[:500],
             )
+            self._log_move({
+                "kind": "tool",
+                "phase": self.current_phase,
+                "name": tool_name,
+                "args": params,
+                "result_summary": result_str[:500],
+                "success": True,
+            })
             return result_str, None
 
         # Phase tools: execute, advance state on success.
@@ -800,6 +1034,17 @@ class AgentLoop:
                 # history (so the wrap-up llm.chat sees a balanced trace) and
                 # is reset by the wrap-up branch itself.
                 self._phase_just_advanced = True
+                # Context-management: mark this phase as ready for compaction
+                # on the NEXT _run_react_turn (after the user resumes from the
+                # wrap-up pause). Both flags coexist by design — _phase_just_-
+                # advanced drives the in-turn wrap-up, _just_completed_phase
+                # drives next-turn compaction.
+                self._just_completed_phase = completed
+                next_phase = (
+                    _PHASE_SEQUENCE[self._phase_idx]
+                    if self._phase_idx < len(_PHASE_SEQUENCE)
+                    else None
+                )
                 self._emit(
                     "tool_result",
                     id=tc.get("id"),
@@ -807,6 +1052,19 @@ class AgentLoop:
                     success=True,
                     summary=f"Phase {completed} completed. {diff}",
                 )
+                self._log_move({
+                    "kind": "tool",
+                    "phase": completed,
+                    "name": tool_name,
+                    "args": params,
+                    "result_summary": diff,
+                    "success": True,
+                })
+                self._log_move({
+                    "kind": "phase_advance",
+                    "phase": completed,
+                    "to_phase": next_phase,
+                })
                 await self._emit_widget_if_inspector(tool_name, result.state_diff)
                 self._on_phase_advance(completed_phase=completed)
                 return f"Phase {completed} completed. Scene diff: {diff}", None
@@ -818,6 +1076,14 @@ class AgentLoop:
                     success=True,
                     summary=f"sub-step ok: {diff}",
                 )
+                self._log_move({
+                    "kind": "tool",
+                    "phase": self.current_phase,
+                    "name": tool_name,
+                    "args": params,
+                    "result_summary": diff,
+                    "success": True,
+                })
                 await self._emit_widget_if_inspector(tool_name, result.state_diff)
                 return f"Tool {tool_name} succeeded (sub-step, phase not advanced). Result: {diff}", None
         else:
@@ -831,6 +1097,14 @@ class AgentLoop:
                 success=False,
                 summary=result.error.message,
             )
+            self._log_move({
+                "kind": "tool",
+                "phase": self.current_phase,
+                "name": tool_name,
+                "args": params,
+                "result_summary": result.error.message,
+                "success": False,
+            })
             self._emit(
                 "error_choice",
                 operator=result.error.operator,
@@ -1586,7 +1860,10 @@ class AgentLoop:
         self._emit("phase_started", phase=phase_name, index=target_idx, total=len(_PHASE_SEQUENCE))
 
     def _build_tool_list(self) -> list[dict]:
-        return [t.tool_schema() for t in self._phase_tools.values()] + [_SYNC_PHASE_TOOL_SCHEMA]
+        return (
+            [t.tool_schema() for t in self._phase_tools.values()]
+            + [_SYNC_PHASE_TOOL_SCHEMA, QUERY_HISTORY_TOOL_SCHEMA]
+        )
 
     def _build_phase_only_tool_list(self) -> list[dict]:
         """Phase tools only — excludes query tools. Used when the LLM has spent

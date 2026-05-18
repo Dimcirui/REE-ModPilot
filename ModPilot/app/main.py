@@ -326,6 +326,7 @@ def _get_or_create_session(session_id: str, *, with_sink: bool) -> AgentLoop:
         blender=blender,
         event_sink=event_sink,
         session_config=cfg.model_dump() if cfg is not None else None,
+        session_id=session_id,
     )
     return sessions[session_id]
 
