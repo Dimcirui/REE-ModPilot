@@ -97,6 +97,8 @@ ModPilot/app/phases/REE-ModPilot.code-workspace
 ModPilot/frontend/node_modules/
 ModPilot/frontend/dist/
 ModPilot/frontend/.vite/
+# TypeScript incremental-build caches — regenerated on every `tsc -b`.
+*.tsbuildinfo
 # Vite build output served by FastAPI at /. Rebuilt by `pnpm build` —
 # keep it out of source control so commits don't carry hashed bundles.
 ModPilot/app/static_built/
