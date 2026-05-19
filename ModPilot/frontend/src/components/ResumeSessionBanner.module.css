@@ -1,0 +1,42 @@
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  background: var(--info-bg, rgb(59 130 246 / 12%));
+  border: 1px solid var(--info-border, rgb(59 130 246 / 35%));
+  color: var(--info, rgb(30 64 175));
+  font-size: 0.85rem;
+}
+
+.text {
+  flex: 1;
+}
+
+.primary,
+.secondary {
+  font-size: 0.85rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.primary {
+  background: var(--info, rgb(30 64 175));
+  color: white;
+}
+
+.primary:hover {
+  filter: brightness(1.1);
+}
+
+.secondary {
+  background: transparent;
+  border-color: var(--info-border, rgb(59 130 246 / 35%));
+  color: var(--info, rgb(30 64 175));
+}
+
+.secondary:hover {
+  background: rgb(59 130 246 / 8%);
+}

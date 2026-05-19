@@ -13,7 +13,10 @@ heuristic, and the canonical tool-call shape all live together.
 from __future__ import annotations
 
 import json
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 _RAW_TOOL_CALL_RE = re.compile(
     r"<｜｜DSML｜｜tool_calls>.*?</｜｜DSML｜｜tool_calls>",
@@ -31,6 +34,63 @@ _DSML_PARAM_RE = re.compile(
 
 _DSML_OPEN_TAG = "<｜｜DSML｜｜tool_calls>"
 _DSML_CLOSE_TAG = "</｜｜DSML｜｜tool_calls>"
+
+# Tolerant variants — match any DSML-ish markup regardless of exact pipe
+# codepoint (ASCII `|` vs fullwidth `｜`), pipe count, or surrounding spaces.
+# Defends against DeepSeek emitting new character variants of the same template.
+_PIPE_CLS = r"[\|｜\s]*"
+_TOLERANT_BLOCK_RE = re.compile(
+    rf"<{_PIPE_CLS}DSML{_PIPE_CLS}tool_calls{_PIPE_CLS}>"
+    r".*?"
+    rf"<{_PIPE_CLS}/{_PIPE_CLS}DSML{_PIPE_CLS}tool_calls{_PIPE_CLS}>",
+    re.DOTALL,
+)
+_TOLERANT_INVOKE_RE = re.compile(
+    rf'<{_PIPE_CLS}DSML{_PIPE_CLS}invoke\s+name="(?P<name>[^"]+)"\s*>'
+    r"(?P<body>.*?)"
+    rf"<{_PIPE_CLS}/{_PIPE_CLS}DSML{_PIPE_CLS}invoke{_PIPE_CLS}>",
+    re.DOTALL,
+)
+_TOLERANT_PARAM_RE = re.compile(
+    rf'<{_PIPE_CLS}DSML{_PIPE_CLS}parameter\s+name="(?P<name>[^"]+)"'
+    r'(?:\s+string="(?P<is_str>true|false)")?\s*>'
+    r"(?P<value>.*?)"
+    rf"<{_PIPE_CLS}/{_PIPE_CLS}DSML{_PIPE_CLS}parameter{_PIPE_CLS}>",
+    re.DOTALL,
+)
+# Loose marker — any "DSML ... tool_calls/invoke/parameter" pattern, used
+# only to flag suspicious content. Cheap; no capture groups.
+_LOOSE_MARKER_RE = re.compile(
+    r"DSML[\|｜\s]*(?:tool_calls|invoke|parameter)",
+    re.IGNORECASE,
+)
+
+
+def looks_like_dsml(text: str) -> bool:
+    """Cheap detector — True if text contains any DSML-ish marker token."""
+    if not text:
+        return False
+    return bool(_LOOSE_MARKER_RE.search(text))
+
+
+def sanitize_outbound(text: str) -> str:
+    """Final-stage stripper for content leaving the agent toward the UI.
+
+    Runs strict, then tolerant, then a truncate-at-orphan-marker fallback.
+    Use at the SSE chokepoint so variant-character markup can never reach
+    the chat bubble even when per-branch strippers miss it.
+    """
+    if not text:
+        return text
+    out = _RAW_TOOL_CALL_RE.sub("", text)
+    out = _TOLERANT_BLOCK_RE.sub("", out)
+    # Orphan marker (no matching close tag) — cut from its opening '<'.
+    m = _LOOSE_MARKER_RE.search(out)
+    if m:
+        lt = out.rfind("<", 0, m.start())
+        if lt != -1:
+            out = out[:lt]
+    return out.strip()
 
 
 def strip_dsml_block(text: str) -> str:
@@ -60,24 +120,45 @@ def parse_dsml_tool_calls(content: str) -> list[dict]:
     regex fails (e.g. due to invisible Unicode differences between the source
     pattern and the model's output that visually appear identical).
     """
+    # 1. Strict block + strict invokes (the happy path).
     tc_match = _RAW_TOOL_CALL_RE.search(content)
     if tc_match:
-        block = tc_match.group(0)
-    else:
-        # Plain-string fallback — tolerates invisible character differences
-        start = content.find(_DSML_OPEN_TAG)
-        end = content.find(_DSML_CLOSE_TAG)
-        if start == -1 or end == -1 or end < start:
-            return []
-        block = content[start : end + len(_DSML_CLOSE_TAG)]
+        calls = _extract_invokes(tc_match.group(0), _DSML_INVOKE_RE, _DSML_PARAM_RE)
+        if calls:
+            return calls
 
-    calls = []
-    for i, invoke in enumerate(_DSML_INVOKE_RE.finditer(block)):
+    # 2. Plain-find on strict tag constants — tolerates a missing close tag.
+    start = content.find(_DSML_OPEN_TAG)
+    end = content.find(_DSML_CLOSE_TAG)
+    if start != -1 and end != -1 and end > start:
+        block = content[start : end + len(_DSML_CLOSE_TAG)]
+        calls = _extract_invokes(block, _DSML_INVOKE_RE, _DSML_PARAM_RE)
+        if calls:
+            return calls
+
+    # 3. Tolerant block + tolerant invokes — handles variant pipe codepoints,
+    #    pipe-count drift, and missing `string=` attribute on parameters.
+    tol_block = _TOLERANT_BLOCK_RE.search(content)
+    search_in = tol_block.group(0) if tol_block else content
+    calls = _extract_invokes(search_in, _TOLERANT_INVOKE_RE, _TOLERANT_PARAM_RE)
+    if calls:
+        logger.warning(
+            "DSML tool calls parsed via tolerant fallback — a new char variant "
+            "may have shipped. n_calls=%d",
+            len(calls),
+        )
+    return calls
+
+
+def _extract_invokes(block: str, invoke_re: re.Pattern, param_re: re.Pattern) -> list[dict]:
+    calls: list[dict] = []
+    for i, invoke in enumerate(invoke_re.finditer(block)):
         tool_name = invoke.group("name")
         params: dict = {}
-        for pm in _DSML_PARAM_RE.finditer(invoke.group("body")):
+        for pm in param_re.finditer(invoke.group("body")):
             raw = pm.group("value").strip()
-            if pm.group("is_str") == "true":
+            is_str_group = pm.groupdict().get("is_str")
+            if is_str_group == "true" or is_str_group is None:
                 params[pm.group("name")] = raw
             else:
                 try:

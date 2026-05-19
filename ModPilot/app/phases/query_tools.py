@@ -253,10 +253,12 @@ class ListCollections(QueryTool):
         }
 
     def run(self, client: BlenderClient, params: dict) -> str:
-        chain_only = params.get("chain_only", False)
+        chain_only = bool(params.get("chain_only", False))
         code = (
             f"import bpy, json\n"
-            f"chain_only = {json.dumps(chain_only)}\n"
+            # repr() renders Python bool literals (True/False), not JSON (true/false).
+            # json.dumps here injected `false` into the Python source → NameError.
+            f"chain_only = {chain_only!r}\n"
             f"cols = []\n"
             f"for col in bpy.data.collections:\n"
             f"    if chain_only and '.chain' not in col.name and '.clsp' not in col.name:\n"

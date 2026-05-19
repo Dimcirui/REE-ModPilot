@@ -23,6 +23,17 @@ export interface InterruptResponse {
   interrupted: boolean;
 }
 
+// ── /agent/session/status ─────────────────────────────────────────────────
+
+export interface SessionStatusResponse {
+  session_id: string;
+  has_history: boolean;
+  completed: boolean;
+  phase_idx: number;
+  current_phase: string | null;
+  last_activity_ts: number | null;
+}
+
 // ── /agent/config (POST) ──────────────────────────────────────────────────
 
 export interface SessionConfig {

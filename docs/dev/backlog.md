@@ -42,13 +42,14 @@ Current work is post-MVP polish — see open items below.
 - ⚪ Consecutive `tool_use` without `tool_result` — prevent at `_dispatch` instead of post-hoc `heal_history`. Strengthen "one tool per turn" in `agent_workflow.md` prompt and detect duplicate tool names before they reach the API.
 - ⚪ Done-watchdog mis-timing — 5 s watchdog fires while a legitimately long tool call (e.g. large `physics_chains`) is still running, unlocking chat input prematurely. Start only after `message(assistant)` fires, make timeout configurable (10–15 s default).
 - ⚪ Session-store GC — `~/.modpilot/sessions/{sid}/moves.jsonl` accumulates forever; the context-management design called for an mtime sweep that didn't ship. Per-session is bounded; across-session is not.
+- ⚪ Session index + completed-session auto-archive — disk-side counterpart to the FE resume prompt (shipped 2026-05-19). Maintain `~/.modpilot/sessions/index.jsonl` updated debounced on every `MoveLog.append`, carrying `{session_id, created_ts, last_activity_ts, completed, current_phase}`. On DONE, rename `~/.modpilot/sessions/{sid}/` → `~/.modpilot/sessions/archived/{sid}/`. Cheap fast path for the `/agent/session/status` endpoint (today it tail-scans the per-session log on every call) and a natural place to hook the GC sweep above.
 
 ---
 
 ## P3 — Future / nice-to-have
 
 - ⚪ Physics classification widget hierarchical tree view (nested/collapsible rows for parent-child chain relationships; requires multi-level groupby or a JS tree component).
-- ⚪ Cross-session resume affordance — `session_id` recovery already replays phase-completion summaries, but there's no UI to pick a prior session and no mid-phase replay (scene-is-memory covers most of it, but a "browse my sessions" surface is missing).
+- ⚪ Cross-session resume affordance — single-session resume prompt and completed-session detection shipped 2026-05-19. A multi-session "browse my sessions" list view is NOT planned: ModPilot's workflow is one-mod-per-pipeline, parallel sessions are unlikely. Revisit only if real usage shows demand.
 - ⚪ Tool retrieval / Content RAG upgrade if `plan.md` grows large (C11 留的口子).
 - ⚪ Multi-provider expansion (Qwen3 / Gemini 2.5 Flash / GPT-5 mini).
 - ⚪ Auto rollback / `.blend` snapshots if "can't go back" becomes a high-frequency pain (B7 留的口子).

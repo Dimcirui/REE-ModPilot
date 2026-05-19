@@ -35,7 +35,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from app.agent.loop import AgentLoop
+from app.agent.history import MoveLog
+from app.agent.loop import AgentLoop, _PHASE_SEQUENCE
 from app.armor_catalog import is_valid_armor_id, list_armor_sets
 from app.blender.client import BlenderBusyError, BlenderClient, BlenderError
 from app.blender.preset_catalog import (
@@ -506,6 +507,69 @@ async def agent_interrupt(session_id: str) -> JSONResponse:
         raise HTTPException(status_code=404, detail="Unknown session_id")
     loop.interrupt()
     return JSONResponse({"session_id": session_id, "interrupted": True})
+
+
+# ── /agent/session/status ──────────────────────────────────────────────────
+
+
+@app.get("/agent/session/status")
+async def agent_session_status(session_id: str = Query(..., min_length=1)) -> JSONResponse:
+    """
+    Report the on-disk state of a session_id without instantiating its AgentLoop.
+
+    The FE calls this once at first-render to decide whether to:
+      - drop the user straight into a fresh session (no history),
+      - silently mint a new session_id (last session was completed), or
+      - prompt to resume (last session is incomplete).
+
+    Reads the move log directly so this stays cheap (no LLM, no Blender).
+    `phase_idx` is derived from the count of `phase_advance` entries — the
+    same logic AgentLoop._hydrate_from_move_log uses, kept in sync.
+
+    Returns:
+      has_history       — at least one move recorded.
+      completed         — session has either reached the end of _PHASE_SEQUENCE
+                          OR carries an explicit `session_completed` marker
+                          written by the overshoot guard.
+      phase_idx         — int in [0, len(_PHASE_SEQUENCE)].
+      current_phase     — name of phase the user would resume into, or null
+                          when completed.
+      last_activity_ts  — float seconds since epoch; null when no history.
+    """
+    try:
+        log = MoveLog(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    moves = log.read()
+    if not moves:
+        return JSONResponse({
+            "session_id": session_id,
+            "has_history": False,
+            "completed": False,
+            "phase_idx": 0,
+            "current_phase": _PHASE_SEQUENCE[0],
+            "last_activity_ts": None,
+        })
+
+    phase_idx = sum(1 for m in moves if m.get("kind") == "phase_advance")
+    explicit_completed = any(m.get("kind") == "session_completed" for m in moves)
+    completed = explicit_completed or phase_idx >= len(_PHASE_SEQUENCE)
+    last_ts = max(
+        (float(m.get("ts", 0.0)) for m in moves if m.get("ts") is not None),
+        default=None,
+    )
+    current_phase = (
+        None if completed else _PHASE_SEQUENCE[min(phase_idx, len(_PHASE_SEQUENCE) - 1)]
+    )
+    return JSONResponse({
+        "session_id": session_id,
+        "has_history": True,
+        "completed": completed,
+        "phase_idx": phase_idx,
+        "current_phase": current_phase,
+        "last_activity_ts": last_ts,
+    })
 
 
 # ── /agent/config (Stage 5 issue #3) ───────────────────────────────────────

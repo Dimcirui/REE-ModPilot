@@ -3,15 +3,17 @@ import { Header } from '@/components/Header';
 import { Shell } from '@/components/Shell';
 import { ChatStrip } from '@/components/ChatStrip';
 import { InterruptBanner } from '@/components/InterruptBanner';
+import { ResumeSessionBanner } from '@/components/ResumeSessionBanner';
 import { PhaseStepper } from '@/components/PhaseStepper';
 import { StageRouter } from '@/stages/StageRouter';
 import { useChatState, nextBubbleId } from '@/hooks/useChatState';
 import { useSSE, type SseDispatchers } from '@/hooks/useSSE';
-import { getSessionId } from '@/lib/session';
+import { getSessionId, resetSessionId } from '@/lib/session';
 import { api } from '@/lib/api';
 import type {
   ClassificationConfirmation,
   MaterialSlotMapping,
+  SessionStatusResponse,
 } from '@/types/api';
 import type { ModelTypeInferredEvent } from '@/types/sse';
 import styles from './ChatPage.module.css';
@@ -31,6 +33,10 @@ export default function ChatPage() {
   });
   const [inferredModelType, setInferredModelType] =
     useState<ModelTypeInferredEvent | null>(null);
+  // Surfaces the "resume last session?" prompt when on-disk move log exists
+  // but the session is incomplete. Null means either no history (fresh) or
+  // the prompt has already been resolved this page lifetime.
+  const [resumePrompt, setResumePrompt] = useState<SessionStatusResponse | null>(null);
   const watchdogRef = useRef<number | null>(null);
 
   const cancelWatchdog = useCallback(() => {
@@ -92,6 +98,46 @@ export default function ChatPage() {
     }),
     [dispatch, armWatchdog, cancelWatchdog],
   );
+
+  // First-render check: does this session_id already have on-disk history?
+  // - no history       → drop straight into a fresh session, no prompt
+  // - completed        → mint a new session_id silently (the FE keeps a clean
+  //                      slate; the on-disk log is left as an archive)
+  // - incomplete       → show the resume prompt so the user can choose
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const status = await api.getSessionStatus(sessionId);
+        if (cancelled) return;
+        if (!status.has_history) return;
+        if (status.completed) {
+          // Past session finished. Mint a fresh id; reload so all React state
+          // (sessionId useMemo, SSE connection, chat bubbles) starts clean.
+          resetSessionId();
+          window.location.reload();
+          return;
+        }
+        setResumePrompt(status);
+      } catch (err) {
+        // Status check is best-effort. If backend is unreachable here, the
+        // normal SSE retry path will surface the real issue.
+        console.warn('session status check failed', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
+  const handleResumeSession = useCallback(() => {
+    setResumePrompt(null);
+  }, []);
+
+  const handleStartNewSession = useCallback(() => {
+    resetSessionId();
+    window.location.reload();
+  }, []);
 
   const { status: sseStatus, reconnectIn } = useSSE(sessionId, dispatchers);
 
@@ -215,10 +261,17 @@ export default function ChatPage() {
         stage={<StageRouter {...stageProps} />}
         phaseStepper={<PhaseStepper status={state.phaseStatus} />}
         banner={
-          <InterruptBanner
-            visible={state.interruptVisible}
-            onDismiss={handleDismissInterrupt}
-          />
+          <>
+            <ResumeSessionBanner
+              status={resumePrompt}
+              onResume={handleResumeSession}
+              onStartNew={handleStartNewSession}
+            />
+            <InterruptBanner
+              visible={state.interruptVisible}
+              onDismiss={handleDismissInterrupt}
+            />
+          </>
         }
         chatStrip={
           <ChatStrip

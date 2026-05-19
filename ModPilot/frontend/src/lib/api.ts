@@ -11,6 +11,7 @@ import type {
   SessionConfigFieldErrors,
   SessionConfigRequest,
   SessionConfigSaveOk,
+  SessionStatusResponse,
   ToolkitStatusResponse,
   WidgetSaveOk,
   XPresetsResponse,
@@ -77,6 +78,11 @@ export const api = {
   getXPresets: () => getJson<XPresetsResponse>('/app/x_presets'),
   getArmorSets: () => getJson<ArmorSetsResponse>('/app/armor_sets'),
   getToolkitStatus: () => getJson<ToolkitStatusResponse>('/app/toolkit_status'),
+
+  getSessionStatus: (sessionId: string) =>
+    getJson<SessionStatusResponse>(
+      `/agent/session/status?session_id=${encodeURIComponent(sessionId)}`,
+    ),
 
   submitClassificationWidget: (body: ClassificationWidgetSubmit) =>
     postJson<ClassificationWidgetSubmit, WidgetSaveOk>(
