@@ -1,0 +1,120 @@
+.panel {
+  margin-bottom: 0.75rem;
+  padding: 0.55rem 0.7rem;
+  background: var(--bg, #11151b);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 6px);
+  font-size: 0.8rem;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.title {
+  font-weight: 600;
+  color: var(--fg, #e3e6ea);
+}
+
+.summary {
+  flex: 1;
+  color: var(--fg-muted, #9aa2ad);
+  font-variant-numeric: tabular-nums;
+}
+
+.summaryOk {
+  color: var(--accent-ok, #4ec27a);
+}
+
+.summaryWarn {
+  color: var(--accent-warn, #e3a04e);
+}
+
+.recheck {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 0.2rem 0.55rem;
+  border-radius: var(--radius-sm, 4px);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.recheck:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.recheck:not(:disabled):hover {
+  border-color: var(--accent, #6aa9ff);
+}
+
+.note {
+  margin-top: 0.5rem;
+  padding: 0.4rem 0.55rem;
+  background: var(--bg-elev);
+  border-radius: var(--radius-sm, 4px);
+  color: var(--fg-muted);
+  line-height: 1.4;
+}
+
+.list {
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.3rem;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 0.55rem;
+  padding: 0.25rem 0;
+}
+
+.row[data-status='present'] {
+  color: var(--fg-muted);
+}
+
+.pill {
+  display: inline-block;
+  min-width: 4.2rem;
+  text-align: center;
+  padding: 0.1rem 0.35rem;
+  border-radius: var(--radius-sm, 4px);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.present {
+  background: rgba(78, 194, 122, 0.18);
+  color: var(--accent-ok, #4ec27a);
+}
+
+.disabled {
+  background: rgba(227, 160, 78, 0.18);
+  color: var(--accent-warn, #e3a04e);
+}
+
+.missing {
+  background: rgba(227, 78, 78, 0.18);
+  color: var(--accent-err, #e34e4e);
+}
+
+.toolLabel {
+  color: var(--fg);
+}
+
+.hint {
+  grid-column: 2;
+  font-size: 0.72rem;
+  color: var(--fg-muted);
+  margin-top: 0.1rem;
+}

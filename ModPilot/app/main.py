@@ -51,6 +51,7 @@ from app.config_store import save as save_persisted_config
 from app.llm.client import LLMClient
 from app.phases.base import X_PRESETS, update_x_presets
 from app.phases.material import PRINCIPLED_SLOTS
+from app.toolkit_probe import probe_toolkit
 
 # ── paths ─────────────────────────────────────────────────────────────────
 
@@ -628,6 +629,29 @@ async def get_x_presets() -> JSONResponse:
         ]
     presets.sort(key=lambda p: p["name"])
     return JSONResponse({"presets": presets})
+
+
+# ── /app/toolkit_status (toolkit dependency preflight) ────────────────────
+
+
+@app.get("/app/toolkit_status")
+async def get_toolkit_status() -> JSONResponse:
+    """Probe Blender for required-addon presence/enabled state.
+
+    Returns 200 with `{ok: bool, tools: [{id, label, status, critical}]}`
+    on success — `ok` is true iff every `critical` tool is `present`.
+    Returns 503 when Blender is unreachable, mirroring the /health /
+    /viewport_screenshot pattern so the frontend can render a friendly
+    "Blender not running" hint.
+    """
+    client = _get_client()
+    try:
+        tools = probe_toolkit(client)
+    except (BlenderError, OSError) as exc:
+        client.close()
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    ok = all((t.status == "present") or (not t.critical) for t in tools)
+    return JSONResponse({"ok": ok, "tools": [t.to_dict() for t in tools]})
 
 
 # ── /app/armor_sets (issue #10) ────────────────────────────────────────────
