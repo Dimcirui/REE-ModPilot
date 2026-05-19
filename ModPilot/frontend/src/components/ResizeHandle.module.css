@@ -1,0 +1,39 @@
+.handle {
+  position: relative;
+  background: transparent;
+  touch-action: none;
+  user-select: none;
+  z-index: 5;
+  transition: background 120ms ease;
+}
+
+/* The visible track is thin; a slightly wider hit-target sits on top via
+   a ::before pseudo so users can grab it without millimetre precision. */
+.handle::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+}
+
+.handle:hover,
+.handle[data-dragging='true'] {
+  background: var(--accent, #6aa9ff);
+}
+
+/* Default is column-split (vertical divider). */
+.handle {
+  cursor: col-resize;
+  width: 4px;
+}
+
+/* Row-split (horizontal divider) — used when parent grid is in responsive
+   mode (auto-detected by the component on drag). We can't switch shape on
+   the fly via JS alone since the parent's media query decides, so the
+   stage's @media block also resizes us. */
+@media (max-width: 900px) {
+  .handle {
+    width: auto;
+    height: 4px;
+    cursor: row-resize;
+  }
+}

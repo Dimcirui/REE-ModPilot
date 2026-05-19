@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { ViewportPane } from '@/components/ViewportPane';
+import { ResizeHandle } from '@/components/ResizeHandle';
 import { ClassificationWidget } from '@/components/ClassificationWidget';
 import { ErrorChoice } from '@/components/ErrorChoice';
 import type { ToolRun } from '@/hooks/useChatState';
@@ -132,6 +133,8 @@ export function Phase4Stage({ state, onClassificationSubmit, onErrorChoice }: St
           )}
         </AnimatePresence>
       </section>
+
+      <ResizeHandle storageKey="canvas" />
 
       <aside className={styles.sidebar} aria-label="Phase 4 details">
         <header className={styles.header}>

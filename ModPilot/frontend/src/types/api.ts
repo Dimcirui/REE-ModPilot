@@ -121,6 +121,22 @@ export interface ArmorSetsResponse {
   armor_sets: ArmorSet[];
 }
 
+// ── /app/toolkit_status ───────────────────────────────────────────────────
+
+export type ToolStatusValue = 'present' | 'disabled' | 'missing';
+
+export interface ToolStatus {
+  id: string;
+  label: string;
+  status: ToolStatusValue;
+  critical: boolean;
+}
+
+export interface ToolkitStatusResponse {
+  ok: boolean;
+  tools: ToolStatus[];
+}
+
 // ── /health ───────────────────────────────────────────────────────────────
 
 export interface HealthResponse {

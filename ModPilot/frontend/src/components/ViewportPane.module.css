@@ -4,6 +4,8 @@
   background: var(--bg-elev);
   border-left: 1px solid var(--border);
   min-height: 0;
+  height: 100%;
+  flex: 1 1 0;
 }
 
 .header {

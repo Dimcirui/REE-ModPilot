@@ -11,6 +11,7 @@ import type {
   SessionConfigFieldErrors,
   SessionConfigRequest,
   SessionConfigSaveOk,
+  ToolkitStatusResponse,
   WidgetSaveOk,
   XPresetsResponse,
 } from '@/types/api';
@@ -75,6 +76,7 @@ export const api = {
 
   getXPresets: () => getJson<XPresetsResponse>('/app/x_presets'),
   getArmorSets: () => getJson<ArmorSetsResponse>('/app/armor_sets'),
+  getToolkitStatus: () => getJson<ToolkitStatusResponse>('/app/toolkit_status'),
 
   submitClassificationWidget: (body: ClassificationWidgetSubmit) =>
     postJson<ClassificationWidgetSubmit, WidgetSaveOk>(

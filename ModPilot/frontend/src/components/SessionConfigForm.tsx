@@ -5,6 +5,7 @@ import type { SessionConfig } from '@/types/api';
 import type { ModelTypeInferredEvent } from '@/types/sse';
 import { api, asSessionConfigFieldErrors } from '@/lib/api';
 import { PathField } from './PathField';
+import { ToolkitStatusPanel } from './ToolkitStatusPanel';
 import styles from './SessionConfigForm.module.css';
 
 const MODEL_FILE_FILTERS = [
@@ -84,6 +85,9 @@ export function SessionConfigForm({ sessionId, inferredModelType }: SessionConfi
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<keyof SessionConfig, string>>>({});
   const [generalError, setGeneralError] = useState('');
   const [saving, setSaving] = useState(false);
+  // null = unknown (loading / Blender unreachable). We only block Start on an
+  // explicit false (probe came back and a critical tool was missing/disabled).
+  const [toolkitOk, setToolkitOk] = useState<boolean | null>(null);
 
   // ── load catalogs on mount ────────────────────────────────────────────
   useEffect(() => {
@@ -215,6 +219,8 @@ export function SessionConfigForm({ sessionId, inferredModelType }: SessionConfi
             system prompt.
           </span>
         </div>
+
+        <ToolkitStatusPanel onStatusChange={setToolkitOk} />
 
         <form onSubmit={handleSubmit}>
           <fieldset className={styles.fieldset}>
@@ -365,7 +371,12 @@ export function SessionConfigForm({ sessionId, inferredModelType }: SessionConfi
             <button
               type="submit"
               className={styles.startButton}
-              disabled={!isComplete || saving}
+              disabled={!isComplete || saving || toolkitOk === false}
+              title={
+                toolkitOk === false
+                  ? 'A required Blender addon is missing or disabled. Fix and re-check above.'
+                  : undefined
+              }
             >
               {saving ? 'Saving…' : 'Start'}
             </button>

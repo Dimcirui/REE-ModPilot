@@ -1,6 +1,7 @@
 import { AnimatePresence } from 'motion/react';
 import { SessionConfigForm } from '@/components/SessionConfigForm';
 import { ViewportPane } from '@/components/ViewportPane';
+import { ResizeHandle } from '@/components/ResizeHandle';
 import { ClassificationWidget } from '@/components/ClassificationWidget';
 import { MaterialWidget } from '@/components/MaterialWidget';
 import { ErrorChoice } from '@/components/ErrorChoice';
@@ -51,6 +52,7 @@ export function FallbackStage({
           </AnimatePresence>
         </div>
       </div>
+      <ResizeHandle storageKey="canvas" />
       <ViewportPane />
     </div>
   );
