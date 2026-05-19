@@ -1227,27 +1227,7 @@ If warnings or errors appear in the log:
 
 ---
 
-## Reference: Toolkit Operator Index
+## Reference: Agent Callable API
 
-> Maps each phase's execution steps to their corresponding bpy.ops.* calls.
-> To be completed as operator names are confirmed against plugin_api.md.
-
-| Phase | Step Description | Operator | Notes |
-|-------|-----------------|----------|-------|
-| 1 | Arm-bone scale align (issue #13) | `object.transform_apply(scale=True)` | Ratio = mean(target arm-bone Z) / mean(source arm-bone Z) |
-| 1 | Direction calculation (MMD) | <!-- FILL IN --> | Rotates upper arms |
-| 1 | Pose recorder forward (Endfield) | <!-- FILL IN --> | Applies pre-recorded delta |
-| 2 | Align bones [X+Y] | <!-- FILL IN --> | Dual armature selection required |
-| 3 | Rename vertex groups [X+Y] | <!-- FILL IN --> | Must select MESH, not ARMATURE |
-| 3 | Merge meshes | <!-- FILL IN --> | Blender built-in join |
-| 3.5 | Transplant physics bones [X+Y] | <!-- FILL IN --> | Dual armature; MHWs must be active |
-| 3.5 | Refresh bone colors | <!-- FILL IN --> | Visualizes chain_role on transplanted bones |
-| 4A | Merge to parent bone | <!-- FILL IN --> | For aux_merge bones |
-| 4B | Create chain2 header | `re_chain.create_chain_header` | Set `chainFileType="chain2"` first; params: `collectionName`, `chainFormat=".chain2"` |
-| 4B | Create initial Settings (shared) | Modding-Toolkit one-click create chain2 (shared mode) | Creates 1 Settings with all groups |
-| 4B | Apply angle limit ramp | `re_chain.apply_angle_limit_ramp` | Active obj must be CHAINGROUP; params: `maxAngleLimit=1.047198`, `maxIteration=4` |
-| 4B | Create additional Settings | `re_chain.create_chain_settings` | Poll: `chainCollection` must be set; no user params |
-| 4B | Apply Chain Settings preset | `re_chain.apply_chain_settings_preset` | Set `chainSettingsPresets` enum first; name = filename without `.json` |
-| 5B | MDF2 generate | `mhws.mdf_gen_refresh` + `mhws.mdf_gen_process` | `material_generate` tool; natives_root = any user folder |
-| 6 | MHWs Batch Exporter | <!-- FILL IN --> | Body slot → mesh collection; all others → empty model; clsp → empty model |
-| 6 | BoneSystem export | <!-- FILL IN --> | Always required; armature = MHWs armature; FBXSkel name = character name |
+> Agent 当前可调用的全部工具清单（名称、底层算子、代码位置）。
+> 详见 `docs/dev/agent-api.md`。
