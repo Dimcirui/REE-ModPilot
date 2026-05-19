@@ -1,6 +1,6 @@
 .stage {
   display: grid;
-  grid-template-columns: 1fr 360px;
+  grid-template-columns: 1fr auto var(--split-col, 360px);
   height: 100%;
   min-height: 0;
 }
@@ -322,7 +322,7 @@
 @media (max-width: 900px) {
   .stage {
     grid-template-columns: 1fr;
-    grid-template-rows: 1fr 320px;
+    grid-template-rows: 1fr auto var(--split-row, 320px);
   }
   .sidebar {
     border-left: 0;

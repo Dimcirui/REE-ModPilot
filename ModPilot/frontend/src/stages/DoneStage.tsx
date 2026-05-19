@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { motion } from 'motion/react';
 import { ViewportPane } from '@/components/ViewportPane';
+import { ResizeHandle } from '@/components/ResizeHandle';
 import type { ToolRun } from '@/hooks/useChatState';
 import type { StageProps } from './types';
 import styles from './DoneStage.module.css';
@@ -34,6 +35,8 @@ export function DoneStage({ state }: StageProps) {
       <section className={styles.canvas}>
         <ViewportPane />
       </section>
+
+      <ResizeHandle storageKey="canvas" />
 
       <aside className={styles.sidebar} aria-label="Run complete">
         <motion.div

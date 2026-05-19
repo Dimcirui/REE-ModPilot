@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { ViewportPane } from '@/components/ViewportPane';
+import { ResizeHandle } from '@/components/ResizeHandle';
 import { ErrorChoice } from '@/components/ErrorChoice';
 import type { ToolRun } from '@/hooks/useChatState';
 import type { StageProps } from './types';
@@ -64,6 +65,8 @@ export function Phase6Stage({ state, onErrorChoice }: StageProps) {
       <section className={styles.canvas}>
         <ViewportPane />
       </section>
+
+      <ResizeHandle storageKey="canvas" />
 
       <aside className={styles.sidebar} aria-label="Phase 6 details">
         <header className={styles.header}>
