@@ -50,7 +50,9 @@ from app.blender.client import BLENDER_SENTINEL, BlenderClient, BlenderError
 from app.blender.preset_catalog import discover_preset_dir, enumerate_x_presets
 from app.blender.state import SceneCache
 from app.phases.base import (
+    DEFAULT_Y_PRESET,
     X_PRESETS,
+    Y_PRESETS,
     PhaseError,
     PhaseResult,
     PhaseTool,
@@ -149,6 +151,13 @@ class PoseCorrection(PhaseTool):
                             "use this fixed value without asking the user."
                         ),
                     },
+                    "y_preset": {
+                        "type": "string",
+                        "description": (
+                            "Target game preset for arm-bone name lookup. "
+                            "Default: 怪猎荒野 (MHWs). Change only for non-MHWs targets."
+                        ),
+                    },
                     "skip_scale_align": {
                         "type": "boolean",
                         "description": (
@@ -205,6 +214,16 @@ class PoseCorrection(PhaseTool):
             )
 
         skip_scale = bool(params.get("skip_scale_align", False))
+        y_preset = params.get("y_preset", DEFAULT_Y_PRESET)
+        if y_preset not in Y_PRESETS:
+            return PhaseResult.fail(
+                PhaseError(
+                    category="precondition",
+                    operator="",
+                    message=f"Unknown Y preset {y_preset!r}. Valid: {sorted(Y_PRESETS)}",
+                    suggestion="Use 怪猎荒野 for MHWs.",
+                )
+            )
 
         # ── entry spot-check ───────────────────────────────────────────────
         state_before = cache.refresh()
@@ -218,7 +237,7 @@ class PoseCorrection(PhaseTool):
 
             # Step 2 — arm-bone average-height scale alignment (issue #13)
             if not skip_scale:
-                err = self._scale_align(client, source_arm, target_arm, x_preset)
+                err = self._scale_align(client, source_arm, target_arm, x_preset, y_preset)
                 if err is not None:
                     return PhaseResult.fail(err)
 
@@ -296,6 +315,7 @@ class PoseCorrection(PhaseTool):
         source_arm: str,
         target_arm: str,
         x_preset: str,
+        y_preset: str = DEFAULT_Y_PRESET,
     ) -> PhaseError | None:
         """
         Issue #13 — Arm-bone average-height scale alignment.
@@ -305,20 +325,15 @@ class PoseCorrection(PhaseTool):
         `ratio = mean(target_z) / mean(source_z)` and apply it as a uniform
         scale on the source armature (with transform_apply to bake).
 
-        Source bone names per slot come from the active X-preset's `main`
-        candidate list (first candidate that resolves in the armature wins).
-        Target bone names ARE the slot keys (MHWilds canonical naming).
-
-        Requires at least 2 resolved bones per side to avoid noisy averages;
-        below that threshold we PRECONDITION-fail with a suggestion. This
-        replaces the prior mesh-bbox-Z method which broke on rigs with
-        above-head props (hats / weapons / hair).
+        Bone names for both sides come from the preset system:
+          source ← X-preset (MMD / VRChat / 终末地)
+          target ← Y-preset (怪猎荒野 for MHWs)
+        Each preset maps slot keys to the actual bone names in its rig.
         """
-        candidates = _resolve_arm_candidates(client, x_preset)
-        # Serialize as a JSON literal so the Blender side just `json.loads`-es
-        # it; safer than f-string-embedding a dict of bone names that may
-        # contain quotes (e.g. "Left arm").
-        candidates_json = json.dumps(candidates, ensure_ascii=False)
+        src_candidates = _resolve_arm_candidates(client, x_preset)
+        tgt_candidates = _resolve_arm_candidates(client, y_preset)
+        src_candidates_json = json.dumps(src_candidates, ensure_ascii=False)
+        tgt_candidates_json = json.dumps(tgt_candidates, ensure_ascii=False)
         slot_keys_json = json.dumps(list(_ARM_SLOTS))
 
         code = (
@@ -343,26 +358,27 @@ class PoseCorrection(PhaseTool):
             f"    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)\n"
             f"    bpy.context.view_layer.update()\n"
             # ── arm-bone sampling ───────────────────────────────────────────
-            f"    _candidates = json.loads({candidates_json!r})\n"
+            f"    _src_candidates = json.loads({src_candidates_json!r})\n"
+            f"    _tgt_candidates = json.loads({tgt_candidates_json!r})\n"
             f"    _slot_keys = json.loads({slot_keys_json!r})\n"
-            # Source: try each candidate per slot; first match wins.
+            # Both sides: try each candidate per slot; first match wins.
             f"    src_zs = []\n"
             f"    src_matched = []\n"
+            f"    tgt_zs = []\n"
+            f"    tgt_matched = []\n"
             f"    for slot in _slot_keys:\n"
-            f"        for name in _candidates.get(slot, [slot]):\n"
+            f"        for name in _src_candidates.get(slot, [slot]):\n"
             f"            pb = src_arm.pose.bones.get(name)\n"
             f"            if pb is not None:\n"
             f"                src_zs.append((src_arm.matrix_world @ pb.head).z)\n"
             f"                src_matched.append(slot)\n"
             f"                break\n"
-            # Target: canonical names = slot keys.
-            f"    tgt_zs = []\n"
-            f"    tgt_matched = []\n"
-            f"    for slot in _slot_keys:\n"
-            f"        pb = tgt_arm.pose.bones.get(slot)\n"
-            f"        if pb is not None:\n"
-            f"            tgt_zs.append((tgt_arm.matrix_world @ pb.head).z)\n"
-            f"            tgt_matched.append(slot)\n"
+            f"        for name in _tgt_candidates.get(slot, [slot]):\n"
+            f"            pb = tgt_arm.pose.bones.get(name)\n"
+            f"            if pb is not None:\n"
+            f"                tgt_zs.append((tgt_arm.matrix_world @ pb.head).z)\n"
+            f"                tgt_matched.append(slot)\n"
+            f"                break\n"
             f"    print({BLENDER_SENTINEL!r})\n"
             f"    if len(src_zs) < 2:\n"
             f"        print('PRECONDITION:source_arm_bones_unresolved:' + ','.join(src_matched))\n"
@@ -394,11 +410,10 @@ class PoseCorrection(PhaseTool):
                 message=f"Arm-bone scale alignment failed: {detail}",
                 suggestion=(
                     "Issue #13 uses upperarm/forearm/hand bone heights for scale. "
-                    "Ensure both armatures expose at least 2 of those slots — for the "
-                    "source rig, the X-preset's `main` candidate list is consulted; "
-                    "for the target rig, canonical MHWilds names (upperarm_L, "
-                    "forearm_L, hand_L, …) must resolve. If the models are already "
-                    "correctly sized, pass skip_scale_align=true."
+                    "Ensure both armatures expose at least 2 of those slots — "
+                    "candidate bone names come from the X-preset (source) and "
+                    "Y-preset (target). If the models are already correctly sized, "
+                    "pass skip_scale_align=true."
                 ),
             )
         # SCALE_OK or any non-PRECONDITION output → success

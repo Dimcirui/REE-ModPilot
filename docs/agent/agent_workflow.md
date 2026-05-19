@@ -364,10 +364,11 @@ Proceed automatically without asking the user.
 1. Set X preset (source) and skeleton preset to match source model type.
 2. Set Y preset (target) to MHWs.
 3. Scale the armature + meshes by arm-bone average height (issue #13: average
-   world-space Z of upperarm/forearm/hand × L/R on both rigs; ratio = target
-   mean / source mean). Foot-align is already handled by the importer. The
-   prior mesh-bbox-Z method was retired because rigs with above-head props
-   (hats, hair, weapons) produced wrong ratios.
+    world-space Z of upperarm/forearm/hand × L/R on both rigs; bone names
+    looked up from X-preset (source) and Y-preset (target); ratio = target
+    mean / source mean). Foot-align is already handled by the importer. The
+    prior mesh-bbox-Z method was retired because rigs with above-head props
+    (hats, hair, weapons) produced wrong ratios.
 4. Apply the pose correction tool selected above.
 
 #### User Interaction Points
