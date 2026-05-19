@@ -813,22 +813,27 @@ async def submit_material_widget(body: MaterialWidgetSubmit) -> JSONResponse:
     Receive user confirmations from the Phase 5 material mapping widget.
 
     `mappings` is a flat list of (material, slot, texture_path). Unknown
-    slots and empty texture paths are dropped silently — the FE may emit
-    placeholder rows for slots the user opted out of, and we don't want
-    those to 422 the whole submission.
+    slots are dropped silently. Empty texture paths are PRESERVED as
+    explicit user-cleared signals (issue #19) — the agent must treat an
+    empty path as "user refuses any texture in this slot" and not re-infer
+    a replacement. The 422 gate fires only when no row carries a non-empty
+    path, i.e. the user effectively confirmed nothing.
     """
     valid_slots = set(PRINCIPLED_SLOTS)
     mapping: dict[str, dict[str, str]] = {}
+    has_filled = False
     for m in body.mappings:
         slot = m.slot
-        path = m.texture_path.strip()
-        if not path or slot not in valid_slots:
+        if slot not in valid_slots:
             continue
         mat = m.material.strip()
         if not mat:
             continue
+        path = m.texture_path.strip()
         mapping.setdefault(mat, {})[slot] = path
-    if not mapping:
+        if path:
+            has_filled = True
+    if not has_filled:
         raise HTTPException(status_code=422, detail="No material slots submitted.")
 
     formatted = "[CONFIRMED_MATERIAL_MAPPING] " + json.dumps(mapping, ensure_ascii=False)

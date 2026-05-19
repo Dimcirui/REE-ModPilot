@@ -78,6 +78,46 @@ _ZENMO_NORMAL_CHAIN: str = (
 # ── Phase 5 LLM pre-fill ──────────────────────────────────────────────────────
 
 
+# Suffix-token taxonomy for non-Base-Color slots (issue #19). Each tuple is a
+# set of lowercase tokens that must appear in the filename's stem delimited
+# by `_` or `.` for the LLM's suggestion to survive the server-side filter.
+# Base Color stays lenient — it's overwhelmingly the default texture and a
+# leading prefix tag (e.g. "BML_body") is still a basecolor in practice.
+_SLOT_SUFFIX_TOKENS: dict[str, frozenset[str]] = {
+    "Normal":    frozenset({"n", "nrm", "nm", "norm", "normal"}),
+    "Roughness": frozenset({"r", "rgh", "roughness", "gloss"}),
+    "Metallic":  frozenset({"m", "mtl", "metal", "metallic"}),
+    "Emission":  frozenset({"e", "emit", "emission", "glow"}),
+    "Alpha":     frozenset({"a", "alpha", "opacity", "mask"}),
+}
+
+
+def _has_slot_token(path: str, slot: str) -> bool:
+    """Defense-in-depth check for the suffix-token rule in the LLM prompt.
+
+    Returns True when the filename stem of `path` contains a token from
+    `_SLOT_SUFFIX_TOKENS[slot]` as a `_`/`.`-delimited piece. Base Color
+    has no entry and always returns True (no token gate).
+
+    Examples (slot='Normal'):
+        body_n.png         -> True   (token 'n' at end)
+        body_normal.tga    -> True
+        char.nrm.dds       -> True
+        BML_body.dds       -> False  (no normal token anywhere)
+        body.png           -> False
+    """
+    tokens = _SLOT_SUFFIX_TOKENS.get(slot)
+    if tokens is None:
+        return True
+    stem = Path(path).stem.lower()
+    # Split on both `_` and `.` so `char.nrm.dds` → ['char', 'nrm', 'dds'].
+    # Stem strips the final extension but inner dots remain (e.g. 'char.nrm').
+    pieces: set[str] = set()
+    for chunk in stem.split("_"):
+        pieces.update(chunk.split("."))
+    return bool(pieces & tokens)
+
+
 async def suggest_texture_mapping(
     llm: LLMClient,
     materials: list[str],
@@ -105,16 +145,37 @@ async def suggest_texture_mapping(
     prompt = (
         "You are matching mesh materials to texture files for a Blender "
         "Principled BSDF setup. Pick the most plausible texture for each "
-        "slot of each material, using the candidate file list. Conventions:\n"
-        "- Base Color: 'diffuse' / 'albedo' / 'basecolor' / 'col'\n"
-        "- Normal: 'normal' / 'nrm' / 'nm'\n"
-        "- Roughness: 'roughness' / 'rgh' / 'gloss' (invert mentally)\n"
-        "- Metallic: 'metallic' / 'mtl' / 'metal'\n"
-        "- Emission: 'emission' / 'emit' / 'glow'\n"
-        "- Alpha: 'alpha' / 'opacity' / 'mask'\n"
-        "Match by material-name prefix when possible (e.g. material "
-        "'Body.001' pairs with files containing 'body'). Omit a slot when "
-        "no file plausibly matches — do NOT invent.\n"
+        "slot of each material, using the candidate file list.\n"
+        "\n"
+        "## Hard rule — default is OMIT, fill is the exception\n"
+        "Filling a wrong texture into a slot (especially Normal) ruins the "
+        "shading worse than leaving it empty. Only suggest a texture when "
+        "the evidence is strong. When in doubt, OMIT the slot.\n"
+        "\n"
+        "## Base Color (lenient)\n"
+        "May match by material-name prefix or by tokens like 'diffuse', "
+        "'albedo', 'basecolor', 'bc', 'col', 'd'. Example: material "
+        "'Body.001' pairs with 'body.png', 'body_diffuse.tga', or "
+        "'BML_body.dds' (BML = base map layer, still a basecolor).\n"
+        "\n"
+        "## Non-basecolor slots (STRICT — suffix-token evidence required)\n"
+        "Only fill these slots when the filename contains one of the listed "
+        "tokens as a suffix or infix delimited by '_' or '.'. A token "
+        "embedded inside an arbitrary prefix (e.g. 'BML_body') does NOT "
+        "count. If no listed token is present, leave the slot empty.\n"
+        "- Normal:    '_n', '_nrm', '_nm', '_norm', '_normal'        "
+        "(also '.nrm', '.normal')\n"
+        "- Roughness: '_r', '_rgh', '_roughness', '_gloss'\n"
+        "- Metallic:  '_m', '_mtl', '_metal', '_metallic'\n"
+        "- Emission:  '_e', '_emit', '_emission', '_glow'\n"
+        "- Alpha:     '_a', '_alpha', '_opacity', '_mask'\n"
+        "\n"
+        "## Anti-examples (do NOT suggest these)\n"
+        "- 'BML_body.dds' as Normal — 'BML' is a prefix tag, not a normal "
+        "  suffix token. This file is a Base Color candidate, not Normal.\n"
+        "- 'body.png' as Roughness — no '_r'/'_rgh' token present.\n"
+        "- Inventing a slot for a material when none of the candidate "
+        "  files carry the required suffix token.\n"
         "\n"
         f"Materials: {json.dumps(materials, ensure_ascii=False)}\n"
         f"Principled BSDF slots: {json.dumps(list(PRINCIPLED_SLOTS))}\n"
@@ -125,7 +186,8 @@ async def suggest_texture_mapping(
         "Reply with ONLY a JSON object of shape "
         '{"material_name": {"slot_name": "file_path", ...}, ...}. '
         "Use exactly the file paths from the candidate list — no renames, "
-        "no inventions. No prose, no markdown, no code fences."
+        "no inventions. Omit slots entirely rather than guessing. "
+        "No prose, no markdown, no code fences."
     )
     messages: list[Message] = [{"role": "user", "content": prompt}]
     try:
@@ -161,6 +223,10 @@ async def suggest_texture_mapping(
             if slot not in slot_set:
                 continue
             if not isinstance(path, str) or path not in file_set:
+                continue
+            # Suffix-token gate (issue #19): non-Base-Color slots need
+            # evidence in the filename. Drops the BML_body-as-Normal case.
+            if not _has_slot_token(path, slot):
                 continue
             row[slot] = path
         if row:
