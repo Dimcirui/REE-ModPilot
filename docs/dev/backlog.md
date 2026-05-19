@@ -73,5 +73,5 @@ These items were overtaken by other work and no longer need tracking:
 - **DeepSeek V4 capability uncertain at our workload**. If classification accuracy on key decisions (X-preset / physics route / PBR mapping) falls below ~80%, fall back to Sonnet 4.6. Tracked by the P1 A/B eval.
 - **MMD model quality varies**. A4 retains VRC fallback. If MMD-first acceptance regresses, swap demo paths to a single VRC standard model.
 - **Toolkit auto-fix coverage assumed strong** (per user). If real-world usage shows toolkit failures more common than expected, the B7 error handler needs a thicker fallback path.
-- **No test asset in repo** (D15). First-time user friction depends on `docs/demo_setup.md` quality.
+- **No test asset in repo** (D15). First-time user friction depends on `docs/user/demo_setup.md` quality.
 - **uv still 0.x** (C13). On breakage, fall back to `pip + venv`; pyproject.toml standardization preserves portability.
