@@ -3,7 +3,7 @@
 Baseline guide for AI agents and contributors working on REE-ModPilot.
 
 For project overview see [README.md](README.md).
-For design rationale see [docs/design.md](docs/design.md).
+For design rationale see [docs/dev/design.md](docs/dev/design.md).
 For Claude-specific working notes see [CLAUDE.md](CLAUDE.md).
 
 ---
@@ -60,7 +60,7 @@ uv run python ../verify_mvp.py
 
 ## Hard Rules (non-negotiable)
 
-These are sourced from [docs/design.md](docs/design.md) decisions. Do not violate without amending design.md first.
+These are sourced from [docs/dev/design.md](docs/dev/design.md) decisions. Do not violate without amending design.md first.
 
 1. **LLM autonomy is bounded**. LLM makes classification decisions inside phase tools and orchestrates which phase to invoke at the top level — never manage operator-level calls. (B6)
 2. **No `execute_code` escape hatch in MVP**. Don't expose `BlenderConnection.execute_code(...)` as a tool the LLM can call directly. The implementation stays available for debug. (B6)
@@ -106,12 +106,12 @@ These are sourced from [docs/design.md](docs/design.md) decisions. Do not violat
 
 ## Workflow Constraints
 
-1. **Plan first, code second**. For any non-trivial change, raise an item in [docs/backlog.md](docs/backlog.md) (or update existing) before coding.
+1. **Plan first, code second**. For any non-trivial change, raise an item in [docs/dev/backlog.md](docs/dev/backlog.md) (or update existing) before coding.
 2. **Update design.md before deviating from a decision**. If implementation reveals a design decision was wrong, amend the relevant section first, then change the code.
 3. **Update backlog.md status** when starting (`⚪ → 🟡`) or completing (`🟡 → 🟢`) a task.
 4. **Run `ruff check` + `pytest` before committing**. Don't commit broken code.
 5. **Commit messages**: Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`).
-6. **Branch names**: `<type>/<scope>` — e.g., `feat/blender-client`, `refactor/phase-base`, `docs/backlog`.
+6. **Branch names**: `<type>/<scope>` — e.g., `feat/blender-client`, `refactor/phase-base`, `docs/agent-workflow-split`.
 7. **PR titles**: same Conventional Commits format as commits.
 
 ---
@@ -129,7 +129,7 @@ These are sourced from [docs/design.md](docs/design.md) decisions. Do not violat
 
 ## Status Badge Convention
 
-Used in [README.md](README.md) (project status), [docs/design.md](docs/design.md) (decisions), [docs/backlog.md](docs/backlog.md) (tasks).
+Used in [README.md](README.md) (project status), [docs/dev/design.md](docs/dev/design.md) (decisions), [docs/dev/backlog.md](docs/dev/backlog.md) (tasks).
 
 | Symbol | Meaning |
 |--------|---------|

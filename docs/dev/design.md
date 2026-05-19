@@ -18,11 +18,11 @@ pruned — git history holds the original 中文 draft if you need them.
 | B8 | Cross-session persistence | Arch | 🟢 | Out of MVP; rely on `.blend` save + scene rescan |
 | C9 | Agent framework | Tech | 🟢 | Hand-rolled ReAct on raw SDKs for MVP; LangGraph rewrite post-MVP as a learning exercise |
 | C10 | LLM choice | Tech | 🟢 | Provider abstraction; DeepSeek V4 default; Claude Sonnet/Haiku as oracle/fallback; Ollama Cloud added later |
-| C11 | RAG? | Tech | 🟢 | No RAG in MVP; inject `docs/agent_workflow.md` into system prompt + prompt cache |
+| C11 | RAG? | Tech | 🟢 | No RAG in MVP; inject `docs/agent/agent_workflow.md` into system prompt + prompt cache |
 | ~~C12~~ | ~~Frontend stack~~ | ~~Tech~~ | ⚪ Superseded by C25 (2026-05-18) | ~~htmx + Jinja2~~ |
 | C13 | Python deps | Tech | 🟢 | `uv` |
 | D14 | Directory + test layout | Eng | 🟢 | Functional submodules under `ModPilot/app/`; pytest `unit` / `integration` markers |
-| D15 | Test assets | Eng | 🟢 | Not bundled; `docs/demo_setup.md` lists picks; user downloads on first run |
+| D15 | Test assets | Eng | 🟢 | Not bundled; `docs/user/demo_setup.md` lists picks; user downloads on first run |
 | E16 | `PhaseResult` shape | Impl | 🟢 | 3 fields: `success` / `state_diff` / `error`; LLM phrasing lives outside |
 | E17 | Classification location | Impl | 🟢 | Agent loop classifies; phase tools just execute |
 | E18 | Sync BlenderClient under FastAPI | Impl | 🟢 | `asyncio.to_thread(phase.run, ...)`; client stays sync |
@@ -43,7 +43,7 @@ Legend: ⚪ open / 🟡 in discussion / 🟢 decided / 🔴 blocked
 
 ## A1. Agent role in the workflow
 
-**Decision** (2026-05-08): **Guided wizard** — the agent breaks `docs/plan.md` into steps, explains each, fires the right operator, waits for "OK" or a complaint, then advances. MVP only accepts **structured source models** (MMD / VRC / Unity Humanoid / specific-game unpacks) — no arbitrary FBX.
+**Decision** (2026-05-08): **Guided wizard** — the agent breaks `docs/user/plan.md` into steps, explains each, fires the right operator, waits for "OK" or a complaint, then advances. MVP only accepts **structured source models** (MMD / VRC / Unity Humanoid / specific-game unpacks) — no arbitrary FBX.
 
 **Why**: A wizard fits the "Blender-literate, modding-illiterate" target (A2), bakes error recovery into the rhythm (user confirms every step), and matches the natural decomposition of `plan.md`. The structured-source constraint shrinks the X-preset space to ~3-5 candidates, making preset routing tractable in a single LLM turn.
 
@@ -77,7 +77,7 @@ Legend: ⚪ open / 🟡 in discussion / 🟢 decided / 🔴 blocked
 
 | Axis | Value |
 |---|---|
-| Pipeline range | `docs/plan.md` videos 1-7 |
+| Pipeline range | `docs/user/plan.md` videos 1-7 |
 | Target game | **MHWs only** |
 | Source model | User-supplied; **MMD preferred / VRC secondary** |
 | Acceptance bar | **L3** — exports actually run in-game |
@@ -162,7 +162,7 @@ Legend: ⚪ open / 🟡 in discussion / 🟢 decided / 🔴 blocked
 
 ## C11. RAG?
 
-**Decision** (2026-05-08): **No RAG.** Inject `docs/agent_workflow.md` (the machine-readable execution manual; *not* `plan.md`, which is human video copy — correction 2026-05-09) directly into the system prompt and ride prompt cache.
+**Decision** (2026-05-08): **No RAG.** Inject `docs/agent/agent_workflow.md` (the machine-readable execution manual; *not* `plan.md`, which is human video copy — correction 2026-05-09) directly into the system prompt and ride prompt cache.
 
 **Why**: Static, modest-size content; tool surface is 12-15 named phase tools — vector retrieval would add three new failure modes (embedder + DB + retriever) for negligible win. Prompt cache amortizes the cost after one round-trip.
 
@@ -206,7 +206,7 @@ Original decision (2026-05-08): htmx + Jinja2 + vanilla CSS, no SPA framework. S
 
 ## D15. Test assets
 
-**Decision** (2026-05-08): **Not bundled.** `docs/demo_setup.md` lists model picks, MHWs base armature acquisition (REasy / RE-Toolbox), and asset layout (e.g. `~/.modpilot_assets/`). Don't lock in a specific MMD model until implementation starts.
+**Decision** (2026-05-08): **Not bundled.** `docs/user/demo_setup.md` lists model picks, MHWs base armature acquisition (REasy / RE-Toolbox), and asset layout (e.g. `~/.modpilot_assets/`). Don't lock in a specific MMD model until implementation starts.
 
 **Why**: License + filesize.
 
@@ -283,7 +283,7 @@ Hand-off between layers is structured data only — no chat carryover.
 2. **System / per-phase split**: global rules + `agent_workflow.md` + `physics_presets.json` in system; phase-specific instructions appended each turn. Prompt cache lands on system; per-phase content is *not* cached.
 3. `NEGOTIATING` rounds always include `phase_prompt` so format constraints don't drift; structure is `[system] + [phase_prompt] + [history…] + [user turn]`.
 
-`docs/agent_workflow.md` is the actual file injected (not `plan.md`).
+`docs/agent/agent_workflow.md` is the actual file injected (not `plan.md`).
 
 ## E25. Agent loop fine print (Stage 3)
 
@@ -338,7 +338,7 @@ Hand-off between layers is structured data only — no chat carryover.
 
 **Stage-driven UI** (2026-05-18, follow-up): The initial React port mirrored htmx's "render everything in one canvas" model — `ChatPage` held form + stepper + viewport + widgets simultaneously and let the user's eyes do the work of locating the currently-relevant control. Replaced with a per-phase **stage** system under `src/stages/`. `StageRouter` reads `state.phaseStatus` (and `loopState === 'done'`), picks a component out of `STAGE_REGISTRY: Partial<Record<PhaseName, ComponentType<StageProps>>>`, and cross-fades with `motion`'s `AnimatePresence`. Multiple `PhaseName` keys may resolve to the same component (e.g. `phase_2` and `phase_3` both → `Phase23Stage`); the router keys the cross-fade on the **component identity**, not the phase name, so sibling phases sharing a surface advance without remounting (no animation replay between phase_2 done → phase_3 active). The bottom **`ChatStrip`** absorbs the body-occupying chat log: collapsed mode shows status badge + 140-char last-line preview + unread badge; expanded mode reveals `ChatLog` (30 vh max) + `MessageInput`. Each stage owns its right sidebar's content (pending / running / ok / fail cards, activity feed scoped to its phase) and hosts the widget it cares about — `Phase4Stage` overlays `ClassificationWidget` on the viewport, `Phase5Stage` swaps the viewport out for `MaterialWidget` while the widget is open. Phases that haven't been migrated yet (setup_*) fall through to `FallbackStage`, which keeps the old multi-purpose layout. Stages query a new **`ToolRun[]`** field on `useChatState` (phase / name / runId / toolId / success / summary), populated by the SSE dispatchers and paired via `toolId` match falling back to last-unfinished-by-name (handles Ollama / DSML where `tool_use` ids are absent). Two structural changes worth knowing about: (a) `StageRouter` keys by component, not phase name (line ~18); (b) `loopState === 'done'` short-circuits to `DoneStage` regardless of the last active phase. Playwright recorders for each stage live in `ModPilot/scripts/record_phase{23,4,5,6_done}_walkthrough.py` (sharing `_walkthrough_common.py`); they install a fake `EventSource` via `add_init_script` and drive synthetic SSE through `page.evaluate(window.__pushSse(...))`, so a 22-35 s recording walks pending → running → ok → wrap-up without a real LLM round-trip.
 
-**Backend-as-sidecar** (2026-05-18, follow-up): The initial Tauri shell was a thin webview that required the user to run `uvicorn` themselves — fine for dev, broken UX for end users (two processes to start, an open terminal window). Solved by bundling the FastAPI backend as a pyinstaller-frozen exe that the Tauri shell spawns on `setup()` and kills on exit. The pyinstaller spec (`ModPilot/modpilot_backend.spec`) ships `app/data/*.json`, `docs/agent_workflow.md`, and `app/static_built/` (the Vite output) into the frozen tree; runtime asset reads go through `app/resources.py` which picks `sys._MEIPASS` when frozen. Rust spawn lives in `src-tauri/src/lib.rs`: resolves `resource_dir()/binaries/backend/modpilot-backend.exe`, spawns with `APP_HOST` / `APP_PORT` env vars, suppresses the Windows console window via `CREATE_NO_WINDOW`, and binds the child to a Windows **Job Object with `KILL_ON_JOB_CLOSE`** so `taskkill /F`, OOM-kills, or crashes can't orphan the backend (Tauri's `RunEvent::ExitRequested` only covers graceful exits). The React side gains a `BackendSplash` that polls `/health` until reachable before mounting `ChatPage` / `ConfigPage`; `lib/origin.ts` returns an absolute `http://localhost:8000` base for Tauri builds (the webview lives at `tauri://localhost`, so relative `fetch('/health')` would never reach the Python backend) — `lib/api.ts`, `useSSE.ts`, `ViewportPane.tsx`, and `BackendSplash.tsx` all route through it. FastAPI adds a `CORSMiddleware` allowing the three Tauri origins (`tauri://localhost`, `http://tauri.localhost`, `https://tauri.localhost`) — verified with preflight requests from disallowed origins returning the `Disallowed CORS origin` error and allowed origins echoing the right `Access-Control-Allow-Origin`. **Code signing**: `tauri.conf.json` declares `bundle.windows.digestAlgorithm` + `timestampUrl` so the pipeline activates the moment a `certificateThumbprint` is set; `src-tauri/scripts/generate_dev_cert.ps1` creates a self-signed cert for internal testing; `src-tauri/scripts/sign_bundle.ps1` wraps `signtool.exe` to sign the outer `modpilot.exe` AND the bundled sidecar (Tauri's own signing pipeline skips the sidecar). A real EV cert from a CA is needed to bypass Windows SmartScreen — the scripts are ready to consume one via `TAURI_SIGNING_CERT_THUMBPRINT`. Final installer sizes: ~25 MB MSI, ~22 MB NSIS.
+**Backend-as-sidecar** (2026-05-18, follow-up): The initial Tauri shell was a thin webview that required the user to run `uvicorn` themselves — fine for dev, broken UX for end users (two processes to start, an open terminal window). Solved by bundling the FastAPI backend as a pyinstaller-frozen exe that the Tauri shell spawns on `setup()` and kills on exit. The pyinstaller spec (`ModPilot/modpilot_backend.spec`) ships `app/data/*.json`, `docs/agent/agent_workflow.md`, and `app/static_built/` (the Vite output) into the frozen tree; runtime asset reads go through `app/resources.py` which picks `sys._MEIPASS` when frozen. Rust spawn lives in `src-tauri/src/lib.rs`: resolves `resource_dir()/binaries/backend/modpilot-backend.exe`, spawns with `APP_HOST` / `APP_PORT` env vars, suppresses the Windows console window via `CREATE_NO_WINDOW`, and binds the child to a Windows **Job Object with `KILL_ON_JOB_CLOSE`** so `taskkill /F`, OOM-kills, or crashes can't orphan the backend (Tauri's `RunEvent::ExitRequested` only covers graceful exits). The React side gains a `BackendSplash` that polls `/health` until reachable before mounting `ChatPage` / `ConfigPage`; `lib/origin.ts` returns an absolute `http://localhost:8000` base for Tauri builds (the webview lives at `tauri://localhost`, so relative `fetch('/health')` would never reach the Python backend) — `lib/api.ts`, `useSSE.ts`, `ViewportPane.tsx`, and `BackendSplash.tsx` all route through it. FastAPI adds a `CORSMiddleware` allowing the three Tauri origins (`tauri://localhost`, `http://tauri.localhost`, `https://tauri.localhost`) — verified with preflight requests from disallowed origins returning the `Disallowed CORS origin` error and allowed origins echoing the right `Access-Control-Allow-Origin`. **Code signing**: `tauri.conf.json` declares `bundle.windows.digestAlgorithm` + `timestampUrl` so the pipeline activates the moment a `certificateThumbprint` is set; `src-tauri/scripts/generate_dev_cert.ps1` creates a self-signed cert for internal testing; `src-tauri/scripts/sign_bundle.ps1` wraps `signtool.exe` to sign the outer `modpilot.exe` AND the bundled sidecar (Tauri's own signing pipeline skips the sidecar). A real EV cert from a CA is needed to bypass Windows SmartScreen — the scripts are ready to consume one via `TAURI_SIGNING_CERT_THUMBPRINT`. Final installer sizes: ~25 MB MSI, ~22 MB NSIS.
 
 **Known gotchas (logged in `lesson.md`)**:
 

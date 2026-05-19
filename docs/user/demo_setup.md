@@ -61,7 +61,7 @@ and degrades gracefully in browser mode.
 
 The Tauri build requires Rust toolchain (`rustup` + MSVC build tools on Windows).
 Browser mode needs only Node + pnpm. See `frontend/README.md` (if present) or
-`docs/design.md` C25 for the full rationale.
+`../dev/design.md` C25 for the full rationale.
 
 ### Verify the install
 
@@ -242,7 +242,7 @@ render in Monster Hunter Wilds without crashing.
          missing-texture state).
    - [ ] Physics bones move when the camera pans / hunter turns.
 7. Take a screenshot. Note any visual artifacts in
-   [docs/e2e_fixes.md](e2e_fixes.md) under a new dated entry.
+   [../dev/e2e_fixes.md](../dev/e2e_fixes.md) under a new dated entry.
 
 ### Failure modes (and what they mean)
 

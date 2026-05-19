@@ -61,10 +61,10 @@ Each session section records: what broke, what was changed, and any workflow kno
 
 | Addition | File |
 |----------|------|
-| Setup Phase section; Central Collection doctrine (`MHWilds_Female.mesh`); Phase 1-3 entry conditions; VRChat base body keyword list (infer+confirm, not auto-proceed). | `docs/agent_workflow.md` |
-| Phase 4A: `_HJ_` bones → silent ignore rule (no user prompt). | `docs/agent_workflow.md` |
-| Phase 4A: `*_root` shared-root-bone pattern — inform user, ask which to merge via `modder.merge_into_parent`. | `docs/agent_workflow.md` |
-| Phase 4A Execution Steps: operator name `modder.merge_into_parent`, preconditions, auto-refresh behaviour. | `docs/agent_workflow.md` |
+| Setup Phase section; Central Collection doctrine (`MHWilds_Female.mesh`); Phase 1-3 entry conditions; VRChat base body keyword list (infer+confirm, not auto-proceed). | `docs/agent/agent_workflow.md` |
+| Phase 4A: `_HJ_` bones → silent ignore rule (no user prompt). | `docs/agent/agent_workflow.md` |
+| Phase 4A: `*_root` shared-root-bone pattern — inform user, ask which to merge via `modder.merge_into_parent`. | `docs/agent/agent_workflow.md` |
+| Phase 4A Execution Steps: operator name `modder.merge_into_parent`, preconditions, auto-refresh behaviour. | `docs/agent/agent_workflow.md` |
 
 ---
 
@@ -98,9 +98,9 @@ Each session section records: what broke, what was changed, and any workflow kno
 
 | Addition | File |
 |----------|------|
-| Phase 4B: Pre-creation cleanup step (prepare_only); `bones_to_clear` usage for native game bones; updated execution steps for SEPARATE mode. | `docs/agent_workflow.md` |
-| Phase 4A: `bones_to_clear` vs `bones_to_merge` distinction added to execution steps. | `docs/agent_workflow.md` |
-| `modder.clear_chain_role`: corrected behavior note — operator does NOT reset bone colors; usage guidance added. | `docs/plugin_api.md` |
+| Phase 4B: Pre-creation cleanup step (prepare_only); `bones_to_clear` usage for native game bones; updated execution steps for SEPARATE mode. | `docs/agent/agent_workflow.md` |
+| Phase 4A: `bones_to_clear` vs `bones_to_merge` distinction added to execution steps. | `docs/agent/agent_workflow.md` |
+| `modder.clear_chain_role`: corrected behavior note — operator does NOT reset bone colors; usage guidance added. | `plugin_api.md` |
 
 ---
 
@@ -130,15 +130,15 @@ Each session section records: what broke, what was changed, and any workflow kno
 
 | Fix | Files |
 |-----|-------|
-| **Cross-phase batching via history reuse**: LLM reused previously confirmed parameters from conversation history to skip phase-boundary confirmations, running Phase 4B → 5 → 6 to DONE in a single response without user input. Fixed by adding STOP rules to Phase 4B and Phase 5B exit conditions in `agent_workflow.md`: after `physics_chains` / `material_generate` succeeds the agent must report results and await fresh user confirmation before calling any tool from the next phase. Added: "Phase confirmations are NOT transferable across sessions or turns." | `docs/agent_workflow.md` |
+| **Cross-phase batching via history reuse**: LLM reused previously confirmed parameters from conversation history to skip phase-boundary confirmations, running Phase 4B → 5 → 6 to DONE in a single response without user input. Fixed by adding STOP rules to Phase 4B and Phase 5B exit conditions in `../agent/agent_workflow.md`: after `physics_chains` / `material_generate` succeeds the agent must report results and await fresh user confirmation before calling any tool from the next phase. Added: "Phase confirmations are NOT transferable across sessions or turns." | `docs/agent/agent_workflow.md` |
 
 ### Docs
 
 | Addition | File |
 |----------|------|
-| Phase 4B Step 0: bones_to_merge runs FIRST (merge auto-refreshes colors); bones_to_clear runs AFTER. | `docs/agent_workflow.md` |
-| Phase 4B / 5B Exit Conditions: STOP rules — do not call next-phase tools in the same response after a terminal phase tool succeeds. | `docs/agent_workflow.md` |
-| Phase 6 Entry Conditions: note that `batch_export` runs RE Mesh Tools cleanup automatically (no separate phase_5c step needed). | `docs/agent_workflow.md` |
-| Phase Sequence diagram: Phase 6 annotated with "includes automatic RE Mesh Tools cleanup". | `docs/agent_workflow.md` |
-| Entire Phase 5C chapter removed (cleanup absorbed into batch_export). | `docs/agent_workflow.md` |
-| `physics_read` tool: always call before `physics_adjust` to read current CHAIN_SETTINGS values. | `docs/agent_workflow.md` |
+| Phase 4B Step 0: bones_to_merge runs FIRST (merge auto-refreshes colors); bones_to_clear runs AFTER. | `docs/agent/agent_workflow.md` |
+| Phase 4B / 5B Exit Conditions: STOP rules — do not call next-phase tools in the same response after a terminal phase tool succeeds. | `docs/agent/agent_workflow.md` |
+| Phase 6 Entry Conditions: note that `batch_export` runs RE Mesh Tools cleanup automatically (no separate phase_5c step needed). | `docs/agent/agent_workflow.md` |
+| Phase Sequence diagram: Phase 6 annotated with "includes automatic RE Mesh Tools cleanup". | `docs/agent/agent_workflow.md` |
+| Entire Phase 5C chapter removed (cleanup absorbed into batch_export). | `docs/agent/agent_workflow.md` |
+| `physics_read` tool: always call before `physics_adjust` to read current CHAIN_SETTINGS values. | `docs/agent/agent_workflow.md` |

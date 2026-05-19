@@ -2,7 +2,7 @@
 
 Release-style history for REE-ModPilot. Newest entries at top.
 
-For the forward-looking task list see [docs/backlog.md](docs/backlog.md). For per-commit detail see `git log` — each entry below references its anchor commit.
+For the forward-looking task list see [docs/dev/backlog.md.md](docs/dev/backlog.md.md). For per-commit detail see `git log` — each entry below references its anchor commit.
 
 ---
 
