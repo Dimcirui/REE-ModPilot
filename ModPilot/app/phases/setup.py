@@ -43,6 +43,17 @@ class SetupImportSource(PhaseTool):
     def name(self) -> str:
         return "setup_import_source"
 
+    @property
+    def phase_slot(self) -> str | None:
+        return "setup_import_source"
+
+    @property
+    def requires_user_pause(self) -> bool:
+        # Mechanical step — chain straight into setup_validate_scene without
+        # a wrap-up turn. The success report lands implicitly in the next
+        # round's history when the LLM picks the next tool.
+        return False
+
     @classmethod
     def tool_schema(cls) -> dict[str, Any]:
         return {
@@ -205,6 +216,17 @@ class SetupValidateScene(PhaseTool):
     def name(self) -> str:
         return "setup_validate_scene"
 
+    @property
+    def phase_slot(self) -> str | None:
+        return "setup_validate"
+
+    @property
+    def requires_user_pause(self) -> bool:
+        # Mechanical pass/fail — on success chain straight into
+        # setup_infer_model_type. Failures still surface to the user via
+        # the standard ERROR_HANDLING path.
+        return False
+
     @classmethod
     def tool_schema(cls) -> dict[str, Any]:
         return {
@@ -320,6 +342,10 @@ class SetupImportMHWilds(PhaseTool):
     @property
     def name(self) -> str:
         return "setup_import_mhwilds"
+
+    @property
+    def phase_slot(self) -> str | None:
+        return "setup_import"
 
     @classmethod
     def tool_schema(cls) -> dict[str, Any]:

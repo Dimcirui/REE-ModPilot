@@ -180,7 +180,10 @@ def test_post_failing_turn_emits_error_choice_in_queue(monkeypatch):
     _patch_llm_factory(monkeypatch)
     from app.main import app
     from app.phases.base import PhaseError, PhaseResult
-    from app.phases.pose_correction import PoseCorrection
+    # Phase-slot gate: pick a tool whose phase_slot matches a fresh loop's
+    # _phase_idx (0 = "setup_import_source"). The test exercises error_choice
+    # event emission; any failing phase tool serves that purpose.
+    from app.phases.setup import SetupImportSource
 
     failing_llm = MagicMock()
     failing_llm.chat.side_effect = [
@@ -188,10 +191,8 @@ def test_post_failing_turn_emits_error_choice_in_queue(monkeypatch):
             content="",
             has_tool_calls=True,
             tool_calls=[
-                {"id": "t1", "name": "pose_correction", "input": {
-                    "x_preset": "MMD",
-                    "source_armature": "Body",
-                    "target_armature": "MHWs",
+                {"id": "t1", "name": "setup_import_source", "input": {
+                    "file_path": "C:/missing.fbx",
                 }}
             ],
             content_blocks=[],
@@ -205,14 +206,13 @@ def test_post_failing_turn_emits_error_choice_in_queue(monkeypatch):
     ]
 
     sid = "sse-test-err"
-    # Force RUNNING_PHASE on the session so the first LLM call goes to tool-call land
     error = PhaseError(
         category="operator_failed",
         operator="modder.pose_correction",
         message="No armature named 'Body' in scene",
     )
     with (
-        patch.object(PoseCorrection, "run", return_value=PhaseResult.fail(error)),
+        patch.object(SetupImportSource, "run", return_value=PhaseResult.fail(error)),
         TestClient(app) as client,
     ):
         app.state.llm = failing_llm

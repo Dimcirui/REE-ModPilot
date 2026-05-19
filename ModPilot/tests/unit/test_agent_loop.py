@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.agent.error_handler import ErrorHandler
-from app.agent.loop import AgentLoop, LoopState
+from app.agent.loop import _PHASE_SEQUENCE, AgentLoop, LoopState
 from app.agent.prompts import (
     build_error_prompt,
     build_phase_prompt,
@@ -254,13 +254,17 @@ async def test_successful_tool_call_advances_phase():
 
     loop = _make_loop(llm=llm, blender=blender)
 
-    # Patch PoseCorrection.run to return success
+    # Patch PoseCorrection.run to return success.
+    # Phase-slot gate: align _phase_idx with the tool's declared slot
+    # ("phase_1") so the gate doesn't reject the call.
     from app.phases.pose_correction import PoseCorrection
+    phase_1_idx = _PHASE_SEQUENCE.index("phase_1")
     with patch.object(PoseCorrection, "run", return_value=PhaseResult.ok({"test": 1})):
         loop.state = LoopState.RUNNING_PHASE
+        loop._phase_idx = phase_1_idx
         reply = await loop.step("Please run phase 1")
 
-    assert loop._phase_idx == 1
+    assert loop._phase_idx == phase_1_idx + 1
     assert "Phase 1 done!" in reply
 
 
@@ -289,6 +293,7 @@ async def test_phase_failure_enters_error_handling():
 
     loop = _make_loop(llm=llm, blender=blender)
     loop.state = LoopState.RUNNING_PHASE
+    loop._phase_idx = _PHASE_SEQUENCE.index("phase_1")
 
     from app.phases.pose_correction import PoseCorrection
     error = PhaseError(category="operator_failed", operator="pose.transforms_clear", message="Cancelled")

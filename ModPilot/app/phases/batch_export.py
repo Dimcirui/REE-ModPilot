@@ -77,6 +77,10 @@ class BatchExport(PhaseTool):
     def name(self) -> str:
         return "batch_export"
 
+    @property
+    def phase_slot(self) -> str | None:
+        return "phase_6"
+
     @classmethod
     def tool_schema(cls) -> dict[str, Any]:
         return {

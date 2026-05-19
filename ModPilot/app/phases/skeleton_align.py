@@ -48,6 +48,10 @@ class SkeletonAlign(PhaseTool):
     def name(self) -> str:
         return "skeleton_align"
 
+    @property
+    def phase_slot(self) -> str | None:
+        return "phase_2"
+
     @classmethod
     def tool_schema(cls) -> dict[str, Any]:
         return {

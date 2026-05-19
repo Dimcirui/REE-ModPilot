@@ -923,7 +923,12 @@ the user, then call `material_consolidate(dry_run=False, groups=...)` to apply.
 
 #### Step 2: Inspect
 
-Call `material_inspect` to obtain the current node-tree snapshot. The result carries:
+Call `material_inspect(purpose="classify", ...)` to obtain the current node-tree snapshot.
+`purpose="classify"` (the default) is correct for every Step 2 / Step 4 invocation — it
+tells the agent loop to emit the material confirmation widget so the user can review or
+override the proposed mapping. Reserve `purpose="verify"` for Step 6 only.
+
+The result carries:
 - `materials`: list of Principled BSDF material names (Emission / MMDShaderDev skip).
 - `existing_connections`: `{material: {slot: file_path | "connected_no_image"}}`.
 - `texture_files`: candidate texture files in `texture_dir` (recursive scan).
@@ -1013,16 +1018,26 @@ Notes:
 
 #### Step 6: Verify
 
-Call `material_inspect` again immediately after Step 5 succeeds. Render a compact summary
-of the resulting `existing_connections` (one row per material, one column per slot,
-"✓" for wired-to-file, "○" for empty, "?" for `connected_no_image`) and ask:
+Call `material_inspect(purpose="verify", ...)` immediately after Step 5 succeeds.
+`purpose="verify"` suppresses the material confirmation widget so the user is not
+prompted to re-submit a mapping they already approved — the only reply channel here is
+the Yes / No question below. (Forgetting this flag — i.e. calling with the default
+`classify` — re-emits the widget, the user has nowhere to type "satisfied", and a
+second `material_setup` round-trips on the next message; this manifests as a Phase 5A
+inspect → setup → inspect loop that never reaches Phase 5B.)
+
+Render a compact summary of the resulting `existing_connections` (one row per material,
+one column per slot, "✓" for wired-to-file, "○" for empty, "?" for `connected_no_image`)
+and ask:
 
 > "连接结果如上，是否满意？[Yes — proceed to Phase 5B / No — list materials to re-do]"
 
 - **Yes** → proceed to Phase 5B.
 - **No, with materials list** → set `materials_filter = <user-named materials>` and jump
-  back to **Step 4**. The loop runs again only for those materials; everything else stays
-  as-is. Keep iterating until the user says yes.
+  back to **Step 4** (which re-issues `material_inspect` with `purpose="classify"` so the
+  widget appears again, this time carrying only the rows the user wants re-done). The
+  loop runs again only for those materials; everything else stays as-is. Keep iterating
+  until the user says yes.
 
 #### Phase 5A Exit Conditions
 - All materials consolidated (duplicates merged).
@@ -1122,6 +1137,14 @@ then run BoneSystem export for the MHWs armature.
 - [ ] Phase 5 materials baked and MDF2 files written.
 - [ ] MHWs armature (with physics bones transplanted) is in the scene.
 - [ ] chain2 collection created (Phase 4B).
+
+> **The only phase-advancing tool at Phase 6 is `batch_export`.** Do NOT call
+> `setup_*` tools here — the source FBX is already imported, the MHWilds skeleton
+> is already in the scene, and re-running an import does not help "check"
+> anything. To inspect state, use query tools (`list_collections`, `scene_info`,
+> `get_material_info`). The agent loop now rejects any non-`batch_export`
+> phase-advancing call at this slot before touching Blender; a rejection
+> message will tell you to reroute.
 
 > **Pre-export mesh cleanup is automatic**: `batch_export` internally runs
 > `re_mesh.delete_loose`, `re_mesh.solve_repeated_uvs`,

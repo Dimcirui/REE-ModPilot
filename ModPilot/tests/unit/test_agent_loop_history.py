@@ -151,6 +151,7 @@ class TestToolCallLogging:
             session_id="sess_tc",
         )
         loop.state = LoopState.RUNNING_PHASE
+        loop._phase_idx = _PHASE_SEQUENCE.index("phase_1")
         from app.phases.pose_correction import PoseCorrection
         with patch.object(
             PoseCorrection, "run",

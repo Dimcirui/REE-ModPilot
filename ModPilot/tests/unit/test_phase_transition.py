@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.agent.loop import AgentLoop, LoopState
+from app.agent.loop import _PHASE_SEQUENCE, AgentLoop, LoopState
 from app.agent.prompts import build_system_prompt
 from app.phases.base import PhaseResult
 
@@ -140,6 +140,9 @@ async def test_next_step_after_pause_can_call_the_next_phase_tool():
     events: list[dict] = []
     loop = _make_loop(sink=events, llm=llm, blender=blender)
     loop.state = LoopState.RUNNING_PHASE
+    # Phase-slot gate: align starting _phase_idx with setup_validate_scene's slot.
+    start_idx = _PHASE_SEQUENCE.index("setup_validate")
+    loop._phase_idx = start_idx
 
     from app.phases.setup import SetupValidateScene
     from app.phases.infer_model_type import InferModelType
@@ -148,7 +151,7 @@ async def test_next_step_after_pause_can_call_the_next_phase_tool():
         await loop.step("start")
         reply2 = await loop.step("continue")
 
-    assert loop._phase_idx == 2
+    assert loop._phase_idx == start_idx + 2
     assert reply2 == "phase 1 done"
 
 

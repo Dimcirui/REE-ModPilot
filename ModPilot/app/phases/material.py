@@ -616,6 +616,19 @@ class MaterialInspect(PhaseTool):
                             "directory are included regardless of subdirectory."
                         ),
                     },
+                    "purpose": {
+                        "type": "string",
+                        "enum": ["classify", "verify"],
+                        "description": (
+                            "Call intent. 'classify' (default) — initial scan or re-do loop "
+                            "entry; the agent loop emits the material confirmation widget so "
+                            "the user can pick texture assignments. 'verify' — post-wire "
+                            "read-back at Phase 5A Step 6; the widget is suppressed so the "
+                            "LLM can render a text summary and ask Yes/No directly. Use "
+                            "'verify' immediately after a material_setup call; use 'classify' "
+                            "otherwise."
+                        ),
+                    },
                 },
                 "required": ["target_object", "texture_dir"],
             },
@@ -1083,6 +1096,10 @@ class MaterialGenerate(PhaseTool):
     @property
     def name(self) -> str:
         return "material_generate"
+
+    @property
+    def phase_slot(self) -> str | None:
+        return "phase_5"
 
     @classmethod
     def tool_schema(cls) -> dict[str, Any]:

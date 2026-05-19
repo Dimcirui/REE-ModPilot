@@ -27,6 +27,14 @@ A three-step deterministic pipeline applied before skeleton alignment (Phase 2):
 
     Applies the scale transform immediately so downstream operators see clean data.
 
+    After scale apply, runs a Y front-back translation align: re-samples the
+    same arm-bone slots' world-space Y on both armatures, computes
+    dy = mean(target_y) - mean(source_y), and translates the source armature
+    by dy along Y (location-apply baked). This ensures weapon-grip rotations
+    that assume the target Y plane land correctly on the source's hands.
+    Y align is non-fatal — if too few bones resolve, it prints Y_WARN and
+    the phase still reports success on the Z scale outcome.
+
   Step 3 — Deterministic pose conversion  (driven by x_preset, no LLM needed)
     MMD    → modder.tpose_direction
     VRChat → skip (already in T-pose)
@@ -120,6 +128,10 @@ class PoseCorrection(PhaseTool):
     @property
     def name(self) -> str:
         return "pose_correction"
+
+    @property
+    def phase_slot(self) -> str | None:
+        return "phase_1"
 
     @classmethod
     def tool_schema(cls) -> dict[str, Any]:
@@ -400,6 +412,46 @@ class PoseCorrection(PhaseTool):
             f"            bpy.ops.object.transform_apply(\n"
             f"                location=False, rotation=False, scale=True)\n"
             f"            print(f'SCALE_OK:ratio={{ratio:.4f}} src_mean_z={{src_h:.3f}} tgt_mean_z={{tgt_h:.3f}} src_matched={{src_matched}} tgt_matched={{tgt_matched}}')\n"
+            # ── Y front-back translation alignment ────────────────────────
+            # Why: even after scale + foot-align, source and target arms can
+            # sit at different Y depths (forward/back). On MHWs this matters
+            # because the canonical weapon-grip rotation assumes hands meet
+            # the target Y plane — a misaligned source ends up with weapons
+            # floating off-hand. Translation, not scale: we shift the whole
+            # source armature in Y so its arm-Y centroid matches the target.
+            # Must run AFTER scale apply because scale changes Y too; we
+            # re-sample to get post-scale Y positions.
+            f"            bpy.context.view_layer.update()\n"
+            f"            src_ys = []\n"
+            f"            tgt_ys = []\n"
+            f"            for slot in _slot_keys:\n"
+            f"                for name in _src_candidates.get(slot, [slot]):\n"
+            f"                    pb = src_arm.pose.bones.get(name)\n"
+            f"                    if pb is not None:\n"
+            f"                        src_ys.append((src_arm.matrix_world @ pb.head).y)\n"
+            f"                        break\n"
+            f"                for name in _tgt_candidates.get(slot, [slot]):\n"
+            f"                    pb = tgt_arm.pose.bones.get(name)\n"
+            f"                    if pb is not None:\n"
+            f"                        tgt_ys.append((tgt_arm.matrix_world @ pb.head).y)\n"
+            f"                        break\n"
+            # Y align is non-fatal: print Y_WARN and continue if insufficient
+            # samples. SCALE_OK already established the phase succeeded.
+            f"            if len(src_ys) < 2 or len(tgt_ys) < 2:\n"
+            f"                print('Y_WARN:insufficient_samples')\n"
+            f"            else:\n"
+            f"                src_my = sum(src_ys) / len(src_ys)\n"
+            f"                tgt_my = sum(tgt_ys) / len(tgt_ys)\n"
+            f"                dy = tgt_my - src_my\n"
+            f"                src_arm.location.y += dy\n"
+            f"                bpy.context.view_layer.objects.active = src_arm\n"
+            f"                bpy.ops.object.select_all(action='DESELECT')\n"
+            f"                src_arm.select_set(True)\n"
+            f"                for _ch in src_arm.children:\n"
+            f"                    if _ch.type == 'MESH': _ch.select_set(True)\n"
+            f"                bpy.ops.object.transform_apply(\n"
+            f"                    location=True, rotation=False, scale=False)\n"
+            f"                print(f'Y_OK:dy={{dy:.4f}} src_mean_y={{src_my:.3f}} tgt_mean_y={{tgt_my:.3f}}')\n"
         )
         lines = client.execute_and_extract(code)
         if lines and lines[0].startswith("PRECONDITION:"):

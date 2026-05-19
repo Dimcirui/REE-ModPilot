@@ -182,6 +182,44 @@ class PhaseTool(ABC):
         """
         return True
 
+    @property
+    def phase_slot(self) -> str | None:
+        """
+        Slot name in `_PHASE_SEQUENCE` that this tool advances through.
+
+        Only consulted when `advances_phase` returns True. When set, the
+        agent loop validates `tool.phase_slot == _PHASE_SEQUENCE[_phase_idx]`
+        BEFORE executing the tool — a mismatch is rejected with a structured
+        message so the LLM can reroute, and Blender state is never touched.
+
+        Default None preserves the legacy "blind index advance" behavior for
+        tools that haven't opted in yet. Sub-step tools (`advances_phase=False`)
+        and query tools never need this.
+
+        Note that one slot may legitimately have multiple advancing tools
+        (e.g. issue #5 / #6 alternative `setup_infer` writers), so this is a
+        many-tools-to-one-slot mapping.
+        """
+        return None
+
+    @property
+    def requires_user_pause(self) -> bool:
+        """
+        Whether a successful phase-advancing run() should pause for a user
+        wrap-up turn before the loop continues.
+
+        Default True preserves the Issue #15 inter-phase pause rail — most
+        phase tools land at a point where the user wants to review results
+        (widget confirmation, free-text Q&A, or simply a checkpoint) before
+        the agent calls the next phase tool.
+
+        Override to False on purely mechanical setup-style tools whose
+        success is self-evident and whose downstream tool is unambiguous,
+        so the agent can chain them in one turn. Only meaningful when
+        advances_phase is also True.
+        """
+        return True
+
     @classmethod
     @abstractmethod
     def tool_schema(cls) -> dict[str, Any]:

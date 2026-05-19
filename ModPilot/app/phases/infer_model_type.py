@@ -63,6 +63,10 @@ class InferModelType(PhaseTool):
     def name(self) -> str:
         return "setup_infer_model_type"
 
+    @property
+    def phase_slot(self) -> str | None:
+        return "setup_infer"
+
     @classmethod
     def tool_schema(cls) -> dict[str, Any]:
         return {

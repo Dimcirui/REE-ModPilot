@@ -103,6 +103,8 @@ async def test_successful_tool_call_emits_full_sequence():
     loop = _make_loop(sink=events, llm=llm, blender=blender)
     # Bypass IDLE so we land directly in RUNNING_PHASE for a simpler assertion
     loop.state = LoopState.RUNNING_PHASE
+    # Phase-slot gate: align _phase_idx with the tool's declared slot.
+    loop._phase_idx = _PHASE_SEQUENCE.index("phase_1")
 
     from app.phases.pose_correction import PoseCorrection
     with patch.object(PoseCorrection, "run", return_value=PhaseResult.ok({"k": 1})):
@@ -122,10 +124,14 @@ async def test_successful_tool_call_emits_full_sequence():
     assert events[1]["name"] == "pose_correction"
     assert events[1]["id"] == "t1"
     assert events[2]["success"] is True
-    assert events[3]["phase"] == _PHASE_SEQUENCE[0]
-    assert events[3]["index"] == 0
-    assert events[4]["phase"] == _PHASE_SEQUENCE[1]
-    assert events[4]["index"] == 1
+    # Phase-slot gate: loop runs at phase_1 (not at idx 0) since pose_correction
+    # declares phase_slot="phase_1". phase_completed/phase_started carry the
+    # corresponding indices.
+    phase_1_idx = _PHASE_SEQUENCE.index("phase_1")
+    assert events[3]["phase"] == "phase_1"
+    assert events[3]["index"] == phase_1_idx
+    assert events[4]["phase"] == _PHASE_SEQUENCE[phase_1_idx + 1]
+    assert events[4]["index"] == phase_1_idx + 1
 
 
 @pytest.mark.unit
@@ -152,6 +158,7 @@ async def test_dsml_inline_markup_path_emits_tool_call_events():
     events: list[dict] = []
     loop = _make_loop(sink=events, llm=llm, blender=blender)
     loop.state = LoopState.RUNNING_PHASE
+    loop._phase_idx = _PHASE_SEQUENCE.index("phase_1")
 
     from app.phases.pose_correction import PoseCorrection
     with patch.object(PoseCorrection, "run", return_value=PhaseResult.ok({"k": 1})):
@@ -193,6 +200,7 @@ async def test_phase_failure_emits_state_error_handling():
     events: list[dict] = []
     loop = _make_loop(sink=events, llm=llm, blender=blender)
     loop.state = LoopState.RUNNING_PHASE
+    loop._phase_idx = _PHASE_SEQUENCE.index("phase_1")
 
     from app.phases.pose_correction import PoseCorrection
     error = PhaseError(category="operator_failed", operator="op", message="boom")
@@ -238,6 +246,7 @@ async def test_phase_failure_emits_error_choice_event():
     events: list[dict] = []
     loop = _make_loop(sink=events, llm=llm, blender=blender)
     loop.state = LoopState.RUNNING_PHASE
+    loop._phase_idx = _PHASE_SEQUENCE.index("phase_1")
 
     from app.phases.pose_correction import PoseCorrection
     error = PhaseError(
@@ -256,7 +265,7 @@ async def test_phase_failure_emits_error_choice_event():
     assert evt["summary"] == "No armature named 'Body' in scene"
     assert "ts" in evt and isinstance(evt["ts"], float)
     assert evt["state"] == "error_handling"
-    assert evt["phase"] == "setup_import_source"  # phase_idx hasn't advanced (first phase)
+    assert evt["phase"] == "phase_1"  # loop set to phase_1 to satisfy phase-slot gate
 
     # Ordering: error_choice comes after the failure tool_result and after state(error_handling)
     types = _types(events)
@@ -607,6 +616,170 @@ async def test_material_inspect_success_emits_widget_material():
     assert widget_evts[0]["suggestions"] == {
         "body_mat": {"Base Color": "C:/tex/diff.png"},
     }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_material_inspect_verify_purpose_suppresses_widget():
+    """Phase 5A Step 6 verify call must NOT emit widget_material — otherwise
+    the user has no Yes/No reply channel and material_setup re-fires in a
+    self-feeding loop. See agent_workflow.md Phase 5A Step 6."""
+    materials = ["body_mat"]
+    connections = {"body_mat": {"Base Color": "C:/tex/diff.png"}}
+    texture_files = ["C:/tex/diff.png"]
+
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        MagicMock(
+            content="",
+            has_tool_calls=True,
+            tool_calls=[{
+                "id": "t-verify",
+                "name": "material_inspect",
+                "input": {
+                    "target_object": "Body",
+                    "texture_dir": "C:/tex",
+                    "purpose": "verify",
+                },
+            }],
+            content_blocks=[],
+        ),
+        MagicMock(content="all wired, ok?", has_tool_calls=False, tool_calls=[]),
+    ]
+    blender = MagicMock()
+    blender.get_scene_info.return_value = {"name": "Scene", "object_count": 1}
+
+    events: list[dict] = []
+    loop = _make_loop(sink=events, llm=llm, blender=blender)
+    loop.state = LoopState.RUNNING_PHASE
+    loop._phase_idx = _PHASE_SEQUENCE.index("phase_5")
+
+    from app.phases.material import MaterialInspect
+    with patch.object(
+        MaterialInspect, "run",
+        return_value=PhaseResult.ok({
+            "materials": materials,
+            "existing_connections": connections,
+            "texture_files": texture_files,
+        }),
+    ):
+        await loop.step("verify wiring")
+
+    widget_evts = [e for e in events if e["type"] == "widget_material"]
+    assert widget_evts == [], (
+        "purpose=verify must suppress widget; got: "
+        f"{widget_evts}"
+    )
+    # Sanity: _suggest_texture_mapping must also be skipped (no extra llm.chat
+    # for pre-fill) — the verify path is read-only.
+    assert llm.chat.call_count == 2, (
+        f"expected 2 llm.chat calls (tool + reply), got {llm.chat.call_count}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_wrong_phase_slot_tool_is_rejected_without_advancing():
+    """When the LLM calls an advancing tool whose phase_slot does not match
+    the current _phase_idx slot, the loop must:
+      - NOT execute the tool against Blender,
+      - NOT advance _phase_idx,
+      - NOT emit phase_completed,
+      - emit a tool_result with success=False explaining the mismatch.
+
+    Real-world bug: after phase_5 completed (loop at slot "phase_6"), the LLM
+    called `setup_import_source` (slot "setup_import_source") and the loop
+    blindly marked phase_6 done — flipping state to "done" without ever
+    running batch_export.
+    """
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        MagicMock(
+            content="",
+            has_tool_calls=True,
+            tool_calls=[{
+                "id": "t-wrong",
+                "name": "setup_import_source",
+                "input": {"file_path": "C:/whatever.fbx"},
+            }],
+            content_blocks=[],
+        ),
+        MagicMock(content="rerouting", has_tool_calls=False, tool_calls=[]),
+    ]
+    blender = MagicMock()
+    blender.get_scene_info.return_value = {"name": "Scene", "object_count": 1}
+
+    events: list[dict] = []
+    loop = _make_loop(sink=events, llm=llm, blender=blender)
+    loop.state = LoopState.RUNNING_PHASE
+    loop._phase_idx = _PHASE_SEQUENCE.index("phase_6")
+    idx_before = loop._phase_idx
+
+    # SetupImportSource.run must NOT be invoked — patch to assert that.
+    from app.phases.setup import SetupImportSource
+    with patch.object(
+        SetupImportSource,
+        "run",
+        side_effect=AssertionError("tool.run should not be called on slot mismatch"),
+    ):
+        await loop.step("please check things")
+
+    # Counter not bumped.
+    assert loop._phase_idx == idx_before
+    # No phase_completed for phase_6.
+    phase_completed_events = [
+        e for e in events if e["type"] == "phase_completed" and e.get("phase") == "phase_6"
+    ]
+    assert phase_completed_events == []
+    # tool_result emitted with success=False and the mismatch summary.
+    tool_results = [e for e in events if e["type"] == "tool_result"]
+    assert tool_results, "expected at least one tool_result event"
+    rejection = tool_results[-1]
+    assert rejection["success"] is False
+    assert "phase_6" in rejection["summary"]
+    assert "setup_import_source" in rejection["summary"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_correct_phase_slot_tool_advances_normally():
+    """Sanity check: a tool whose phase_slot matches the current slot still
+    runs and advances the counter as before (the gate is a filter, not a
+    blanket block on advancing tools)."""
+    llm = MagicMock()
+    llm.chat.side_effect = [
+        MagicMock(
+            content="",
+            has_tool_calls=True,
+            tool_calls=[{
+                "id": "t-ok",
+                "name": "pose_correction",
+                "input": {"target_object": "Armature"},
+            }],
+            content_blocks=[],
+        ),
+        MagicMock(content="phase_1 done", has_tool_calls=False, tool_calls=[]),
+    ]
+    blender = MagicMock()
+    blender.get_scene_info.return_value = {"name": "Scene", "object_count": 1}
+
+    events: list[dict] = []
+    loop = _make_loop(sink=events, llm=llm, blender=blender)
+    loop.state = LoopState.RUNNING_PHASE
+    loop._phase_idx = _PHASE_SEQUENCE.index("phase_1")
+    idx_before = loop._phase_idx
+
+    from app.phases.pose_correction import PoseCorrection
+    with patch.object(
+        PoseCorrection, "run", return_value=PhaseResult.ok({}),
+    ):
+        await loop.step("run phase 1")
+
+    assert loop._phase_idx == idx_before + 1
+    phase_completed_events = [
+        e for e in events if e["type"] == "phase_completed"
+    ]
+    assert any(e.get("phase") == "phase_1" for e in phase_completed_events)
 
 
 # ── _annotate_chains base-name propagation ────────────────────────────────

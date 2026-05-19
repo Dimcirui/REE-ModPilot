@@ -59,6 +59,10 @@ class VertexGroups(PhaseTool):
     def name(self) -> str:
         return "vertex_groups"
 
+    @property
+    def phase_slot(self) -> str | None:
+        return "phase_3"
+
     @classmethod
     def tool_schema(cls) -> dict[str, Any]:
         return {

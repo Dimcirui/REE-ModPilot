@@ -33,11 +33,19 @@ from __future__ import annotations
 import asyncio
 import enum
 import json
+import logging
 import time
 from collections.abc import Callable
 from typing import Any
 
-from app.agent.dsml import parse_dsml_tool_calls, strip_dsml_block
+from app.agent.dsml import (
+    looks_like_dsml,
+    parse_dsml_tool_calls,
+    sanitize_outbound,
+    strip_dsml_block,
+)
+
+logger = logging.getLogger(__name__)
 from app.agent.error_handler import ErrorHandler
 from app.agent.history import (
     COMPACT_MARKER,
@@ -105,6 +113,33 @@ _SYNC_PHASE_TOOL_SCHEMA: dict = {
 }
 
 _MAX_TOOL_ROUNDS = 15
+
+# Appended to the system prompt for the Issue #15 wrap-up llm.chat call only.
+# Without this, the model often writes "let me check" / "让我确认一下" at the end
+# of a paused turn, which misleads the user into thinking work will continue —
+# but the loop has already returned and is awaiting the next user message.
+# This instruction makes the model treat the wrap-up as a true turn-end: report
+# what just happened, then either ask a concrete question OR state the next
+# checkpoint, but never promise further unilateral action.
+_WRAP_UP_SYSTEM_ADDENDUM = (
+    "\n\n## TURN-END WRAP-UP\n"
+    "This is the FINAL message of the current turn. Tools are NOT available "
+    "in this response. After you reply, the loop returns control to the user "
+    "and waits for their next message.\n\n"
+    "Therefore:\n"
+    "1. Report what was just accomplished by the tool call(s) you made earlier "
+    "   in this turn — concisely.\n"
+    "2. Do NOT write anticipatory phrases like '让我检查一下' / '我接下来会...' / "
+    "   'let me verify' / 'I will now...'. You will not get to act on them; "
+    "   they only mislead the user into thinking the agent is still working.\n"
+    "3. End the message with EITHER:\n"
+    "   (a) a specific yes/no or multiple-choice question for the user, OR\n"
+    "   (b) a clear statement that the phase is complete and what the next "
+    "       checkpoint is (e.g. 'Phase 2 done. Say \"继续\" to start Phase 3.').\n"
+    "4. If the user must visually inspect the viewport, name exactly what they "
+    "   should look at — don't just say '请检查视口'."
+)
+
 _MAX_ASK_ROUNDS = 6  # raised from 3: user-facing ASK_MODE often needs 4-5 queries
                      # for a thorough diagnosis (list_objects + scene_info +
                      # get_mesh_info + get_material_info + a follow-up call).
@@ -196,6 +231,12 @@ class AgentLoop:
         # rail enforces the Phase Transition Protocol from agent_workflow.md
         # even when the LLM ignores the prompt-level rule.
         self._phase_just_advanced: bool = False
+        # Records `tool.requires_user_pause` for the tool that just flipped
+        # _phase_just_advanced=True. When False, the wrap-up branch skips the
+        # pause and lets the loop chain into the next tool in the same turn
+        # (used for mechanical setup tools). Reset alongside _phase_just_-
+        # advanced. Default True preserves the historical pause behavior.
+        self._last_tool_requires_pause: bool = True
 
         # global_history: full conversation (all turns).
         # phase_history:  isolated per NEGOTIATING phase; reset at each phase boundary.
@@ -220,6 +261,22 @@ class AgentLoop:
         """
         if self._event_sink is None:
             return
+        # Single-chokepoint defense against DSML markup leaking to the UI.
+        # Per-branch strippers may miss new variants; this one scrubs any
+        # DSML-ish residue on every outbound message event.
+        if event_type == "message":
+            raw = payload.get("content")
+            if isinstance(raw, str) and looks_like_dsml(raw):
+                cleaned = sanitize_outbound(raw)
+                if cleaned != raw:
+                    logger.warning(
+                        "DSML markup leaked to outbound message — sanitized at emit. "
+                        "role=%s len_before=%d len_after=%d",
+                        payload.get("role"),
+                        len(raw),
+                        len(cleaned),
+                    )
+                payload = {**payload, "content": cleaned}
         evt: dict[str, Any] = {
             "type": event_type,
             "ts": time.time(),
@@ -283,6 +340,7 @@ class AgentLoop:
         # already clears this flag; reset here too so a leaked True from a
         # prior turn can't short-circuit the new one.
         self._phase_just_advanced = False
+        self._last_tool_requires_pause = True
         # Classify BEFORE appending — _classify_user_move_kind reads self.state,
         # and _dispatch may transition state before the assistant reply lands.
         user_kind = self._classify_user_move_kind(user_message)
@@ -422,14 +480,24 @@ class AgentLoop:
                     if error_reply:
                         return error_reply
                     # Issue #15 — same pause rule applies to the DSML branch.
-                    if self.state != LoopState.RUNNING_PHASE or self._phase_just_advanced:
+                    # Honor per-tool `requires_user_pause`: mechanical setup
+                    # tools chain straight into the next tool without a wrap-up.
+                    if self.state != LoopState.RUNNING_PHASE or (
+                        self._phase_just_advanced and self._last_tool_requires_pause
+                    ):
                         self._phase_just_advanced = False
+                        self._last_tool_requires_pause = True
                         final = await asyncio.to_thread(
                             self._llm.chat,
                             history,
-                            system=self._system_prompt,
+                            system=self._system_prompt + _WRAP_UP_SYSTEM_ADDENDUM,
                         )
                         return final.content
+                    # No-pause path: keep _phase_just_advanced=True false-ified
+                    # so we don't re-enter wrap-up next iteration on this same
+                    # advance, but reset the per-tool flag for the next call.
+                    self._phase_just_advanced = False
+                    self._last_tool_requires_pause = True
                     continue
                 # Detect propose-and-confirm proposal (may occur in RUNNING_PHASE
                 # when LLM classifies chains before calling a tool).
@@ -501,22 +569,30 @@ class AgentLoop:
             if self._interrupted:
                 return self._handle_interrupt_bailout()
 
-            if self.state != LoopState.RUNNING_PHASE or self._phase_just_advanced:
+            if self.state != LoopState.RUNNING_PHASE or (
+                self._phase_just_advanced and self._last_tool_requires_pause
+            ):
                 # Three cases that all funnel into the same wrap-up:
                 #   1. State changed (DONE / NEGOTIATING / ERROR_HANDLING / AWAIT_CONFIRM)
-                #   2. Issue #15 — phase-advancing tool succeeded; pause before
-                #      the LLM can call the next phase tool in the same step.
+                #   2. Issue #15 — phase-advancing tool succeeded AND the tool
+                #      opted in to a user pause; tools that opt out (mechanical
+                #      setup steps) chain straight into the next tool below.
                 # In both cases ask the LLM for a text-only completion report
                 # (tools=None), return it as the assistant reply, and let the
                 # next user message re-enter the loop.
                 self._phase_just_advanced = False
+                self._last_tool_requires_pause = True
                 heal_history(history)
                 final = await asyncio.to_thread(
                     self._llm.chat,
                     history,
-                    system=self._system_prompt,
+                    system=self._system_prompt + _WRAP_UP_SYSTEM_ADDENDUM,
                 )
                 return final.content
+            # No-pause path: an opted-out phase tool just advanced. Clear the
+            # flags so the next iteration's tool_use call is unrestricted.
+            self._phase_just_advanced = False
+            self._last_tool_requires_pause = True
 
         return "Reached the maximum number of tool-call rounds. Please try again."
 
@@ -573,6 +649,23 @@ class AgentLoop:
                 "content": f"{COMPACT_MARKER} {summary}",
             })
             self._phase_idx += 1
+
+        # Overshoot guard: a completed session (phase_idx == len(_PHASE_SEQUENCE))
+        # left on disk would, on next hydrate, push _phase_idx past the sentinel
+        # and crash _execute_tool_call's `_PHASE_SEQUENCE[_phase_idx]` lookup
+        # on the very first tool call of a NEW conversation reusing the same
+        # session_id. Treat that case as "already finished": mark the log so
+        # the status endpoint can tell the FE, then reset state so a fresh run
+        # starts at phase 0 with empty history. The old summary messages are
+        # discarded — they belonged to a session that's done.
+        if self._phase_idx >= len(_PHASE_SEQUENCE):
+            self._move_log.append({"kind": "session_completed"})
+            self._phase_idx = 0
+            self._global_history = []
+            logger.info(
+                "Session %s was already complete on hydrate; reset to phase 0.",
+                self._move_log.path,
+            )
 
         self._phase_start_idx_global = len(self._global_history)
 
@@ -742,6 +835,70 @@ class AgentLoop:
             })
             return result_str, None
 
+        # Phase-slot gate: refuse to execute a phase-advancing tool whose
+        # declared slot does not match the current _phase_idx slot. Without
+        # this gate, the loop blindly advances `_PHASE_SEQUENCE[_phase_idx]`
+        # whenever any advances_phase=True tool succeeds — so a stray
+        # post-phase_5 call to `setup_import_source` (Phase 0) would mark
+        # `phase_6` completed and flip the pipeline to done without
+        # batch_export ever running.
+        #
+        # Skip-this-check conditions:
+        # - tool.phase_slot is None (legacy opt-in default; sub-step / query
+        #   tools never set this).
+        # - tool.advances_phase is False at declaration time (sub-step path —
+        #   no risk of bumping _phase_idx). PhysicsChains is the one tool
+        #   whose advances_phase is dynamic on prepare_only, but its
+        #   phase_slot ("phase_4b") is correct for both branches.
+        slot = tool.phase_slot
+        if slot is not None:
+            if self._phase_idx >= len(_PHASE_SEQUENCE):
+                msg = (
+                    f"Tool '{tool_name}' rejected: pipeline is already complete "
+                    f"(all phases done). Use a query tool (e.g. list_collections, "
+                    f"scene_info) or sync_phase_state to revisit a prior phase."
+                )
+                self._emit(
+                    "tool_result",
+                    id=tc.get("id"),
+                    name=tool_name,
+                    success=False,
+                    summary=msg,
+                )
+                self._log_move({
+                    "kind": "tool",
+                    "phase": self.current_phase,
+                    "name": tool_name,
+                    "args": params,
+                    "result_summary": msg,
+                    "success": False,
+                })
+                return msg, None
+            expected = _PHASE_SEQUENCE[self._phase_idx]
+            if slot != expected:
+                msg = (
+                    f"Tool '{tool_name}' rejected: it advances slot '{slot}', "
+                    f"but the loop is currently at slot '{expected}'. "
+                    f"Pick a tool whose phase_slot matches '{expected}', or call "
+                    f"a query tool to inspect scene state. Blender was NOT touched."
+                )
+                self._emit(
+                    "tool_result",
+                    id=tc.get("id"),
+                    name=tool_name,
+                    success=False,
+                    summary=msg,
+                )
+                self._log_move({
+                    "kind": "tool",
+                    "phase": self.current_phase,
+                    "name": tool_name,
+                    "args": params,
+                    "result_summary": msg,
+                    "success": False,
+                })
+                return msg, None
+
         # Phase tools: execute, advance state on success.
         # Wrap in try/except so unexpected runtime errors (e.g. Blender
         # disconnecting mid-tool) are converted to PhaseResult.fail instead
@@ -776,6 +933,10 @@ class AgentLoop:
                 # history (so the wrap-up llm.chat sees a balanced trace) and
                 # is reset by the wrap-up branch itself.
                 self._phase_just_advanced = True
+                # Per-tool override of the Issue #15 pause rail. Mechanical
+                # setup tools opt out so the loop can chain into the next
+                # tool in the same turn.
+                self._last_tool_requires_pause = tool.requires_user_pause
                 # Context-management: mark this phase as ready for compaction
                 # on the NEXT _run_react_turn (after the user resumes from the
                 # wrap-up pause). Both flags coexist by design — _phase_just_-
@@ -807,7 +968,7 @@ class AgentLoop:
                     "phase": completed,
                     "to_phase": next_phase,
                 })
-                await self._emit_widget_if_inspector(tool_name, result.state_diff)
+                await self._emit_widget_if_inspector(tool_name, result.state_diff, params)
                 self._on_phase_advance(completed_phase=completed)
                 return f"Phase {completed} completed. Scene diff: {diff}", None
             else:
@@ -826,7 +987,7 @@ class AgentLoop:
                     "result_summary": diff,
                     "success": True,
                 })
-                await self._emit_widget_if_inspector(tool_name, result.state_diff)
+                await self._emit_widget_if_inspector(tool_name, result.state_diff, params)
                 return f"Tool {tool_name} succeeded (sub-step, phase not advanced). Result: {diff}", None
         else:
             self._pending_error = result.error
@@ -874,7 +1035,12 @@ class AgentLoop:
         """
         return await annotate_chains(self._llm, chains, emit=self._emit)
 
-    async def _emit_widget_if_inspector(self, tool_name: str, state_diff: dict | None) -> None:
+    async def _emit_widget_if_inspector(
+        self,
+        tool_name: str,
+        state_diff: dict | None,
+        params: dict | None = None,
+    ) -> None:
         """Stage a widget event for tools whose result needs user confirmation.
 
         Issue #7: physics_classification's chain_topology and material_inspect's
@@ -913,6 +1079,14 @@ class AgentLoop:
                     {"chains": chains, "inferred_types": list_inferred_types()},
                 )
         elif tool_name == "material_inspect":
+            # Suppress the editing widget when the LLM marks this call as a
+            # post-wire verification (Phase 5A Step 6). Otherwise the verify
+            # inspect re-emits the widget, the user has no other reply channel,
+            # and material_setup gets re-run in a self-feeding loop. See
+            # docs/agent/agent_workflow.md Phase 5A Steps 3 and 6.
+            purpose = (params or {}).get("purpose", "classify")
+            if purpose == "verify":
+                return
             materials = state_diff.get("materials") or []
             if materials:
                 existing = state_diff.get("existing_connections") or {}
