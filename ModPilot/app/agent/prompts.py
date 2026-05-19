@@ -2,7 +2,7 @@
 Prompt builder functions for the ModPilot agent loop (design decision E24).
 
 Sources:
-  - docs/agent_workflow.md  — machine-readable workflow (C11 amendment)
+  - docs/agent/agent_workflow.md  — machine-readable workflow (C11 amendment)
   - physics_presets dict    — injected into system prompt at startup (E19)
 
 All functions are pure: they read the workflow doc and return strings.
@@ -15,7 +15,7 @@ import json
 
 from app.resources import docs_dir
 
-_WORKFLOW_PATH = docs_dir() / "agent_workflow.md"
+_WORKFLOW_PATH = docs_dir() / "agent" / "agent_workflow.md"
 _WORKFLOW_TEXT: str = _WORKFLOW_PATH.read_text(encoding="utf-8")
 
 _CONTEXT_MANAGEMENT_PROTOCOL: str = (

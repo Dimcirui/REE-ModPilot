@@ -150,7 +150,7 @@ def main() -> int:
             failed += 1
 
         # 5. Actually invoke a side-effect-free Modding-Toolkit operator.
-        #    modder.init_editor has no preconditions per docs/plugin_api.md
+        #    modder.init_editor has no preconditions per docs/dev/plugin_api.md
         #    and merely populates context.scene.mhw_preset_editor.slots
         #    with the 58 standard bone slots. (It prints its own progress,
         #    hence the SENTINEL bracketing.)

@@ -24,10 +24,10 @@ def resource_root() -> Path:
     Directory containing the bundled resource tree.
 
     Frozen: pyinstaller's `_MEIPASS` (set on `sys` when frozen). The .spec
-            file adds `app/data/`, `docs/agent_workflow.md`, and the React
+            file adds `app/data/`, `docs/agent/agent_workflow.md`, and the React
             bundle under `app/static_built/` to this tree.
     Dev:    repo root (the parent of `ModPilot/`), so existing
-            `docs/agent_workflow.md` and `ModPilot/app/...` paths resolve
+            `docs/agent/agent_workflow.md` and `ModPilot/app/...` paths resolve
             the same way they did before this helper existed.
     """
     if is_frozen():

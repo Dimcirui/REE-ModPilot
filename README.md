@@ -17,16 +17,16 @@
 | Stage 3 — agent loop | 🟢 done (ReAct loop + prompts + error handler + `/agent/chat`; 117 unit tests) |
 | Stage 4 — phase tools (videos 4-7) | 🟢 done: physics_bones + material + batch_export + mesh_cleanup + query tools; E2E verified (Phase 1→6 full run); advanced out of MVP scope |
 | Stage 5 — frontend (React 19 + TS + Vite + motion) | 🟢 done. Rebuilt from htmx (2026-05-18, C25). Same SSE/widget/config surfaces; ports: dev `:5173` proxied → backend `:8000`. Tauri v2 desktop shell layered on top (optional) provides native drag-and-drop file/dir paths through `PathField`. Stage-driven UI under `src/stages/` — `StageRouter` cross-fades a per-phase component (`Phase1Stage`, `Phase23Stage` shared by phase_2+3, `Phase4Stage` shared by phase_35+4a+4b, `Phase5Stage`, `Phase6Stage`, `DoneStage`), chat moved to a collapsible bottom `ChatStrip`. |
-| Stage MVP — verification | 🟢 done (L3 in-game acceptance: 3-4 MMD/VRC models verified; `verify_mvp.py` script + `docs/demo_setup.md` walkthrough) |
+| Stage MVP — verification | 🟢 done (L3 in-game acceptance: 3-4 MMD/VRC models verified; `verify_mvp.py` script + `docs/user/demo_setup.md` walkthrough) |
 | Post-MVP polish | ongoing — #13 arm-bone scale, #14 interrupt, #15 phase transition pause, #16 Phase 5A small-loop architecture, frontend React/Tauri rebuild, single-pick Body part radio (default `Body`), "Mod Output" rename. 2026-05-19: `setup_import_source` FBX phase tool + LLM provider/model guardrail; later same day, context-management layer (off-prompt move log + phase-boundary compaction + `query_history` meta-tool + session recovery + FE session_id persistence). **526 unit tests, 70+ Playwright checks.** |
 
-All design items in [docs/design.md](docs/design.md) (A/B/C/D/E layers) are 🟢 decided.
+All design items in [docs/dev/design.md](docs/dev/design.md) (A/B/C/D/E layers) are 🟢 decided.
 
 ---
 
 ## Vision
 
-For Blender-literate users who want to make RE Engine character mods but lack RE Engine modding experience: ModPilot is a **step-by-step AI guide + Blender automation layer** that compresses the mod-making pipeline (`docs/plan.md` videos 1-7) from hours to ≤ 1 hour.
+For Blender-literate users who want to make RE Engine character mods but lack RE Engine modding experience: ModPilot is a **step-by-step AI guide + Blender automation layer** that compresses the mod-making pipeline (`docs/user/plan.md` videos 1-7) from hours to ≤ 1 hour.
 
 **MVP scope** (locked in design.md A4):
 
@@ -68,7 +68,7 @@ Tauri desktop shell (modpilot.exe) ─────────┤  (browser-mode
 
 - **Phase tool middle layer**, not raw operator wrappers. LLM orchestrates *between* phases and makes *classification* decisions inside phases; deterministic Python orchestrates *within* phases. (B6, [project memory](.claude/projects/.../memory/project_python_over_llm.md))
 - **Provider-agnostic LLM client** (~150 lines). Default DeepSeek V4 for development; Claude Sonnet 4.6 / Haiku 4.5 as oracle fallback; Ollama Cloud (`deepseek-v4-flash`) as a third option. Runtime-switchable via `/config` UI — no restart needed. (C10)
-- **No RAG in MVP** — `docs/agent_workflow.md` (machine-readable execution manual) goes directly into system prompt + prompt cache. `plan.md` is the video script for humans only. Content RAG retained as a future upgrade path. (C11)
+- **No RAG in MVP** — `docs/agent/agent_workflow.md` (machine-readable execution manual) goes directly into system prompt + prompt cache. `plan.md` is the video script for humans only. Content RAG retained as a future upgrade path. (C11)
 - **React 19 + TypeScript + Vite** frontend, with `motion` for transitions; same SSE event surface as the original htmx build. **Tauri v2** ships an optional Rust desktop shell so the path inputs can accept native file/directory drag-and-drop (impossible inside a browser sandbox). (C25 — supersedes C12)
 - **Confirmation widgets** — server-rendered Jinja partials pushed over SSE for Phase 4A (physics bone classification) and Phase 5 (material slot → texture mapping). User edits the widget in-browser; confirmed values re-enter the agent loop as prefixed JSON messages.
 
@@ -135,6 +135,9 @@ REE-ModPilot/
 │       ├── integration/          # real Blender required; marker-gated
 │       └── e2e/                  # Playwright browser smokes; opt-in install
 ├── docs/
+│   ├── agent/                    # agent_workflow.md (injected into LLM system prompt)
+│   ├── dev/                      # design.md, backlog.md, plugin_api.md, etc.
+│   └── user/                     # demo_setup.md, plan.md
 │   ├── design.md                 # A/B/C/D/E-layer design decisions (🟢 all decided)
 │   ├── backlog.md                # P0-P3 implementation tasks with status badges
 │   ├── agent_workflow.md         # Machine-readable execution manual for the agent
@@ -223,7 +226,7 @@ uv run pytest -m unit -v   # 526+ tests, no Blender required
 python verify_mvp.py --config verify_mvp_config.json [--phases setup phase_1_2_3 ...] [--report out.json]
 ```
 
-See `docs/demo_setup.md` for prerequisite addon install order, MMD model recommendations, mod folder layout, and the full config field reference.
+See `docs/user/demo_setup.md` for prerequisite addon install order, MMD model recommendations, mod folder layout, and the full config field reference.
 
 ---
 
@@ -280,10 +283,10 @@ pnpm tauri build
 
 | Doc | Purpose |
 |-----|---------|
-| [docs/design.md](docs/design.md) | A/B/C/D-layer design decisions log (rationale, alternatives considered, escape hatches) |
-| [docs/backlog.md](docs/backlog.md) | P0-P3 implementation backlog with status badges |
-| [docs/agent_workflow.md](docs/agent_workflow.md) | Machine-readable execution manual for the agent (phases 1-6, protocols, operator index) |
-| [docs/plan.md](docs/plan.md) | 7-video mod-making workflow script (human reference; not injected into agent) |
-| [docs/plugin_api.md](docs/plugin_api.md) | Modding-Toolkit operator API reference |
+| [docs/dev/design.md](docs/dev/design.md) | A/B/C/D-layer design decisions log (rationale, alternatives considered, escape hatches) |
+| [docs/dev/backlog.md](docs/dev/backlog.md) | P0-P3 implementation backlog with status badges |
+| [docs/agent/agent_workflow.md](docs/agent/agent_workflow.md) | Machine-readable execution manual for the agent (phases 1-6, protocols, operator index) |
+| [docs/user/plan.md](docs/user/plan.md) | 7-video mod-making workflow script (human reference; not injected into agent) |
+| [docs/dev/plugin_api.md](docs/dev/plugin_api.md) | Modding-Toolkit operator API reference |
 | [CLAUDE.md](CLAUDE.md) | Claude-specific working notes (footguns, memory map) |
 | [AGENTS.md](AGENTS.md) | General agent / contributor baseline (commands, hard rules, conventions) |

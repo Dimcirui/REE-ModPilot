@@ -37,15 +37,17 @@ REE-ModPilot/
 │   └── tests/{unit,integration,e2e}/   # e2e = Playwright browser smokes (opt-in: error_choice_ui.py, session_config_form.py)
 ├── cli.py                        # interactive CLI client (talks to POST /agent/chat)
 ├── verify_blender_mcp.py         # Stage 0 connectivity smoke (5 checks)
-├── docs/                         # design.md, backlog.md, plan.md, agent_workflow.md,
-│                                 # plugin_api.md, blender-mcp-analysis.md
+├── docs/
+│   ├── agent/                    # agent_workflow.md (injected into LLM system prompt)
+│   ├── dev/                      # design.md, backlog.md, plugin_api.md, etc.
+│   └── user/                     # demo_setup.md, plan.md
 ├── README.md, CLAUDE.md, AGENTS.md
 └── lesson.md                     # this file
 ```
 
 ## Shipped-work history
 
-Dated "Last updated" entries with full design rationale, file maps, and test deltas live in **[docs/backlog.md](docs/backlog.md)**. This file used to mirror them in "Current state" blocks — those were dropped to stop the duplication. Below: stable run commands, reference pointers, hard rules, and the lesson log.
+Dated "Last updated" entries with full design rationale, file maps, and test deltas live in **[docs/dev/backlog.md](docs/dev/backlog.md)**. This file used to mirror them in "Current state" blocks — those were dropped to stop the duplication. Below: stable run commands, reference pointers, hard rules, and the lesson log.
 
 ## How to run
 
@@ -85,11 +87,11 @@ uv run python ../verify_blender_mcp.py
 
 - `CLAUDE.md` — Claude-specific footguns, the blender-mcp wire protocol cheat sheet, memory map. **Always read.**
 - `AGENTS.md` — hard rules sourced from design.md, common commands, naming/style.
-- `docs/design.md` — A/B/C/D/E-layer design decisions (all 🟢 decided). Rationale + alternatives + escape hatches.
-- `docs/backlog.md` — P0-P3 implementation tasks with status badges.
-- `docs/agent_workflow.md` — machine-readable execution manual for the agent (the "system prompt extension").
-- `docs/plugin_api.md` — Modding-Toolkit operator reference (the "API" the agent wraps).
-- `docs/plan.md` — 7-video mod-making workflow (human reference only; not injected into the agent).
+- `docs/dev/design.md` — A/B/C/D/E-layer design decisions (all 🟢 decided). Rationale + alternatives + escape hatches.
+- `docs/dev/backlog.md` — P0-P3 implementation tasks with status badges.
+- `docs/agent/agent_workflow.md` — machine-readable execution manual for the agent (the "system prompt extension").
+- `docs/dev/plugin_api.md` — Modding-Toolkit operator reference (the "API" the agent wraps).
+- `docs/user/plan.md` — 7-video mod-making workflow (human reference only; not injected into the agent).
 
 ## Hard rules (from AGENTS.md — non-negotiable)
 

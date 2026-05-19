@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to verify_mvp_config.json and fill in real values. All paths absolute. See docs/demo_setup.md for the demo asset walkthrough.",
+  "_comment": "Copy to verify_mvp_config.json and fill in real values. All paths absolute. See docs/user/demo_setup.md for the demo asset walkthrough.",
 
   "x_preset": "MMD",
   "source_armature": "Armature",

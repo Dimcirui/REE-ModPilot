@@ -300,14 +300,7 @@ On success, report:
 > Proceeding to Phase 1."
 
 ### Common Errors
-
-- **EMPTY objects present**: Source model importers often create EMPTY root or center objects.
-  Ask user to delete them in the Outliner, then retry.
-- **Multiple armatures**: Ask user to remove any test or leftover armature not part of
-  the source model.
-- **Import CANCELLED**: Modder-Batch-Tool addon is not installed or the hardcoded FBX file
-  `games/MHWilds/model/MHWilds_Female.fbx` is missing from the addon directory.
-  Report: "Install Modder-Batch-Tool and verify MHWilds_Female.fbx is present."
+> 详见 docs/dev/troubleshooting.md
 
 ---
 
@@ -389,10 +382,7 @@ reference armature. Exact precision is not required here; close enough for skele
 in Phase 2 is sufficient.
 
 #### Common Errors
-- **Wrong skeleton preset selected**: Pose recorder cannot find matching bones → operator
-  returns `CANCELLED`. Ask user to verify the skeleton preset matches their source model type.
-- **Endfield pose recorder not applied**: If the source is Endfield and the model still appears
-  in A-pose after step 4, check that the "forward" (not "inverse") direction was selected.
+> 详见 docs/dev/troubleshooting.md
 
 ---
 
@@ -422,13 +412,7 @@ All body bones in the standard set show ✓ in the mapping preview.
 A small number of ✗ (typically only optional bones like spine_03 or game-specific extras) is acceptable.
 
 #### Common Errors
-- **A few bones missing (< 5 ✗)**: Likely a preset compatibility edge case. Warn user:
-  "A few bones could not be aligned — this may be a preset compatibility issue. Check
-  which bones are missing and whether they are required for MHWs."
-- **Many bones missing (> 10 ✗)**: Likely the wrong X preset was selected. Ask user to
-  go back and verify the source preset matches their model's bone naming convention.
-- **Wrong selection order**: If the source armature is the active (yellow) object instead of
-  the MHWs armature, alignment direction is reversed. Redo with correct selection order.
+> 详见 docs/dev/troubleshooting.md
 
 ---
 
@@ -462,12 +446,7 @@ All required MHWs body bone vertex groups are present in the merged mesh.
 Mapping preview shows ✓ for all standard bones.
 
 #### Common Errors
-- **Mesh selected instead of armature (reversed)**: If user accidentally runs the operator
-  on the armature object rather than the mesh, vertex groups are unchanged. Check that a
-  MESH object is selected.
-- **Conflicting bone name gets `_old` suffix**: If a target name was already in use, the
-  operator adds `_old` to the conflicting entry. Inform user and ask them to clean up
-  the `_old` suffixed groups manually.
+> 详见 docs/dev/troubleshooting.md
 
 ---
 
@@ -519,15 +498,7 @@ as a physical bone and transplanted. No LLM involvement.
 - X preset is set to MHWs.
 
 ### Common Errors
-- **_End bone position is far off**: Source bone length was abnormal. The `_End` bone
-  head is placed at the source bone's tail (world coordinates), so unusual source bone
-  lengths will misplace End bones. Inform user to check source bone proportions before
-  transplant.
-- **Parent relationships not rebuilt correctly**: Occurs when the source physics bone's
-  parent chain is not mapped in the X→standard key→Y bridge. User may need to manually
-  re-parent affected bones after transplant.
-- **Wrong selection order**: If MHWs armature is not the active object, transplant
-  direction is reversed. Redo with correct selection order.
+> 详见 docs/dev/troubleshooting.md
 
 ---
 
@@ -542,16 +513,12 @@ merge aux bones into parent body bones; produce a physics chain list for Phase 4
 - [ ] Y preset is MHWs.
 
 ### Background
-The toolkit identifies physical bones by exclusion: any bone not listed in the X preset
-(body bones + listed auxiliaries) is treated as a candidate physical bone. However, some
-of these unlisted bones are actually unlisted auxiliary bones (twist helpers, roll helpers,
-correction bones) that should be folded into the nearest body bone rather than treated as
-physics. The agent's job is to classify these edge cases.
+> 背景说明详见 docs/dev/troubleshooting.md
 
 #### Shared Root Bones (`*_root` pattern)
 Some physics setups attach multiple chains to a single intermediate `*_root` bone (e.g.
 `hair_root`, `skirt_root`) rather than directly to a body bone. These root bones are **not**
-chain members — they are connector pivots. Behaviour:
+chain members — they are connector pivots.
 1. Detect: a bone named `*_root` (or `*Root`) that has 2+ physical-chain children and
    parents to a body bone.
 2. **Always inform the user**: list each detected root bone, name its children chains, and
@@ -667,14 +634,10 @@ The LLM must read this message, pass `inferred_types` as `chain_classifications`
 - Physics chain list is built and non-empty.
 
 ### Common Errors
-- **`modder.merge_into_parent` fails**: The selected bone has no parent in the armature.
-  Ask user to manually identify the correct parent body bone in Blender's Outliner.
-- **Chain list is empty after classification**: All unlisted bones were classified as
-  aux_merge. Warn: "No physical bones were identified. If the model has physics (hair/cloth),
-  check that the X preset is correct and that physics bones have not been included in it."
+> 详见 docs/dev/troubleshooting.md
 
 ### Out of Scope (MVP)
-- Nested branch de-branching (merging sub-branches into main chain) — not handled in MVP.
+> 详见 docs/dev/troubleshooting.md
 
 ---
 
@@ -857,15 +820,7 @@ After a preset is applied, the user may request fine-tuning. Translate as follow
 > confirmed parameters in a previous run, always ask for fresh confirmation here.
 
 ### Common Errors
-- **`create_chain_header` creates chain1 instead of chain2**: `chainFileType` was not
-  set before calling. Always set it explicitly first.
-- **`create_chain_settings` poll fails**: `chainCollection` not set in the tool panel.
-  Set `context.scene.re_chain_toolpanel.chainCollection` first.
-- **`apply_angle_limit_ramp` poll fails**: Active object is not a chain group type.
-  Select a `RE_CHAIN_CHAINGROUP` or `RE_CHAIN_SUBGROUP` object first.
-- **`apply_chain_settings_preset` applies wrong preset**: `chainSettingsPresets` enum was
-  not set before calling, or the name does not exactly match a file in the preset directory.
-  Verify the preset name matches the `.json` filename (without extension).
+> 详见 docs/dev/troubleshooting.md
 
 ---
 
@@ -1149,14 +1104,7 @@ Parameters:
 > Phase confirmations are NOT transferable across sessions.
 
 ### Common Errors
-- **texconv not found**: RE Mesh Editor should bundle texconv; ask user to verify
-  RE Mesh Editor is correctly installed.
-- **Roughness appears inverted in-game**: Source uses smoothness (inverted roughness).
-  Enable the roughness invert option in the MDF2 Generator per-material settings.
-- **Normal map lighting wrong**: Source uses GL-format normals. Enable GL→DX normal
-  flip in the MDF2 Generator per-material settings.
-- **`list_mdf_presets` returns error**: RE Mesh Editor addon is not loaded in Blender.
-  Verify the addon is enabled and restart Blender if needed.
+> 详见 docs/dev/troubleshooting.md
 
 ---
 
@@ -1199,137 +1147,6 @@ then run BoneSystem export for the MHWs armature.
 >
 > **Part keys**: `1`=Arm  `2`=Body  `3`=Helmet  `4`=Leg  `5`=Waist
 > (set in session config as `body_parts` → `target_parts`).
-
-<!-- Phase 6 Step 2 (the 122-row armor table) was removed in issue #10.
-     The catalog lives in app/data/armor_sets.json and is exposed to the
-     form via GET /app/armor_sets. -->
-
-<!-- (former armor catalog, removed in issue #10)
-| ID | Name |
-|---|---|
-| pl001 | 希望 α (Hope α) |
-| pl003 | 辟兽 α/β (Doshaguma α/β) |
-| pl003_500 | 护辟兽 α/β (Guardian Doshaguma α/β) |
-| pl004 | 骨制 α (Bone α) |
-| pl005 | 皮制 α (Leather α) |
-| pl006 | 锁甲 α (Chainmail α) |
-| pl007 | 钳速龙 α/β (Talioth α/β) |
-| pl008 | 缠蛙 α/β (Chatacabra α/β) |
-| pl009 | 炎尾龙 α/β (Quematrice α/β) |
-| pl010 | 合金 α (Alloy α) |
-| pl011 | 锯带龙 α/β (Piragill α/β) |
-| pl012 | 刺花蜘蛛 α/β (Lala Barina α/β) |
-| pl013 | 桃毛兽王 α/β (Conga α/β) |
-| pl014 | 沙海龙 α/β (Balahara α/β) |
-| pl015 | 铸铁 α (Ingot α) |
-| pl016 | 血盗虫 α/β (Bulaqchi α/β) |
-| pl017 | 波衣龙 α/β (Uth Duna α/β) |
-| pl017_300 | 波衣龙 γ (Uth Duna γ) |
-| pl018 | 沼喷龙 α/β (Rompopolo α/β) |
-| pl019 | 杜宾 α/β (Dober α/β) |
-| pl020 | 盔速龙 α/β (Kranodath α/β) |
-| pl021 | 煌雷龙 α/β (Rey Dau α/β) |
-| pl021_300 | 煌雷龙 γ (Rey Dau γ) |
-| pl022 | 影蜘蛛 α/β (Nerscylla α/β) |
-| pl023 | 风铗龙 α/β (Hirabami α/β) |
-| pl024 | 赫猿兽 α/β (Ajarakan α/β) |
-| pl025 | 花纹钢 α/β (Damascus α/β) |
-| pl026 | 血眠虫 α/β (Comaqchi α/β) |
-| pl027 | 狱焰蛸 α/β (Nu Udra α/β) |
-| pl027_300 | 狱焰蛸 γ (Nu Udra γ) |
-| pl028 | 巨蜂 α/β (Vespoid α/β) |
-| pl029 | 冻峰龙 α/β (Dahaad α/β) |
-| pl029_300 | 冻峰龙 γ (Dahaad γ) |
-| pl030_600 | 护凶爪龙 α/β (Guardian Ebony α/β) |
-| pl031 | 暗器蛸 α/β (Xu Wu α/β) |
-| pl032 | 锁刃龙 α/β (Arkveld α/β) |
-| pl032_300 | 锁刃龙 γ (Arkveld γ) |
-| pl032_500 | 护锁刃龙 α/β (Guardian Arkveld α/β) |
-| pl033 | 护鹭鹰龙 α/β (Guardian Seikret α/β) |
-| pl034 | 怪鸟 α/β (Kut-Ku α/β) |
-| pl035 | 雌火龙 α/β (Rathian α/β) |
-| pl036 | 火龙 α/β (Rathalos α/β) |
-| pl036_500 | 护火龙 α/β (Guardian Rathalos α/β) |
-| pl037 | 毒怪鸟 α/β (Gypceros α/β) |
-| pl038 | 千刃龙 α/β (Seregios α/β) |
-| pl039 | 海龙 α/β (Lagiacrus α/β) |
-| pl040 | 铠龙 α/β (Gravios α/β) |
-| pl041 | 雪狮子王 α/β (Blango α/β) |
-| pl042 | 黑蚀龙 α/β (Gore α/β) |
-| pl043_600 | 护雷颚龙 α/β (Guardian Fulgur α/β) |
-| pl044 | 龙王的独眼 α (Dragonking α) |
-| pl045 | 封印的龙骸布 α (Sealed Dragon Cloth α) |
-| pl046 | 库纳法 α (Kunafa α) |
-| pl047 | 阿孜兹 α (Azuz α) |
-| pl048 | 西尔德 α (Sild α) |
-| pl049 | 酥加 α (Suja α) |
-| pl050 | 调查团 α (Commission α) |
-| pl051 | 机械 α (Artian α) |
-| pl052 | 咬鱼 α (Gajau α) |
-| pl053 | 死神 α (Death Stench α) |
-| pl054 | 燕尾蝶 α (Butterfly α) |
-| pl055 | 独角仙 α (King Beetle α) |
-| pl056 | 矿石 α (High Metal α) |
-| pl057 | 战斗 α (Battle α) |
-| pl058 | 花瓣 α (Melahoa α) |
-| pl059 | 纯洁龙 α/β (Numinous α/β) |
-| pl060 | 公会骑士 (Guild Knight) |
-| pl061 | 兵之甲冑 (Feudal Soldier) |
-| pl062 | 公会王牌 α (Guild Ace α) |
-| pl063 | 花妖猩 α (Mimiphyta α) |
-| pl064 | 鬼角假发 (Oni Horns Wig) |
-| pl065 | 剑豪独眼罩 (Fencer's Eyepatch) |
-| pl066 | 泡狐龙 α/β (Mizutsune α/β) |
-| pl067 | 贵族 (Noblesse) |
-| pl068 | 萌芽头冠 (Florescent Circlet) |
-| pl069 | 落樱缤纷 α (Sakuratide α) |
-| pl070 | 恶魔 α (Demon) |
-| pl071 | 潜水员 α (Diver α) |
-| pl072 | 龙人族之耳 (Wyverian Ears) |
-| pl073 | 公会十字 α (Guild Cross α) |
-| pl074 | 职员 α (Clerk α) |
-| pl075 | 盛开 α (Blossom α) |
-| pl076 | 奉献耳饰 α (Earrings of Dedication α) |
-| pl076_100 | 大胃王耳饰 α (Gourmand's Earring α) |
-| pl077 | 艾露猫头套 α (Faux Felyne α) |
-| pl078 | 泡歌鸮 α (Amstrigian α) |
-| pl079 | 封印的龙骸布 (Sealed Dragon Cloth) |
-| pl080 | 霹雳舞猫 (Cypurrpunk) |
-| pl081 | 踊火 α (Afi α) |
-| pl083 | 毛茸茸兽耳 (Fluffy Ears) |
-| pl084 | 毛茸茸兽尾 (Fluffy Tail) |
-| pl085 | 哥特幽魂 α (Dreamwalker α) |
-| pl086 | 收获 α (Harvest α) |
-| pl087 | 调查队耳饰 α (Expedition Headgear α) |
-| pl088 | 知性眼镜 α (Strategist Spectacles α) |
-| pl088_100 | 方形眼镜 α (Square Glasses α) |
-| pl088_200 | 墨镜 α (Shadow Shades α) |
-| pl088_300 | 圆框眼镜 α (Round Glasses α) |
-| pl088_400 | 心形眼镜 α (Lovely Shades α) |
-| pl088_500 | 下半框眼镜 α (Half Rim Glasses α) |
-| pl088_600 | 泪滴墨镜 α (Aviator Shades α) |
-| pl088_700 | 猫眼眼镜 α (Kitten Frames α) |
-| pl088_800 | 炫光护目镜 α (Mirror Visor α) |
-| pl088_900 | 分析之眼 α (Analytic E.Y.E. α) |
-| pl089 | 单羽项链 α (Pinion Necklace α) |
-| pl090 | 启程的鹰之心 α (Hawkheart Jacket α) |
-| pl091 | 宇宙机装 (Cosmoloid) |
-| pl092 | 巨戟龙 α/β (Gogmazios α/β) |
-| pl093 | 祭典 α (Ceremonial α) |
-| pl094 | Gala Suit Slacks α |
-| pl095 | 辟兽头套 α (Doshagumask α) |
-| pl096 | 胶鲵 α (Gelidron α) |
-| pl097 | 肉垫手套 α (Toe Bean Mittens α) |
-| pl098 | 骷髅面罩 α (Skull Mask α) |
-| pl099 | 猎户星 α (Orion α) |
-| pl100 | 欧米茄服装 α (Omega Attire α) |
-| pl100_100 | 凶恶套装 α (Bale Armor α) |
-| pl101 | 精力充沛森狸人 α (Eager Wudwud α) |
-| pl102 | 祝福腰饰 α (Blessed Waistchain α) |
-| pl103 | 女王 α (Sororal α) |
-| pl104 | 苍世武士 α (Azure Age Haori) |
-| pl105 | 沼喷龙头套 α (Rompomask α) |
--->
 
 ### Step 2: Collection Assignment
 
@@ -1406,37 +1223,11 @@ If warnings or errors appear in the log:
 - User has reviewed the export log (even if clean).
 
 ### Common Errors
-- **RE Mesh Editor not installed**: Export operators unavailable. Report:
-  "RE Mesh Editor is required for MHWs export. Please install it."
-- **Unassigned slot causes export error**: Always assign empty model to unused slots.
-- **BoneSystem FBXSkel name mismatch**: Name must exactly match the definition used
-  during rig setup. Verify with user before re-running.
-- **Baked textures missing from Natives path**: Phase 5 bake may have written to a
-  different directory. Re-check mod root path against Natives root.
+> 详见 docs/dev/troubleshooting.md
 
 ---
 
-## Reference: Toolkit Operator Index
+## Reference: Agent Callable API
 
-> Maps each phase's execution steps to their corresponding bpy.ops.* calls.
-> To be completed as operator names are confirmed against plugin_api.md.
-
-| Phase | Step Description | Operator | Notes |
-|-------|-----------------|----------|-------|
-| 1 | Arm-bone scale align (issue #13) | `object.transform_apply(scale=True)` | Ratio = mean(target arm-bone Z) / mean(source arm-bone Z) |
-| 1 | Direction calculation (MMD) | <!-- FILL IN --> | Rotates upper arms |
-| 1 | Pose recorder forward (Endfield) | <!-- FILL IN --> | Applies pre-recorded delta |
-| 2 | Align bones [X+Y] | <!-- FILL IN --> | Dual armature selection required |
-| 3 | Rename vertex groups [X+Y] | <!-- FILL IN --> | Must select MESH, not ARMATURE |
-| 3 | Merge meshes | <!-- FILL IN --> | Blender built-in join |
-| 3.5 | Transplant physics bones [X+Y] | <!-- FILL IN --> | Dual armature; MHWs must be active |
-| 3.5 | Refresh bone colors | <!-- FILL IN --> | Visualizes chain_role on transplanted bones |
-| 4A | Merge to parent bone | <!-- FILL IN --> | For aux_merge bones |
-| 4B | Create chain2 header | `re_chain.create_chain_header` | Set `chainFileType="chain2"` first; params: `collectionName`, `chainFormat=".chain2"` |
-| 4B | Create initial Settings (shared) | Modding-Toolkit one-click create chain2 (shared mode) | Creates 1 Settings with all groups |
-| 4B | Apply angle limit ramp | `re_chain.apply_angle_limit_ramp` | Active obj must be CHAINGROUP; params: `maxAngleLimit=1.047198`, `maxIteration=4` |
-| 4B | Create additional Settings | `re_chain.create_chain_settings` | Poll: `chainCollection` must be set; no user params |
-| 4B | Apply Chain Settings preset | `re_chain.apply_chain_settings_preset` | Set `chainSettingsPresets` enum first; name = filename without `.json` |
-| 5B | MDF2 generate | `mhws.mdf_gen_refresh` + `mhws.mdf_gen_process` | `material_generate` tool; natives_root = any user folder |
-| 6 | MHWs Batch Exporter | <!-- FILL IN --> | Body slot → mesh collection; all others → empty model; clsp → empty model |
-| 6 | BoneSystem export | <!-- FILL IN --> | Always required; armature = MHWs armature; FBXSkel name = character name |
+> Agent 当前可调用的全部工具清单（名称、底层算子、代码位置）。
+> 详见 `docs/dev/agent-api.md`。

@@ -14,16 +14,16 @@ For agent baseline rules (commands, hard rules, code style, conventions) see [AG
 1. [lesson.md](lesson.md) — Orientation primer + fix log. Hard requirement: read first, every session.
 2. [README.md](README.md) — Project at a glance, status, architecture, tech stack.
 3. [AGENTS.md](AGENTS.md) — Hard rules + commands + style + workflow.
-4. [docs/design.md](docs/design.md) — All 15 design decisions with rationale (A/B/C/D layers, all 🟢).
-5. [docs/backlog.md](docs/backlog.md) — Current implementation tasks (P0-P3 with status badges).
-6. [docs/plan.md](docs/plan.md) — The 7-video mod-making workflow being automated.
-7. [docs/plugin_api.md](docs/plugin_api.md) — Modding-Toolkit operator reference (the "API" being wrapped).
+4. [docs/dev/design.md](docs/dev/design.md) — All 15 design decisions with rationale (A/B/C/D layers, all 🟢).
+5. [docs/dev/backlog.md](docs/dev/backlog.md) — Current implementation tasks (P0-P3 with status badges).
+6. [docs/user/plan.md](docs/user/plan.md) — The 7-video mod-making workflow being automated.
+7. [docs/dev/plugin_api.md](docs/dev/plugin_api.md) — Modding-Toolkit operator reference (the "API" being wrapped).
 
 ---
 
 ## Current Stage
 
-**MVP shipped.** All P0 work in [docs/backlog.md](docs/backlog.md) is 🟢: Stages 0 / Setup / 1 / 2 / 3 / 4 / 5 / MVP-verification.
+**MVP shipped.** All P0 work in [docs/dev/backlog.md](docs/dev/backlog.md) is 🟢: Stages 0 / Setup / 1 / 2 / 3 / 4 / 5 / MVP-verification.
 Backend (FastAPI + hand-rolled ReAct + 16 phase tools), frontend (React 19 + TypeScript + Vite + motion SPA under `ModPilot/frontend/`, with optional Tauri v2 desktop shell; same SSE + widget + viewport surfaces, now driven by per-phase stages — see C25), LLM provider abstraction (Anthropic + OpenAI-compatible + Ollama), and `verify_mvp.py` headless harness all live.
 Live with **526+ unit tests** and 70+ Playwright e2e checks. L3 acceptance achieved against MMD/VRC source models.
 
