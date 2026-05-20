@@ -25,6 +25,7 @@ Current work is post-MVP polish — see open items below.
 
 ## P1 — Important
 
+- ⚪ Vision model integration (Phase 0 + E20) — PBR channel classification fallback. Config fields exist (`vision_model` / `vision_api_key` / `vision_base_url`) but never consumed. Requires: provider image content block support (`docs/dev/issues/vision_model_integration.md`), Pillow dep, and Layer 3 integration into `suggest_texture_mapping()`.
 - ⚪ DeepSeek V4 vs Sonnet 4.6 A/B eval on the three high-leverage classification points (X-preset, physics route, PBR mapping). The most genuinely uncertain claim left in the project — capability gap directly affects which model the user wants the app pointed at.
 - ⚪ Single-page user-facing landing copy — written for non-developers, avoids listing prereqs explicitly per design A2.
 - ⚪ Toolkit dependency preflight check — surface missing/disabled Blender addons before a run instead of silently 500ing mid-phase. New `GET /app/toolkit_status` route probes Blender once via a single `execute_code` round-trip (checks `bpy.context.preferences.addons` keys + `hasattr(bpy.ops, ...)` for critical operators) and returns per-tool status `{id, label, status}` where `status ∈ {present, disabled, missing}` so the UI distinguishes "not installed" from "installed but disabled" (the common post-Blender-upgrade case). Required set: Modding-Toolkit / Modder-Batch-Tool / RE Mesh Editor / MHW Model Editor / RE Chain Editor / blender-mcp. Frontend: small panel on the session-config form auto-loaded when the form mounts + a manual "Re-check" button; results cached for the session. Critical-tool gate: form's Start button disabled if any `critical=true` tool isn't `present`, with the offending row(s) highlighted and an inline link to the install doc.
@@ -34,6 +35,9 @@ Current work is post-MVP polish — see open items below.
 
 ## P2 — Post-MVP
 
+- ⚪ Vision model E20a — UV-assisted mesh dedup. Blender-side UV wireframe overlay rendering + VLM judgment for `MaterialConsolidate._scan_groups()` (`docs/dev/issues/vision_model_integration.md`).
+- ⚪ Phase 4C: 全身碰撞体 + clspFlags0 碰撞过滤 — 新增 phase_4c 阶段。Step 1: 导入内置 full_body.clsp.3 生成全身碰撞体（ColliderCreate, sub-step）。Step 2: LLM 分类 + widget 用户确认每条 chain 的碰撞部位掩码（NEGOTIATING）。Step 3: 写入 clspFlags0（ColliderApply, advancing）。内置资源：app/data/full_body.clsp.3 + clsp_body_bits.json。参考 Wilds Chain 插件的 create_full_body_clsp / set_clsp_flags。
+- ⚪ Phase 4B post-step: Chain header 默认值调整到 MHWs 特调 — RE Chain Editor 的 Chain2HeaderData 默认值与 MHWilds 特调值有 7 处差异（calculateMode/chainAttrFlags/calculateStepTime/modelCollisionSearch/highFPSCalculateMode/wilds_unkn1/wilds_unkn2）。在 PhysicsChains.run() 末尾追加 post-step 覆盖这 7 个字段，不新增 tool，不修改 _PHASE_SEQUENCE。
 - ⚪ MHWI game support — port phase tools, test full pipeline. The real "phase 2 of the project" if you want one.
 - ⚪ RE4 game support (FakeBone phase, test pipeline).
 - ⚪ RE9 game support (sync child orientation phase, test pipeline).
@@ -48,6 +52,7 @@ Current work is post-MVP polish — see open items below.
 
 ## P3 — Future / nice-to-have
 
+- ⚪ Vision model E20b — Reverse texture inference (experimental). Merged-UV layout → unknown texture slot inference. Feature-gated, suggestion-only (`docs/dev/issues/vision_model_integration.md`).
 - ⚪ Physics classification widget hierarchical tree view (nested/collapsible rows for parent-child chain relationships; requires multi-level groupby or a JS tree component).
 - ⚪ Cross-session resume affordance — single-session resume prompt and completed-session detection shipped 2026-05-19. A multi-session "browse my sessions" list view is NOT planned: ModPilot's workflow is one-mod-per-pipeline, parallel sessions are unlikely. Revisit only if real usage shows demand.
 - ⚪ Tool retrieval / Content RAG upgrade if `plan.md` grows large (C11 留的口子).
