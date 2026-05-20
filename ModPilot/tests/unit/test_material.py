@@ -13,6 +13,7 @@ Run with: uv run pytest -m unit tests/unit/test_material.py -v
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -484,3 +485,124 @@ class TestMaterialGenerate:
         result = self.tool.run(client, _make_cache(), self._PARAMS)
         assert result.success
         assert "Body" in result.state_diff["presets_auto_guessed"]
+
+
+# ── suggest_texture_mapping (issue #19 over-fill regression) ──────────────────
+
+
+def _stub_llm(content: str) -> MagicMock:
+    """Stub LLMClient whose `chat()` returns `content` as the only message."""
+    llm = MagicMock()
+    response = MagicMock()
+    response.content = content
+    llm.chat.return_value = response
+    return llm
+
+
+@pytest.mark.unit
+class TestHasSlotToken:
+    """Pure-function tests for the suffix-token gate (issue #19)."""
+
+    from app.phases.material import _has_slot_token  # type: ignore
+
+    def test_base_color_always_passes(self):
+        from app.phases.material import _has_slot_token
+        # Base Color has no token gate — any filename is allowed.
+        assert _has_slot_token("BML_body.dds", "Base Color")
+        assert _has_slot_token("random.png", "Base Color")
+
+    def test_normal_with_underscore_n_passes(self):
+        from app.phases.material import _has_slot_token
+        assert _has_slot_token("body_n.png", "Normal")
+        assert _has_slot_token("char_nrm.tga", "Normal")
+        assert _has_slot_token("face_normal.png", "Normal")
+
+    def test_normal_with_infix_dot_token_passes(self):
+        from app.phases.material import _has_slot_token
+        # 'char.nrm.dds' → stem='char.nrm' → split → {'char', 'nrm'} → match.
+        assert _has_slot_token("char.nrm.dds", "Normal")
+        assert _has_slot_token("char.normal.png", "Normal")
+
+    def test_bml_body_rejected_as_normal(self):
+        """The reported issue #19 case: BML_body.dds is a basecolor but the
+        LLM hallucinated it into the Normal slot. The token gate must
+        reject it."""
+        from app.phases.material import _has_slot_token
+        assert not _has_slot_token("BML_body.dds", "Normal")
+
+    def test_plain_basename_rejected_as_non_basecolor(self):
+        from app.phases.material import _has_slot_token
+        for slot in ("Normal", "Roughness", "Metallic", "Emission", "Alpha"):
+            assert not _has_slot_token("body.png", slot), slot
+
+    def test_roughness_metallic_emission_alpha_suffix(self):
+        from app.phases.material import _has_slot_token
+        assert _has_slot_token("body_r.png", "Roughness")
+        assert _has_slot_token("body_rgh.dds", "Roughness")
+        assert _has_slot_token("body_m.png", "Metallic")
+        assert _has_slot_token("body_metallic.tga", "Metallic")
+        assert _has_slot_token("body_e.png", "Emission")
+        assert _has_slot_token("body_glow.png", "Emission")
+        assert _has_slot_token("body_a.png", "Alpha")
+        assert _has_slot_token("body_mask.png", "Alpha")
+
+    def test_case_insensitivity(self):
+        from app.phases.material import _has_slot_token
+        assert _has_slot_token("Body_N.PNG", "Normal")
+        assert _has_slot_token("BODY_NRM.dds", "Normal")
+
+
+@pytest.mark.unit
+class TestSuggestTextureMapping:
+    """End-to-end tests for suggest_texture_mapping with stubbed LLM.
+
+    Sync tests using asyncio.run so they work without pytest-asyncio
+    being installed (the conda env on the maintainer's box lacks it)."""
+
+    def test_bml_body_not_suggested_as_normal(self):
+        """Issue #19 repro: even if the LLM ignores the prompt and tries
+        to put BML_body.dds in the Normal slot, the server-side filter
+        drops it."""
+        from app.phases.material import suggest_texture_mapping
+        materials = ["body"]
+        texture_files = ["body.png", "BML_body.dds"]
+        llm = _stub_llm(json.dumps({
+            "body": {"Base Color": "body.png", "Normal": "BML_body.dds"},
+        }))
+        result = asyncio.run(suggest_texture_mapping(llm, materials, texture_files, {}))
+        # Base Color survives; Normal filtered out by the token gate.
+        assert result == {"body": {"Base Color": "body.png"}}
+
+    def test_valid_normal_with_suffix_passes_through(self):
+        """A correctly-named normal map must NOT be filtered."""
+        from app.phases.material import suggest_texture_mapping
+        materials = ["body"]
+        texture_files = ["body.png", "body_n.png"]
+        llm = _stub_llm(json.dumps({
+            "body": {"Base Color": "body.png", "Normal": "body_n.png"},
+        }))
+        result = asyncio.run(suggest_texture_mapping(llm, materials, texture_files, {}))
+        assert result == {"body": {"Base Color": "body.png", "Normal": "body_n.png"}}
+
+    def test_empty_inputs_skip_llm_call(self):
+        from app.phases.material import suggest_texture_mapping
+        llm = MagicMock()
+        assert asyncio.run(suggest_texture_mapping(llm, [], ["x.png"], {})) == {}
+        assert asyncio.run(suggest_texture_mapping(llm, ["m"], [], {})) == {}
+        llm.chat.assert_not_called()
+
+    def test_malformed_llm_response_returns_empty(self):
+        from app.phases.material import suggest_texture_mapping
+        llm = _stub_llm("not json at all")
+        result = asyncio.run(suggest_texture_mapping(llm, ["body"], ["body.png"], {}))
+        assert result == {}
+
+    def test_invented_filepath_dropped(self):
+        """The LLM occasionally hallucinates a filename not in the
+        candidate list. Existing behavior — drop it."""
+        from app.phases.material import suggest_texture_mapping
+        llm = _stub_llm(json.dumps({
+            "body": {"Base Color": "body.png", "Normal": "ghost_n.png"},
+        }))
+        result = asyncio.run(suggest_texture_mapping(llm, ["body"], ["body.png"], {}))
+        assert result == {"body": {"Base Color": "body.png"}}

@@ -213,8 +213,10 @@ def test_widget_material_packages_nested_mapping(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
-def test_widget_material_drops_invalid_slots_and_empty_paths(monkeypatch):
-    """Unknown slot names and empty texture paths are silently dropped."""
+def test_widget_material_drops_invalid_slots_but_preserves_user_clears(monkeypatch):
+    """Unknown slot names are dropped silently; empty texture paths for
+    valid Principled slots are PRESERVED (issue #19) — they're an explicit
+    user-clear signal that the agent must not re-infer."""
     _patch_blender(monkeypatch)
     _patch_llm_factory(monkeypatch)
     from app.main import app
@@ -237,7 +239,33 @@ def test_widget_material_drops_invalid_slots_and_empty_paths(monkeypatch):
         loop = app.state.agent_sessions[sid]
         last = [m["content"] for m in loop._global_history if m["role"] == "user"][-1]
         body = json.loads(last[len("[CONFIRMED_MATERIAL_MAPPING] "):])
-        assert body == {"body_mat": {"Base Color": "C:/tex/ok.png"}}
+        # Bogus slot dropped; Normal preserved with empty path (user cleared it).
+        assert body == {"body_mat": {"Base Color": "C:/tex/ok.png", "Normal": ""}}
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(TestClient is None, reason="fastapi.testclient unavailable")
+def test_widget_material_rejects_all_empty_submission(monkeypatch):
+    """If every row has an empty path, the user effectively confirmed
+    nothing — 422 (issue #19 regression guard)."""
+    _patch_blender(monkeypatch)
+    _patch_llm_factory(monkeypatch)
+    from app.main import app
+
+    sid = "widget-mat-all-cleared"
+    with TestClient(app) as client:
+        app.state.llm = _stub_llm("got it")
+        r = client.post(
+            "/agent/widget/material",
+            json={
+                "session_id": sid,
+                "mappings": [
+                    {"material": "body_mat", "slot": "Base Color", "texture_path": ""},
+                    {"material": "body_mat", "slot": "Normal", "texture_path": ""},
+                ],
+            },
+        )
+        assert r.status_code == 422
 
 
 @pytest.mark.unit

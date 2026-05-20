@@ -605,12 +605,18 @@ class AgentLoop:
         Recovery is intentionally phase-granular, not turn-granular:
 
           - `_phase_idx` ← count of `phase_advance` moves in the log
-          - For each `phase_advance`, find the first `assistant` move logged
-            AFTER it and inject a single `[compacted]` summary message into
-            `_global_history` using that text as the summary
-          - If a phase_advance has no following assistant move (backend
-            crashed mid-wrap-up), use a generic "Phase X completed." text so
-            the phase still appears in history
+          - For each `phase_advance`, emit a (user_trigger, assistant_summary)
+            PAIR into `_global_history`. The user trigger is the most recent
+            user / widget / error_choice message logged for that phase (the
+            request that drove the phase). When none was logged (cold backend
+            crash, sync_phase_state recovery, etc.) we fall back to a
+            synthetic "(continue)" placeholder. The assistant half is the
+            first `assistant` move logged AFTER the advance; if missing,
+            a generic "Phase X completed." string.
+          - Emitting pairs (rather than assistant-only) is what keeps the
+            rebuilt history alternating user→assistant→user→…, which the
+            Anthropic API requires. A history starting with assistant — or
+            with two assistant blocks back-to-back — 400s on the next call.
           - `_phase_start_idx_global` ← `len(_global_history)` so the next
             real turn starts a fresh span
           - Mid-phase work (tool moves without a following phase_advance) is
@@ -630,10 +636,18 @@ class AgentLoop:
         if not moves:
             return
 
-        # Index by turn for the "next assistant after this phase_advance" lookup.
-        # `read()` already returns moves in append order, so a single pass works.
+        # Walk linearly so we can capture the trigger user msg seen most
+        # recently within each phase before its phase_advance fires.
+        pending_user_for_phase: dict[str, str] = {}
         for i, move in enumerate(moves):
-            if move.get("kind") != "phase_advance":
+            kind = move.get("kind")
+            if kind in ("user", "widget", "error_choice"):
+                phase = move.get("phase")
+                content = move.get("content")
+                if phase and isinstance(content, str) and content.strip():
+                    pending_user_for_phase[phase] = content
+                continue
+            if kind != "phase_advance":
                 continue
             completed = move.get("phase") or "unknown"
             # Find the first assistant move after this advance.
@@ -644,6 +658,8 @@ class AgentLoop:
                     if isinstance(content, str) and content.strip():
                         summary = content
                     break
+            trigger = pending_user_for_phase.pop(completed, "(continue)")
+            self._global_history.append({"role": "user", "content": trigger})
             self._global_history.append({
                 "role": "assistant",
                 "content": f"{COMPACT_MARKER} {summary}",
@@ -681,6 +697,13 @@ class AgentLoop:
             (Issue #15) — already a natural-language summary of what the
             phase did. We reuse it as the compact summary so no extra LLM
             call is needed.
+          - Leading user message(s) in the span are PRESERVED outside the
+            compacted block. The compact summary is an assistant block, so
+            absorbing the user trigger would either put assistant first in
+            history or place two assistant blocks back-to-back — both 400
+            from the Anthropic API. Keeping the user trigger as the compact
+            block's left neighbour keeps history alternating across an
+            arbitrary number of compactions.
         """
         if self._just_completed_phase is None:
             return
@@ -688,9 +711,16 @@ class AgentLoop:
         # End is exclusive of the user message just appended by step().
         end_idx = len(history) - 1
         start_idx = self._phase_start_idx_global
+        # Preserve the leading user trigger(s) so the compact assistant block
+        # is paired with a user neighbour. Without this, the very first
+        # compaction would drop history[0] (the user msg that started phase 0)
+        # and leave the rebuilt history starting with an assistant message.
+        while start_idx < end_idx and history[start_idx].get("role") == "user":
+            start_idx += 1
         if start_idx >= end_idx:
-            # Nothing to compact (e.g. NEGOTIATING phase never wrote to
-            # _global_history). Just clear state.
+            # Nothing assistant-side to compact (e.g. NEGOTIATING phase never
+            # wrote to _global_history, or the span was user-only). Clear
+            # state and leave the user messages as-is.
             self._just_completed_phase = None
             return
         # Find the trailing wrap-up text. Walk backwards within the span for
@@ -926,6 +956,17 @@ class AgentLoop:
                 else "no scene changes"
             )
             if tool.advances_phase:
+                # Defensive: should be unreachable if state == DONE bounces
+                # in `_dispatch` for fully-complete sessions, but guard the
+                # IndexError so a future state-machine regression cannot brick
+                # the session the same way the unrestored-DONE bug did.
+                if self._phase_idx >= len(_PHASE_SEQUENCE):
+                    self.state = LoopState.DONE
+                    self._emit("state", state=self.state.value)
+                    return (
+                        f"Tool {tool_name} succeeded, but the workflow is "
+                        "already past the final phase. All phases are complete."
+                    ), None
                 completed = _PHASE_SEQUENCE[self._phase_idx]
                 self._phase_idx += 1
                 # Issue #15 — signal the inter-phase pause rail.  The flag is
@@ -1251,7 +1292,29 @@ class AgentLoop:
                 skipped = self.current_phase or "unknown"
                 self._skipped_phases.add(skipped)
                 self._phase_idx += 1
-                self._on_phase_advance()
+                next_phase = (
+                    _PHASE_SEQUENCE[self._phase_idx]
+                    if self._phase_idx < len(_PHASE_SEQUENCE)
+                    else None
+                )
+                # Mirror the bookkeeping a successful phase tool would have
+                # done: record the advance on disk so session recovery counts
+                # this phase, and queue context-management compaction so the
+                # failed tool's tool_use/tool_result + error reply blocks do
+                # not linger in _global_history forever.
+                self._log_move({
+                    "kind": "phase_advance",
+                    "phase": skipped,
+                    "to_phase": next_phase,
+                    "skipped": True,
+                })
+                self._just_completed_phase = skipped
+                # The success path returns to RUNNING_PHASE via the wrap-up
+                # branch; the skip path has no LLM call to ride on, so set
+                # the state explicitly. _on_phase_advance can still override
+                # to DONE / NEGOTIATING when warranted.
+                self.state = LoopState.RUNNING_PHASE
+                self._on_phase_advance(completed_phase=skipped)
                 self._pending_error = None
                 warning = (
                     f"Skipping {skipped}. "
