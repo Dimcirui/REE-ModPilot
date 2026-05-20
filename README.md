@@ -169,7 +169,10 @@ Install these into your Blender add-on directory before using ModPilot:
 | Addon | Source | Role |
 |-------|--------|------|
 | **Modding-Toolkit** | [Dimcirui/Modding-Toolkit](https://github.com/Dimcirui/Modding-Toolkit) | Provides the `bpy.ops.modder.* / mhws.* / re4.* / re9.* / mhwi.*` operators ModPilot orchestrates |
+| **Modder_Batch_Tool** | [Dimcirui/Modder_Batch_Tool](https://github.com/Dimcirui/Modder_Batch_Tool) | Provides the `modder.* / mbt.*` operators ModPilot orchestrates |
 | **blender-mcp** | [ahujasid/blender-mcp](https://github.com/ahujasid/blender-mcp) | TCP socket bridge on `localhost:9876` (we only use its `addon.py`, not the FastMCP server) |
+| **RE-Mesh-Editor** | [NSACloud/RE-Mesh-Editor](https://github.com/NSACloud/RE-Mesh-Editor) | Provide editing dependencies for .mesh model files and .mdf2 material files |
+| **RE-Chain-Editor** | [NSACloud/RE-Chain-Editor](https://github.com/NSACloud/RE-Chain-Editor) | Provide editing dependencies for .chain2 physics files and .clsp collision files |
 
 After enabling both in Blender → Edit → Preferences → Add-ons, open the BlenderMCP side panel (N-key in 3D viewport) and click **Connect to Claude** — the socket server starts on port 9876.
 
